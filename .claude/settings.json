@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source /Users/dehaat/Desktop/SE_automation_server/venv/bin/activate*)",
+      "Bash(source venv/bin/activate*)",
+      "Bash(python manage.py activate_tuff *)",
+      "Bash(python manage.py show_plan_run *)",
+      "mcp__Claude_Browser__navigate",
+      "mcp__Claude_Browser__get_page_text",
+      "mcp__Claude_Browser__read_page",
+      "mcp__metabase__search",
+      "Bash(textutil -convert txt -stdout *)",
+      "Bash(crontab -l)"
+    ]
+  }
+}

@@ -1,0 +1,342 @@
+"""The Pitching Agent -- generates a per-task sales pitch (PitchScript), activated
+automatically right after DailyTask rows are created for a PlanRun (see
+planning.services.generate_plan_for_scope). Config-driven from pitch_config/'s 5 CSVs
+via planning.pitch_config_loader.
+
+Real scoping note, confirmed against se_daily_plan_agent.py's own PURPOSE_BY_OBJECTIVE:
+the task engine only ever produces "Sale" or "Promise To Pay / Collection" (single or
+combined) as a real Purpose -- the other 3 Purposes/scripts in pitch_config
+(Promise To Bill (P2B), Query Resolution, Stock at DC) can't be reached by any task this
+engine currently generates. This module still builds full generic lookup/composition for
+all 12 script cases (5 single + 7 combo) so it's ready if the task engine is ever
+extended, but only ~3 combinations are live-testable today.
+
+Missing-data handling: a talking point is included ONLY if its underlying data is both
+(a) applicable per pitch_config's Applicable-Sources list for that Purpose, AND (b)
+actually present in this run's pulled data. S4 (Current Inventory) and Suggested
+Discount are never included -- not a per-run skip, structurally absent, since neither
+has any real data source anywhere in this system (confirmed exhaustively by the
+normalization doc itself). This is the same honest-degrade discipline as everywhere
+else in this codebase -- never fabricate a number to fill a talking point.
+
+Sale + Promise To Pay / Collection combo, built directly off the DC Visit Pitch
+(Multi-Purpose) sheet's own worked example (that sheet's "Promise To Pay / Collection
++ Sale" row), not the generic single-block composer below -- see
+_compose_sale_ptp_combo(). That sheet structures a combined visit as two
+section-labeled segments ("— कलेक्शन हिस्सा —" / "— सेल्स हिस्सा —"), sequenced by its
+own stated rule: collection-led with sales folded in after when a real overdue exists
+(its Sequence Rationale: "पहले पेमेंट की बात करना ज़रूरी है क्योंकि ओवरड्यू है"), else
+sales-led with billing folded in after (the same structural idea as its "Sale +
+Promise To Bill (P2B)" row -- P2B there plays the same role a not-yet-overdue,
+in-cycle Outstanding balance plays here). This is the one combo the task engine
+actually produces live; every other Purpose/combo still goes through the generic
+composer, unchanged.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+
+from .models import DailyTask, PitchScript, PlanRun
+from .pitch_config_loader import get_pitch_config
+
+# --- Hindi Ask/Wish phrasing per single Purpose ------------------------------------------
+# The CSVs' own "What to Ask"/"What to Wish" columns are English guidance on WHAT ground
+# to cover, not Hindi text to insert verbatim -- inserting them directly would leave the
+# Ask/Wish sections in English while only the Tell section (built from real data below)
+# is Hindi, breaking the "natural Hindi throughout" requirement. These phrase the same
+# guidance in Hindi, in the tone of pitch_config's own worked examples (DC Visit Pitch
+# (Hindi).csv) -- content-matched to that file's Ask/Wish columns, not copied verbatim
+# (those carry fabricated DC-specific numbers this module never reuses).
+_ASK_HINDI = {
+    "Promise To Bill (P2B)": "इस बार बिलिंग में कोई दिक्कत तो नहीं आ रही? स्टॉक मूवमेंट सही है या पेमेंट साइकिल में कोई अड़चन है?",
+    "Promise To Pay / Collection": "ये पेमेंट अभी तक पेंडिंग है — कोई खास वजह है क्या? कहीं फंड की दिक्कत तो नहीं?",
+    "Query Resolution": "आपने जो कंप्लेंट डाली थी, उसमें एग्जैक्टली क्या दिक्कत आ रही है?",
+    "Sale": "इस सीजन में क्या चल रहा है, कौन सी चीज़ की सबसे ज़्यादा डिमांड आ रही है? कुछ शॉर्टेज तो नहीं है स्टॉक में?",
+    "Stock at DC": "ज़रा स्टॉक चेक कर लेते हैं — कौन सा आइटम ज़्यादा पड़ा है और कौन सा कम चल रहा है?",
+}
+_WISH_HINDI = {
+    "Promise To Bill (P2B)": "तो बताइए — बिलिंग कब तक कर पाएंगे, एक पक्की तारीख और अमाउंट बता दीजिए।",
+    "Promise To Pay / Collection": "बताइए, किस तारीख तक ये पेमेंट क्लियर कर पाएंगे — एक पक्की तारीख और अमाउंट बता दीजिए।",
+    "Query Resolution": "मैं आज ही इसे रिज़ॉल्व करने की कोशिश करता हूं, अगर आज नहीं हुआ तो कल तक का टाइमलाइन बता दूंगा।",
+    "Sale": "चलिए आज ही एक ऑर्डर बुक कर लेते हैं जो सीधे प्राइवेट लेबल टारगेट को आगे बढ़ाए।",
+    "Stock at DC": "ठीक है, जो कम है उसका रीऑर्डर लगवा देता हूं और जो ज़्यादा है वो नोट कर लेता हूं।",
+}
+
+# --- Per-source Hindi talking-point builders -------------------------------------------
+# Each takes the per-task context dict and returns (sentence, source_code) or None if
+# that source's data isn't available for this task. "Available" and "applicable" are
+# checked separately by _compose() -- a builder returning None here is what actually
+# causes a source to be skipped, not a config decision alone.
+
+def _tp_outstanding(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    outstanding = ctx.get("present_outstanding")
+    if outstanding is None:
+        return None
+    overdue = ctx.get("present_overdue")
+    # dc_datamart's weighted_avg_repayment_days -- matches the DC Visit Pitch
+    # (Multi-Purpose) sheet's "आमतौर पर आप X दिन में क्लियर कर देते हैं" pattern. <= 0
+    # isn't a genuine "pays same-day" signal -- confirmed live the DCs showing 0 are
+    # exactly the ones whose entire balance is currently overdue (no completed
+    # repayment cycle to average over), so it's omitted rather than fabricate a false
+    # reassurance, same honest-degrade discipline as every other talking point here.
+    avg_days = ctx.get("avg_repayment_days")
+    avg_days_note = f" आमतौर पर आप {avg_days:.0f} दिन के अंदर पेमेंट क्लियर कर देते हैं।" if avg_days and avg_days > 0 else ""
+    if overdue:
+        aging = ctx.get("overdue_aging_bucket")
+        aging_note = f" ({aging})" if aging else ""
+        text = f"अभी आपका आउटस्टैंडिंग ₹{outstanding:,.0f} है, जिसमें से ₹{overdue:,.0f}{aging_note} ओवरड्यू है।{avg_days_note}"
+    else:
+        text = f"अभी आपका आउटस्टैंडिंग ₹{outstanding:,.0f} है, लेकिन अभी कुछ भी ओवरड्यू नहीं है — आप टाइम पर हैं।{avg_days_note}"
+    return text, "S5"
+
+
+def _tp_ytd_pl(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    val = ctx.get("ytd_private_label")
+    if not val:
+        return None
+    return f"इस साल का आपका प्राइवेट लेबल सेल अभी तक ₹{val:,.0f} हुआ है।", "S8"
+
+
+def _tp_historical_purchase(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    py, ytd = ctx.get("purchase_last_fy"), ctx.get("purchase_ytd")
+    parts = []
+    if py:
+        parts.append(f"पिछले साल आपने ₹{py:,.0f} का परचेज़ किया था")
+    if ytd:
+        parts.append(f"इस साल अभी तक ₹{ytd:,.0f} का परचेज़ हो चुका है")
+    if not parts:
+        return None
+    return " और ".join(parts) + "।", "S3/S6/S7"
+
+
+def _tp_last_discount(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    discount = ctx.get("last_discount")
+    if discount is None:
+        return None
+    return f"पिछली बार आपको {discount:.0f}% का डिस्काउंट मिला था।", "S2"
+
+
+def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    block_avg, category = ctx.get("block_category_avg"), ctx.get("dominant_category")
+    if not block_avg or not category:
+        return None
+    dc_amt = ctx.get("dc_category_purchase") or 0
+    return (
+        f"आपके ब्लॉक में बाकी दुकानदारों ने इस महीने {category} में औसतन ₹{block_avg:,.0f} का बिज़नेस किया है, "
+        f"आपकी तरफ से अभी तक ₹{dc_amt:,.0f} हुआ है।",
+        "S1",
+    )
+
+
+# Data-source code -> builder. Order here is the default Tell-section order when no
+# purpose-specific sequencing rule applies (see _order_for_purposes()).
+_TALKING_POINTS = {
+    "S1": _tp_block_comparison,
+    "S2": _tp_last_discount,
+    "S3": _tp_historical_purchase,
+    "S5": _tp_outstanding,
+    "S6": _tp_historical_purchase,
+    "S7": _tp_historical_purchase,
+    "S8": _tp_ytd_pl,
+}
+
+
+def _order_for_purposes(purposes: List[str], ctx: Dict[str, Any]) -> List[str]:
+    """Which talking points to lead with, and in what order. Real rule for the one
+    combo this engine can actually produce today (Sale + Promise To Pay / Collection):
+    lead with Collection/Outstanding if there's a genuine overdue amount (matches the
+    doc's own worked example -- acknowledge the overdue before adding a sales ask, so
+    the visit doesn't read as payment-avoidant), otherwise lead with the Sale/PL push.
+    For every other Purpose/combo (not reachable today), falls back to the fixed order
+    S5, S8, S1, S2, S3 -- a reasonable default, not a specifically confirmed sequence."""
+    default_order = ["S5", "S8", "S1", "S2", "S3"]
+    if "Promise To Pay / Collection" in purposes and "Sale" in purposes:
+        if ctx.get("present_overdue"):
+            return ["S5", "S1", "S2", "S3", "S8"]
+        return ["S8", "S1", "S2", "S3", "S5"]
+    return default_order
+
+
+def _match_script(purpose_of_visit: str) -> Tuple[List[str], Optional[str], Optional[str]]:
+    """Returns (purposes, matched_key_label, win_condition_or_rationale). purposes is
+    the parsed list from DailyTask.purpose_of_visit; matched_key_label is what actually
+    matched (for PitchScript.purpose_key), None if nothing in pitch_config matches at all
+    (shouldn't happen given the confirmed taxonomy match, but never assumed)."""
+    cfg = get_pitch_config()
+    purposes = [p.strip() for p in purpose_of_visit.split(" + ") if p.strip()]
+    if len(purposes) == 1:
+        single = cfg.single_purpose.get(purposes[0])
+        if single:
+            return purposes, purposes[0], single["win_condition"]
+        return purposes, None, None
+    combo = cfg.combo.get(frozenset(purposes))
+    if combo:
+        return purposes, combo["purposes_combined_label"], combo["win_conditions"]
+    # No exact combo row for this exact set -- fall back to the union of each individual
+    # purpose's own single-purpose script rather than failing to generate a pitch at all.
+    return purposes, " + ".join(purposes) + " (no combo script -- composed from single-purpose scripts)", None
+
+
+def _applicable_sources(purposes: List[str]) -> List[str]:
+    """Union of each individual purpose's Applicable Sources (file #1) -- file #2 (combos)
+    has no S1-S8 columns of its own, so this is the defensible source of truth even for
+    a matched combo."""
+    cfg = get_pitch_config()
+    sources: set = set()
+    for p in purposes:
+        entry = cfg.single_purpose.get(p)
+        if entry:
+            sources |= entry["sources"]
+    return sorted(sources)
+
+
+def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
+    """DC Visit Pitch (Multi-Purpose) sheet's own "Promise To Pay / Collection + Sale"
+    worked example, structurally: two section-labeled segments, sequenced by whether a
+    real overdue amount exists. See module docstring for the sheet's stated rationale."""
+    cfg = get_pitch_config()
+    dc_name = (task.dc_name or "").strip() or "जी"
+    overdue = ctx.get("present_overdue") or 0
+    outstanding = ctx.get("present_outstanding")
+    aging = ctx.get("overdue_aging_bucket")
+
+    used: List[str] = []
+    skipped: List[str] = []
+
+    def sentence_for(code: str) -> Optional[str]:
+        builder = _TALKING_POINTS[code]
+        label = cfg.data_source_labels.get(code, code)
+        result = builder(ctx)
+        if result is None:
+            skipped.append(f"{code} {label} (no data available this run)")
+            return None
+        text, _ = result
+        used.append(f"{code} {label}")
+        return text
+
+    # Sales talking points -- same 3 reachable sources as the generic composer, in the
+    # sheet's own worked-example order (block/peer comparison, historical purchase
+    # trend, then YTD-vs-target).
+    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S3", "S8")) if s]
+
+    skipped.append("S4 Current Inventory (no DC-level data source exists anywhere in this system)")
+    skipped.append("Suggested Discount (no formula exists anywhere in this system)")
+
+    lines: List[str] = []
+    if overdue > 0:
+        # Collection-led -- sheet's Sequence Rationale: acknowledge + get a commitment
+        # on the overdue first, then fold the sales ask into the same conversation so
+        # it doesn't read as payment-only.
+        lines.append(f"नमस्ते {dc_name}! कैसे हैं आप?")
+        lines.append("")
+        collection_sentence = sentence_for("S5")
+        lines.append("— कलेक्शन हिस्सा —")
+        aging_note = f" ({aging})" if aging else ""
+        lines.append(f"[पूछना] {dc_name}, ₹{overdue:,.0f}{aging_note} का पेमेंट पेंडिंग है — कोई दिक्कत आ रही है क्या फंड की तरफ से?")
+        if collection_sentence:
+            lines.append(f"[बताना] {collection_sentence}")
+        lines.append("[विश] बताइए, इस हफ्ते के अंदर कब तक क्लियर कर पाएंगे?")
+        lines.append("")
+        lines.append("— सेल्स हिस्सा (पेमेंट कमिट होने के बाद) —")
+        lines.append("[पूछना] वैसे इस सीजन में क्या चल रहा है, किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?")
+        if sales_sentences:
+            lines.append("[बताना] " + " ".join(sales_sentences))
+        lines.append("[विश/क्लोज़] तो चलिए, पुराना पेमेंट क्लियर होते ही एक ऑर्डर भी साथ में डाल देते हैं ताकि स्टॉक टाइम पर आ जाए।")
+    else:
+        # Sales-led, no urgency to open with -- same structural idea as the sheet's
+        # "Sale + Promise To Bill (P2B)" row: value first, billing folded in after.
+        lines.append(f"नमस्ते {dc_name}! कैसे हैं आप, बिज़नेस का क्या हाल है?")
+        lines.append("")
+        lines.append("— सेल्स हिस्सा —")
+        lines.append("[पूछना] इस सीजन में किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?")
+        if sales_sentences:
+            lines.append("[बताना] " + " ".join(sales_sentences))
+        lines.append("[विश] चलिए आज एक ऑर्डर बुक कर लेते हैं।")
+        if outstanding:
+            billing_sentence = sentence_for("S5")
+            lines.append("")
+            lines.append("— बिलिंग हिस्सा (सेल के बाद) —")
+            lines.append(f"[पूछना] वैसे अभी का जो ₹{outstanding:,.0f} है, उसकी बिलिंग किस टाइम तक हो जाएगी?")
+            if billing_sentence:
+                lines.append(f"[बताना] {billing_sentence}")
+            lines.append(f"[विश/क्लोज़] तो आज के नए ऑर्डर के साथ-साथ, पुराना ₹{outstanding:,.0f} भी इसी हफ्ते क्लियर कर दीजिएगा — दोनों साथ में सेटल हो जाएंगे।")
+        else:
+            skipped.append("S5 Outstanding (no outstanding balance to raise this run)")
+
+    return "\n".join(lines).strip(), used, skipped
+
+
+def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
+    purposes, matched_key, win_condition_or_rationale = _match_script(task.purpose_of_visit or "")
+    if set(purposes) == {"Sale", "Promise To Pay / Collection"}:
+        script, used, skipped = _compose_sale_ptp_combo(task, ctx)
+        return script, used, skipped
+    applicable = _applicable_sources(purposes)
+    ordered_codes = [c for c in _order_for_purposes(purposes, ctx) if c in applicable] + [
+        c for c in applicable if c not in _order_for_purposes(purposes, ctx)
+    ]
+
+    cfg = get_pitch_config()
+    used, skipped, tell_sentences = [], [], []
+    seen_labels = set()  # S3/S6/S7 all resolve to the same _tp_historical_purchase sentence
+    for code in ordered_codes:
+        builder = _TALKING_POINTS.get(code)
+        label = cfg.data_source_labels.get(code, code)
+        if not builder:
+            continue
+        result = builder(ctx)
+        if result is None:
+            skipped.append(f"{code} {label} (no data available this run)")
+            continue
+        sentence, actual_code = result
+        if actual_code in seen_labels:
+            continue
+        seen_labels.add(actual_code)
+        tell_sentences.append(sentence)
+        used.append(f"{code} {label}")
+
+    # S4 and Suggested Discount are structurally absent, never a per-run decision --
+    # confirmed exhaustively by the normalization doc that no real data source exists
+    # for either anywhere in this system.
+    skipped.append("S4 Current Inventory (no DC-level data source exists anywhere in this system)")
+    skipped.append("Suggested Discount (no formula exists anywhere in this system)")
+
+    dc_name = (task.dc_name or "").strip() or "जी"
+    ask_texts = [_ASK_HINDI[p] for p in purposes if p in _ASK_HINDI]
+    wish_texts = [_WISH_HINDI[p] for p in purposes if p in _WISH_HINDI]
+
+    lines = [f"नमस्ते {dc_name}! कैसे हैं आप, दुकान का हाल-चाल बताइए?", ""]
+    if ask_texts:
+        lines.append("[पूछना] " + " ".join(ask_texts))
+        lines.append("")
+    if tell_sentences:
+        lines.append("[बताना] " + " ".join(tell_sentences))
+        lines.append("")
+    if wish_texts:
+        lines.append("[विश/क्लोज़] " + " ".join(wish_texts))
+
+    return "\n".join(lines).strip(), used, skipped
+
+
+def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, Dict[str, Any]]) -> int:
+    """Called automatically from generate_plan_for_scope() right after DailyTask rows
+    exist for this run. extra_data_by_dc carries the newly-wired sources (S1/S2/S3/S6/S7)
+    keyed by dc_id -- S5 (Outstanding) and S8 (YTD PL) are read directly off DailyTask's
+    own already-persisted fields, not duplicated here. Returns the count of pitches created."""
+    created = 0
+    for task in plan_run.tasks.filter(dc_id__isnull=False):  # Farmer Meeting tasks have no DC -- no pitch to generate
+        ctx = dict(extra_data_by_dc.get(task.dc_id, {}))
+        ctx["present_outstanding"] = task.present_outstanding
+        ctx["present_overdue"] = task.present_overdue
+        ctx["overdue_aging_bucket"] = task.overdue_aging_bucket
+        ctx["ytd_private_label"] = task.ytd_private_label
+        script, used, skipped = _compose(task, ctx)
+        _, matched_key, _ = _match_script(task.purpose_of_visit or "")
+        PitchScript.objects.update_or_create(
+            daily_task=task,
+            defaults={"purpose_key": matched_key or task.purpose_of_visit, "script_hindi": script,
+                      "data_sources_used": used, "data_sources_skipped": skipped},
+        )
+        created += 1
+    return created

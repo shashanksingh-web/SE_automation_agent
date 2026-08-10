@@ -1,0 +1,2382 @@
+#!/usr/bin/env python3
+"""
+SE/DC Data Normalization Agent + SE Daily Plan Generator.
+
+Implements the pipeline in SE_DC_Data_Normalization_Agent_Prompt.docx:
+    raw feeds (6 sources) -> normalized data + exceptions report
+        -> BO1-BO5 scoring -> SE Daily Plan
+
+Source coverage:
+    Source 2 (DC Master + Rank)        -> local file  DC_RAnk.csv
+    Source 5 (Config Master)           -> local files  BO_Configuration_Sheet_v3 - *.csv
+    Source 6 (AOP & Target Data)       -> local file   Niyojan Q2-FY_26_27 Dashboard - Planning.csv
+    Source 1 (SE/ABM Master + Tasks)   -> live, via Metabase REST API (Redshift db_id=41,
+    Source 3 (Transactional/Field)        input-backend Postgres db_id=31 -- both confirmed
+    Source 4 (Active Roster/History)      live against this Metabase instance) + kheti
+                                           Postgres db_id=4 for the hyperlocal_order proxy.
+
+Sources 1/3/4 require METABASE_URL and METABASE_API_KEY (Metabase Admin -> API Keys) to
+be set as environment variables -- this is the standalone equivalent of the live Metabase
+access used to confirm the schema this file queries. Without them the pipeline still runs
+end-to-end on Sources 2/5/6 alone; every table and the run summary say so explicitly
+rather than silently producing partial output as if it were complete (Section 8 guardrail).
+
+This agent normalizes and quarantines; it does not invent values for genuine data gaps.
+The SE Daily Plan section (Section 11 below) is an explicit extension beyond the
+normalization agent's own documented scope ("prepares data, does not generate plans"),
+built to the output shape the doc's own Section 10 ("Downstream Outcome") specifies.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import logging
+import os
+import re
+import sys
+import time
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+try:
+    import requests
+except ImportError:  # pragma: no cover - degrade gracefully, see MetabaseClient
+    requests = None
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")  # REDSHIFT_*/METABASE_* -- gitignored
+except ImportError:  # pragma: no cover - fine to run with plain env vars instead
+    pass
+
+Table = List[Dict[str, Any]]
+
+BASE_DIR = Path(__file__).resolve().parent
+logger = logging.getLogger("se_daily_plan_agent")
+
+
+# =====================================================================================
+# 0. CONFIG -- environment, file locations, confirmed database ids
+# =====================================================================================
+
+REDSHIFT_DB_ID = int(os.environ.get("SE_AGENT_REDSHIFT_DB_ID", "41"))          # "Redshift"
+INPUT_BACKEND_DB_ID = int(os.environ.get("SE_AGENT_INPUT_BACKEND_DB_ID", "31"))  # "input-backend"
+KHETI_DB_ID = int(os.environ.get("SE_AGENT_KHETI_DB_ID", "4"))                 # "kheti"
+
+DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAnk.csv"))
+# Moved into a subfolder 2026-08-06 -- note the trailing space in the folder name, that's
+# literal (confirmed via `ls`), not a typo to "fix". All 5 BO_Configuration_Sheet_v3 files
+# live here now; DC_RAnk.csv (Source 2) and the AOP dashboard (Source 6) stayed at BASE_DIR.
+CONFIG_DIR = Path(os.environ.get("SE_AGENT_CONFIG_DIR", BASE_DIR / "config and parameter "))
+CONFIG_ALL_PARAMS_CSV = Path(
+    os.environ.get("SE_AGENT_CONFIG_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - All Parameters (2).csv")
+)
+CONFIG_SE_INCENTIVE_CSV = Path(
+    os.environ.get(
+        "SE_AGENT_INCENTIVE_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - SE Incentive Policy (FY26-27) (2).csv"
+    )
+)
+# "Open Questions (Sec 9).csv" was retired in the 2026-08-06 re-sync -- superseded by
+# "Agent-Determined Parameters.csv" (same 7-row dynamic-parameter list, restructured).
+# This path is kept for backward compatibility only; it will correctly report
+# Config_File_Missing if ever loaded, which is honest -- the file is gone, not renamed.
+CONFIG_OPEN_QUESTIONS_CSV = Path(
+    os.environ.get("SE_AGENT_OPEN_QUESTIONS_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Open Questions (Sec 9).csv")
+)
+CONFIG_AGENT_DETERMINED_CSV = Path(
+    os.environ.get("SE_AGENT_AGENT_DETERMINED_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Agent-Determined Parameters (1).csv")
+)
+CONFIG_TASK_FORMULA_CSV = Path(
+    os.environ.get("SE_AGENT_TASK_FORMULA_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Daily Task Assignment Formula (1).csv")
+)
+CONFIG_GUARDRAILS_CSV = Path(
+    os.environ.get("SE_AGENT_GUARDRAILS_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Guardrails (1).csv")
+)
+CONFIG_VISIT_PURPOSE_MAPPING_CSV = Path(
+    os.environ.get("SE_AGENT_VISIT_PURPOSE_MAPPING_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Visit Type & Purpose Mapping (1).csv")
+)
+CONFIG_VISIT_PURPOSE_SYSTEM_CSV = Path(
+    os.environ.get("SE_AGENT_VISIT_PURPOSE_SYSTEM_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Visit Type to Purpose (System) (1).csv")
+)
+AOP_CSV = Path(
+    os.environ.get("SE_AGENT_AOP_CSV", BASE_DIR / "Niyojan Q2-FY_26_27 Dashboard - Planning.csv")
+)
+
+NULL_PLACEHOLDERS = {"", "(blank)", "-", "#N/A", "#DIV/0!"}
+LOOKBACK_DAYS = int(os.environ.get("SE_AGENT_LOOKBACK_DAYS", "90"))  # Config 0.2
+# Guards against a single slow/stuck Redshift query hanging the whole pipeline forever
+# (observed 2026-08-09: load_live_sources sat >20 min on an ESTABLISHED connection with
+# no query-level timeout and no per-query logging, making the hang undiagnosable). Redshift
+# enforces this server-side per statement, so a stuck query now fails fast with a clear
+# psycopg2 error instead of hanging -- load_live_sources already quarantines per-query
+# failures (Live_Pull_Failed) rather than crashing the run.
+REDSHIFT_STATEMENT_TIMEOUT_MS = int(os.environ.get("SE_AGENT_REDSHIFT_STATEMENT_TIMEOUT_MS", "120000"))
+# Shared backoff schedule for both connecting AND querying Redshift (RedshiftDirectClient._connect
+# and .execute_sql) -- a query that dies mid-run deserves the same multi-attempt resilience as one
+# that fails to connect in the first place, not a single unretried reconnect (see 2026-08-09 fix).
+REDSHIFT_RETRY_BACKOFF_SECONDS = [2, 6]
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# =====================================================================================
+# 1. METABASE CLIENT -- real-time sync for Sources 1 / 3 / 4
+# =====================================================================================
+
+class MetabaseNotConfigured(RuntimeError):
+    """Raised when a live source is requested but METABASE_URL/METABASE_API_KEY are unset."""
+
+
+class MetabaseClient:
+    """Thin wrapper over the Metabase REST API (POST /api/dataset, native query).
+
+    This is the standalone-script equivalent of the live Metabase access already used to
+    confirm database ids 41 (Redshift), 31 (input-backend) and 4 (kheti) against this
+    instance. Auth is an API key (Metabase Admin > API Keys), passed via the
+    x-api-key header.
+    """
+
+    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
+        self.base_url = (base_url or os.environ.get("METABASE_URL", "")).rstrip("/")
+        self.api_key = api_key or os.environ.get("METABASE_API_KEY", "")
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.api_key and requests is not None)
+
+    def execute_sql(self, database_id: int, sql: str) -> Table:
+        if not self.configured:
+            reason = "requests not installed" if requests is None else "METABASE_URL/METABASE_API_KEY not set"
+            raise MetabaseNotConfigured(f"Metabase source unavailable ({reason})")
+        resp = requests.post(
+            f"{self.base_url}/api/dataset",
+            headers={"x-api-key": self.api_key, "Content-Type": "application/json"},
+            json={"type": "native", "native": {"query": sql}, "database": database_id},
+            timeout=180,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        data = payload.get("data", {})
+        cols = [c["name"] for c in data.get("cols", [])]
+        return [dict(zip(cols, row)) for row in data.get("rows", [])]
+
+    def close(self) -> None:
+        """No persistent connection to release -- each execute_sql() is a standalone
+        HTTP request. No-op kept so callers can treat both client types identically."""
+        pass
+
+
+class RedshiftDirectClient:
+    """Direct psycopg2 connection to the Redshift cluster behind Metabase's 'Redshift'
+    (db_id 41) and 'input-backend' (db_id 31) sources -- bypasses Metabase's REST/MCP API
+    entirely. Confirmed live 2026-08-04: this one cluster hosts 3 databases --
+    "dev" (pathik_report, input_partner_details, input_se_node_mapping, coupon_analysis,
+    dc_mapping_club_scheme, dc_club_slabs, hyperlocal_order -- i.e. everything under
+    Metabase db_id 41), "input_backend_db" (task_management_*, users_user, sale_orderrequest,
+    customer_management_customer, attendance_attendance, payments_paymenttransaction --
+    i.e. Metabase db_id 31's tables), and "locus" (unrelated, not used here).
+
+    KNOWN GAP, confirmed live: customer_management_input_outstanding does NOT exist on
+    this cluster in either database -- it appears to be Postgres-only (reachable via
+    Metabase db_id 31, not this Redshift replica). Queries against it will raise; callers
+    MUST catch that separately from other Source 3d queries (orders/credit_on_hold still
+    work fine here) rather than losing both to one try/except.
+
+    Also confirmed live: this cluster's Postgres dialect does NOT support `DISTINCT ON`
+    (raises FeatureNotSupported) -- use ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)
+    instead, same as any query written against it elsewhere in this codebase.
+
+    This is a warehouse replica of the OLTP input-backend Postgres DB, not the OLTP DB
+    itself -- treat it as possibly lagged by some sync interval, not guaranteed
+    instant-real-time, even though it's queried live on every call.
+
+    Connection reuse: one connection is kept open per database (dev / input_backend_db)
+    and reused across every execute_sql() call on this instance, instead of opening and
+    closing a fresh connection per query. A single request (run_pipeline() or
+    generate_plan_for_scope()) fires 13-16+ sequential queries through one client
+    instance (get_client() constructs a new one per top-level call, so there's no
+    cross-request state to worry about) -- per-query connection setup was real,
+    measured overhead against this cluster, not opened lazily/pooled before. Call
+    close() when done with this client (both call sites do, in a finally block).
+    """
+
+    def __init__(self):
+        self.host = os.environ.get("REDSHIFT_HOST", "")
+        self.port = os.environ.get("REDSHIFT_PORT", "5439")
+        self.user = os.environ.get("REDSHIFT_USER", "")
+        self.password = os.environ.get("REDSHIFT_PASSWORD", "")
+        self.db_dev = os.environ.get("REDSHIFT_DB_DEV", "dev")
+        self.db_input_backend = os.environ.get("REDSHIFT_DB_INPUT_BACKEND", "input_backend_db")
+        self._connections: Dict[str, Any] = {}  # dbname -> open psycopg2 connection
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.host and self.user and self.password)
+
+    def _db_name_for(self, database_id: int) -> str:
+        if database_id == REDSHIFT_DB_ID:
+            return self.db_dev
+        if database_id in (INPUT_BACKEND_DB_ID, KHETI_DB_ID):
+            # KHETI_DB_ID (hyperlocal_order) is also present under "dev" on this cluster;
+            # input-backend tables live under input_backend_db.
+            return self.db_input_backend if database_id == INPUT_BACKEND_DB_ID else self.db_dev
+        raise ValueError(f"No known Redshift database mapping for Metabase db_id {database_id}")
+
+    def _connect(self, dbname: str):
+        import psycopg2
+
+        # Retry only the connection step, with backoff, and only on connection-level
+        # failures (OperationalError -- host unreachable, timeout, refused) -- a flaky
+        # network shouldn't kill a whole run, but a bad query (ProgrammingError etc.)
+        # retrying would just fail the same way 3x slower, so those propagate immediately.
+        last_error: Optional[Exception] = None
+        for attempt, delay in enumerate([0] + REDSHIFT_RETRY_BACKOFF_SECONDS):
+            if delay:
+                logger.warning("Redshift connect failed (attempt %d), retrying in %ds: %s", attempt, delay, last_error)
+                time.sleep(delay)
+            try:
+                conn = psycopg2.connect(
+                    host=self.host, port=self.port, user=self.user, password=self.password,
+                    dbname=dbname, connect_timeout=15,
+                    # Observed 2026-08-09: queries that sit longer than ~5 minutes waiting on
+                    # results (client socket idle, server still working) get silently dropped
+                    # with "SSL connection has been closed unexpectedly" -- failures landed at
+                    # 309s/367s, right around AWS NAT Gateway's default 350s idle-connection
+                    # timeout. No keepalives were being sent, so the gateway saw a dead-looking
+                    # connection and killed it mid-query. TCP keepalives every 10s (starting
+                    # after 20s idle) keep the mapping alive through long-running queries.
+                    keepalives=1, keepalives_idle=20, keepalives_interval=10, keepalives_count=6,
+                )
+                # connect_timeout only bounds the TCP handshake -- once connected, a slow
+                # or stuck query has no client-side limit at all. Set it server-side so a
+                # bad/slow query fails with a clear OperationalError instead of hanging the
+                # whole pipeline indefinitely (see REDSHIFT_STATEMENT_TIMEOUT_MS).
+                with conn.cursor() as cur:
+                    cur.execute(f"SET statement_timeout = {REDSHIFT_STATEMENT_TIMEOUT_MS}")
+                conn.commit()
+                return conn
+            except psycopg2.OperationalError as e:
+                last_error = e
+        raise last_error
+
+    def _get_connection(self, dbname: str):
+        conn = self._connections.get(dbname)
+        if conn is not None and conn.closed == 0:
+            return conn
+        conn = self._connect(dbname)
+        self._connections[dbname] = conn
+        return conn
+
+    def execute_sql(self, database_id: int, sql: str) -> Table:
+        if not self.configured:
+            raise MetabaseNotConfigured("REDSHIFT_HOST/REDSHIFT_USER/REDSHIFT_PASSWORD not set")
+        import psycopg2
+
+        dbname = self._db_name_for(database_id)
+        # Same backoff schedule as _connect() -- a query that dies mid-run (idle-connection
+        # drop, transient server hiccup) previously got exactly one immediate, unretried
+        # reconnect attempt, which 2026-08-09's live failures showed isn't enough when the
+        # underlying condition (NAT idle-timeout-adjacent drops) hits more than once in a
+        # row. A bad query (ProgrammingError etc.) is not an OperationalError and still
+        # propagates immediately, unretried -- only connection-level failures loop here.
+        last_error: Optional[Exception] = None
+        for attempt, delay in enumerate([0] + REDSHIFT_RETRY_BACKOFF_SECONDS):
+            if delay:
+                logger.warning("Redshift query on %s failed (attempt %d), retrying in %ds: %s", dbname, attempt, delay, last_error)
+                time.sleep(delay)
+            conn = self._get_connection(dbname)
+            try:
+                cur = conn.cursor()
+                cur.execute(sql)
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+            except psycopg2.OperationalError as e:
+                last_error = e
+                logger.warning("Redshift connection to %s died mid-run", dbname)
+                self._connections.pop(dbname, None)
+        raise last_error
+
+    def close(self) -> None:
+        for conn in self._connections.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._connections.clear()
+
+
+def get_client():
+    """Prefer a direct Redshift connection (REDSHIFT_HOST/USER/PASSWORD) over the Metabase
+    REST API (METABASE_URL/METABASE_API_KEY) when both could apply -- direct access needs
+    no Metabase API key and was confirmed working end-to-end 2026-08-04. Falls back to
+    MetabaseClient so existing METABASE_URL/METABASE_API_KEY setups keep working unchanged."""
+    redshift_client = RedshiftDirectClient()
+    if redshift_client.configured:
+        return redshift_client
+    return MetabaseClient()
+
+
+# =====================================================================================
+# 2. SHARED NORMALIZATION HELPERS (Section 3 / 4 of the doc)
+# =====================================================================================
+
+def clean_null(value: Any) -> Any:
+    """Normalize the DC Master's four null placeholders (Section 4) to a true None."""
+    if isinstance(value, str) and value.strip() in NULL_PLACEHOLDERS:
+        return None
+    return value
+
+
+def parse_number(value: Any) -> Optional[float]:
+    """Strip thousands-separator commas before casting to numeric (Section 4)."""
+    value = clean_null(value)
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", "").replace("%", "")
+    if text in NULL_PLACEHOLDERS or text == "":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def normalize_mobile(value: Any) -> Optional[str]:
+    """Strip whitespace/country-code prefix so 1a<->1b can join on mobile_number."""
+    value = clean_null(value)
+    if value is None:
+        return None
+    digits = re.sub(r"\D", "", str(value))
+    if len(digits) > 10:
+        digits = digits[-10:]  # drop country-code prefix
+    return digits or None
+
+
+def normalize_id(value: Any) -> Optional[str]:
+    value = clean_null(value)
+    if value is None:
+        return None
+    return str(value).strip().lstrip("0") or "0"
+
+
+def standardize_date(value: Any) -> Optional[str]:
+    """Standardize to YYYY-MM-DD (Section 3). Keeps distinct date fields distinct upstream."""
+    value = clean_null(value)
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text[: len(fmt) + 2], fmt).date().isoformat()
+        except ValueError:
+            continue
+    return text[:10] if len(text) >= 10 else text
+
+
+def is_zero_coord(lat: Any, long: Any) -> bool:
+    """(0, 0) means 'not yet checked out', never a real location (Section 4)."""
+    lat_f, long_f = parse_number(lat), parse_number(long)
+    return lat_f is not None and long_f is not None and abs(lat_f) < 1e-9 and abs(long_f) < 1e-9
+
+
+def photo_logged_from_task_details(task_details_json: Any) -> Optional[bool]:
+    """Photo_Logged must be derived from the task_details image array, never a flag column."""
+    if task_details_json is None:
+        return None
+    try:
+        blob = json.loads(task_details_json) if isinstance(task_details_json, str) else task_details_json
+    except (json.JSONDecodeError, TypeError):
+        return None
+    images = blob.get("images") or blob.get("image") if isinstance(blob, dict) else None
+    if images is None and isinstance(blob, dict):
+        for key in blob:
+            if isinstance(blob[key], list) and "image" in key.lower():
+                images = blob[key]
+                break
+    return bool(images)
+
+
+class Exceptions:
+    """Accumulates the Exceptions_Report table (Section 7): Record_ID, Source, Reason_Code,
+    Detail, Run_Timestamp. Every check runs and logs pass/fail even on a clean run (Section 5)."""
+
+    def __init__(self, run_timestamp: str):
+        self.run_timestamp = run_timestamp
+        self.rows: Table = []
+        self.check_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"pass": 0, "fail": 0})
+
+    def flag(self, record_id: Any, source: str, reason_code: str, detail: str) -> None:
+        self.rows.append(
+            {
+                "Record_ID": record_id,
+                "Source": source,
+                "Reason_Code": reason_code,
+                "Detail": detail,
+                "Run_Timestamp": self.run_timestamp,
+            }
+        )
+        self.check_counts[reason_code]["fail"] += 1
+
+    def ok(self, reason_code: str) -> None:
+        self.check_counts[reason_code]["pass"] += 1
+
+    def summary(self) -> Dict[str, Dict[str, int]]:
+        return dict(self.check_counts)
+
+
+# =====================================================================================
+# 3. SOURCE 5 -- CONFIG MASTER (local, fully resolved)
+# =====================================================================================
+
+@dataclass
+class BusinessConstants:
+    """Numeric constants actually needed by scoring/planning code below, mirroring the
+    Configured Values read live from BO_Configuration_Sheet_v3 as of this build. Every
+    business rule still *lives* in Source 5 (Config_Normalized) per the Section 8
+    guardrail -- these are a typed, code-usable projection of it, not a replacement for it.
+    Re-derive from Config_Normalized if the sheet changes."""
+
+    # Section 1 (BO1) grade bands, % of PL_Expected
+    bo1_grade_a: float = 0.80
+    bo1_grade_b: float = 0.60
+    bo1_grade_c: float = 0.40
+    # Section 2 (BO2)
+    bo2_valid_visit_min_minutes: float = 10.0
+    bo2_coverage_grade_a: float = 1.0
+    bo2_coverage_grade_b: float = 0.7
+    bo2_coverage_grade_c: float = 0.4
+    bo2_priority_grade_a: float = 1.5
+    bo2_priority_grade_b: float = 1.0
+    bo2_priority_grade_c: float = 0.5
+    # Section 3 (BO3) aging-bucket risk weights
+    bo3_aging_weights: Dict[str, float] = field(
+        default_factory=lambda: {"0_30": 0.2, "31_60": 0.5, "61_90": 0.8, "90_plus": 1.0}
+    )
+    bo3_grade_a: float = 1.00
+    bo3_grade_b: float = 0.75
+    bo3_grade_c: float = 0.50
+    bo3_ratio_cap_low: float = 0.50
+    bo3_ratio_cap_high: float = 1.50
+    # Section 5 (BO5)
+    bo5_mega_meeting_min_farmers: int = 50
+    bo5_regular_meeting_min_farmers: int = 10
+    bo5_meeting_target_per_month: int = 2
+    bo5_onboarding_target_per_month: int = 2
+    bo5_weight_meeting: float = 0.50
+    bo5_weight_onboarding: float = 0.50
+    # Grade cutoffs -- Source 5 never defines these for BO5 at all; reusing BO1's bands
+    # for directional consistency only (see score_bo5_long_term() docstring).
+    bo5_grade_a: float = 0.80
+    bo5_grade_b: float = 0.60
+    bo5_grade_c: float = 0.40
+    # 8.11 Layer 0 (FM_Urgency) -- Pacing_Buffer_Days. NOT a guessed default like the
+    # grade-cutoff reuses above -- confirmed directly by the user 2026-08-06 ("at least
+    # one [meeting] in 15 days"). See compute_fm_urgency().
+    pacing_buffer_days: int = 15
+    # Section 6 -- DC exclusion (6.2, 6.3, 6.4 confirmed defaults)
+    min_days_since_last_visit: int = 5
+    seasonal_skip_enabled: bool = False
+    # Section 7 -- daily ranking weights (top-3 objectives)
+    rank1_weight: float = 0.40
+    rank2_weight: float = 0.35
+    rank3_weight: float = 0.25
+    # Section 8 -- capacity
+    max_objectives_per_day: int = 3
+    max_long_cycle_per_day: int = 1
+    field_minutes_per_day: int = 7 * 60
+    call_minutes_per_day: int = 60
+    call_duration_min: int = 10
+    visit_duration_min: int = 45
+    visit_duration_max: int = 60
+    meeting_duration_min: int = 180
+    onboarding_duration_min: int = 120
+    daily_cap_visits: int = 6
+    daily_cap_outstanding: int = 4
+    daily_cap_pl: int = 5
+    weekly_cap_long_term: int = 2
+    daily_travel_cap_km: float = 80.0
+    monthly_travel_cap_km: float = 1600.0  # 8.9
+    total_capacity_min: int = 480  # 8.2 confirmed: 60 min calls + 420 min field = 480 (8hr day)
+    # 8.6 confirmed Win_Definition per objective (Outstanding = payment received ONLY,
+    # promise-to-pay removed as a qualifying win in the v3 configured value)
+    win_definitions: Dict[str, str] = field(
+        default_factory=lambda: {
+            "PL": "Order booked",
+            "Visits": "Visit completed",
+            "Outstanding": "Payment received",
+            "Sales": "Order placed",
+            "Long-Term": "Meeting held / DC onboarded",
+            # No confirmed win condition exists for this -- Source 3d tags the underlying
+            # liquidation proxy data itself Provisional pending a business definition.
+            # User-added as a 6th ranked objective (2026-08-04); do not invent a formula.
+            "Liquidation": "Config_Ambiguous -- no confirmed win definition (Source 3d Provisional)",
+        }
+    )
+    # 8.7 confirmed: contact-fatigue -- max 2 attempts per rolling 3-day window,
+    # 2-day wait after a failed call, -30% priority once attempts >= 2
+    contact_fatigue_max_attempts: int = 2
+    contact_fatigue_window_days: int = 3
+    contact_fatigue_priority_cut: float = 0.30
+    wait_after_failed_call_days: int = 2
+    # SE Incentive Policy (FY26-27)
+    wps_weight_revenue: float = 0.25
+    wps_weight_collection: float = 0.30
+    wps_weight_product_mix: float = 0.25
+    wps_weight_farmer_activity: float = 0.20
+    wps_revenue_cliff_pct: float = 0.60  # below this, Revenue AND Product Mix -> 0
+    wps_od_cap_pct: float = 0.10         # OD > 10% of trailing-12mo sales -> payout capped
+    wps_od_capped_payout_pct: float = 0.70
+    # Section 9 -- this quarter's top priority (tie-break 7.3)
+    quarter_top_priority: str = "Outstanding"
+    # 7.3 default tie-break order -- USER-SUPPLIED, not a live-computed default. Updated
+    # 2026-08-06 per the "All Parameters (1)"/2026-08-05 sheet re-sync: Outstanding
+    # Payments, Private Label, DC Visits, Long-Term Growth, Overall Sales. The source
+    # sheet's own 7.3 row left Overall Sales (BO4) unplaced ("position TBD") -- the user
+    # confirmed BO4 goes last, matching the pattern of the already-confirmed 7.4(b) all-D
+    # reorder. Liquidation (user-added 6th objective, no confirmed scoring formula
+    # anywhere in Source 5) stays last of all -- see win_definitions for the honest-gap
+    # handling.
+    default_objective_priority: Tuple[str, ...] = ("Outstanding", "PL", "Visits", "Long-Term", "Sales", "Liquidation")
+    # 7.4 rule (b), confirmed (not just default-applied like rule (a)): if every BO is
+    # graded D, switch to this order instead of the normal ranking.
+    all_d_override_order: Tuple[str, ...] = ("Visits", "PL", "Sales", "Outstanding", "Long-Term")
+    # 4.4 BO4 growth target multipliers -- REPLACED 2026-08-06 (GR-25): the flat 1.05
+    # figure previously here matched nothing in Source 5 and has been retired. Real
+    # category-specific values from the "All Parameters" sheet's confirmed answer (4.4).
+    # Field Crop deliberately absent -- the sheet itself says "depends on seasonality (no
+    # fixed multiplier given)"; GR-20 requires this be flagged provisional, not guessed.
+    bo4_category_multipliers: Dict[str, float] = field(
+        default_factory=lambda: {"cattle feed": 1.20, "crop nutrition": 1.15, "crop protection": 1.20}
+    )
+    # 4.2's Total_Working_Days_In_Period -- no confirmed non-working-day calendar exists
+    # anywhere in this pipeline, so calendar days is used as a documented simplification.
+    bo4_momentum_period_days: int = 30
+    # 4.5 grade cut-offs -- Source 5 says "keep current cut-offs" without enumerating real
+    # numbers ("engineering should confirm the exact live A/B/C/D values"). Reuses BO1's
+    # confirmed 0.80/0.60/0.40 bands for directional consistency only (same treatment
+    # BO3's live-proxy already got) -- not an independently confirmed BO4 cutoff.
+    bo4_grade_a: float = 0.80
+    bo4_grade_b: float = 0.60
+    bo4_grade_c: float = 0.40
+    # --- New Daily Task Assignment Formula (8.9-8.12) + Guardrails, synced 2026-08-06 ---
+    max_daily_tasks: int = 5  # 8.10 -- hard cap, supersedes the old per-objective caps
+    # 8.5 qualification thresholds (overridden values from the 2026-08-05 sheet)
+    qualify_visits_days_since: int = 14
+    qualify_outstanding_balance: float = 20000.0
+    # 8.5 also specifies "overdue >= 15 days" -- NOT independently computable from
+    # dc_datamart's confirmed schema (no per-DC days-overdue field, only aggregate aging
+    # buckets / weighted_avg_repayment_days). Balance leg only; flagged in Safety_Flags
+    # rather than silently dropped or guessed at (GR-21 fail-safe pattern).
+    qualify_outstanding_days_overdue: int = 15
+    qualify_pl_max_orders_30d: int = 3  # not computable live yet -- see Qualify_PL docstring
+    qualify_longterm_pl_lookback_days: int = 90
+    # 8.12 bundling weights reuse 7.2's rank1/2/3 weights (0.40/0.35/0.25) applied per-DC
+    # instead of per-SE-objective, per Layer 3 of the new formula.
+    fm_min_meetings_per_month: int = 2  # 5.3/8.11 -- no live Farmer_Meetings source yet
+
+
+def load_config(
+    all_params_csv: Path = CONFIG_ALL_PARAMS_CSV,
+    se_incentive_csv: Path = CONFIG_SE_INCENTIVE_CSV,
+) -> Tuple[Table, Exceptions]:
+    """Source 5 -> Config_Normalized: flat key-value, one row per BO parameter."""
+    exc = Exceptions(utc_now_iso())
+    rows: Table = []
+    section = None
+    for path, kind in ((all_params_csv, "all_parameters"), (se_incentive_csv, "se_incentive_policy")):
+        if not path.exists():
+            exc.flag(str(path), "Source5", "Config_File_Missing", f"{kind} config file not found")
+            continue
+        with path.open(newline="", encoding="utf-8") as f:
+            reader = list(csv.reader(f))
+        header = None
+        for raw in reader:
+            if not any(c.strip() for c in raw):
+                continue
+            if raw[0].strip().startswith("Section "):
+                section = raw[0].strip()
+                continue
+            if raw[0].strip() in ("Section", "Ref#"):
+                header = [h.strip() for h in raw]
+                continue
+            if header is None:
+                continue
+            record = dict(zip(header, raw))
+            key = record.get("Q#") or record.get("Ref#") or ""
+            if not key:
+                continue
+            configured_value = record.get("Configured Value (Business Decision)") or record.get("Formula / Slabs")
+            rows.append(
+                {
+                    "Kind": kind,
+                    "Section": section,
+                    "Param_Key": key,
+                    "Parameter": record.get("Parameter / Topic") or record.get("Parameter"),
+                    "Configured_Value": clean_null(configured_value),
+                    "Formula": record.get("Calculation Formula / Logic") or record.get("Formula / Slabs"),
+                    "Status": record.get("Status"),
+                }
+            )
+    blank = [r for r in rows if not r["Configured_Value"]]
+    for row in blank:
+        exc.flag(row["Param_Key"], "Source5", "Config_Value_Blank", f"{row['Parameter']} has no resolved value")
+    exc.ok("Config_Completeness") if not blank else None
+    if not rows:
+        exc.flag("ALL", "Source5", "Config_Empty", "No config rows parsed from Source 5 CSVs")
+    return rows, exc
+
+
+# =====================================================================================
+# 4. SOURCE 2 -- DC MASTER WITH RANK (local, DC_RAnk.csv)
+# =====================================================================================
+
+COHORT_BANDS = {
+    "Strategic": (1, 1000),
+    "Growth": (1001, 3000),
+    "Opportunity": (3001, 5545),
+}
+
+
+def load_dc_master(path: Path = DC_MASTER_CSV) -> Tuple[Table, Exceptions]:
+    exc = Exceptions(utc_now_iso())
+    out: Table = []
+    if not path.exists():
+        exc.flag(str(path), "Source2", "DC_Master_Missing", "DC_RAnk.csv not found")
+        return out, exc
+
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        seen_ids = set()
+        for i, row in enumerate(reader):
+            dc_id = normalize_id(row.get("Partner Id"))
+            if dc_id is None:
+                exc.flag(i, "Source2", "DC_ID_Missing", "Row has no Partner Id")
+                continue
+            if dc_id in seen_ids:
+                exc.flag(dc_id, "Source2", "Duplicate_DC_ID", "Partner Id repeats within DC Master")
+            seen_ids.add(dc_id)
+
+            cohort = (clean_null(row.get("Cohort")) or "").strip()
+            raw_rank = clean_null(row.get("Rank"))
+            rank_numeric = parse_number(raw_rank) if cohort != "Long Tail" else None
+            if cohort in COHORT_BANDS and rank_numeric is not None:
+                lo, hi = COHORT_BANDS[cohort]
+                if not (lo <= rank_numeric <= hi):
+                    exc.flag(dc_id, "Source2", "Cohort_Rank_Mismatch", f"Rank {rank_numeric} outside {cohort} band {lo}-{hi}")
+                else:
+                    exc.ok("Cohort_Rank_Consistency")
+            elif cohort == "Long Tail" and raw_rank not in (None, "Long Tail"):
+                exc.flag(dc_id, "Source2", "Cohort_Rank_Mismatch", "Long Tail cohort should carry text placeholder Rank")
+
+            total_score = parse_number(row.get("TOTAL SCORE"))
+            unscored = cohort == "Long Tail" or total_score == 0.0
+
+            # "TOP SE PL State" is a mislabeled column: it holds the assigned SE's email,
+            # not a state. Read by position/content, not header name (Section 2 note).
+            assigned_se_email = clean_null(row.get("TOP SE PL State"))
+            has_assigned_se = assigned_se_email is not None
+            if not has_assigned_se:
+                exc.flag(dc_id, "Source2", "Unassigned_DC", "DC has no SE assignment; excluded from any daily plan")
+            else:
+                exc.ok("Unassigned_DC_Check")
+
+            out.append(
+                {
+                    "DC_ID": dc_id,
+                    "DC_Name": clean_null(row.get("Partner Name")),
+                    "Node": clean_null(row.get("node_name")),
+                    "State": clean_null(row.get("state_name")),
+                    "Rank": rank_numeric if rank_numeric is not None else clean_null(raw_rank),
+                    "Cohort": cohort or None,
+                    "Total_Score": None if unscored else total_score,
+                    "Total_Score_Unscored": unscored,
+                    "Assigned_SE_Email": assigned_se_email,
+                    "Has_Assigned_SE": has_assigned_se,
+                    "NRV_FY2526": parse_number(row.get("NRV FY-25-26")),
+                    "GM_FY2526": parse_number(row.get("GM FY-25-26")),
+                    "GM_Percent": parse_number(row.get("GM%")),
+                    "PL_Percent": parse_number(row.get("PL%")),
+                    "Avg_Repayment_Days": parse_number(row.get("Avg Repayment days")),
+                    "Credit_Score": parse_number(row.get("Credit Score")),
+                    "In_Scope_Flag": None,  # resolved in apply_dc_exclusion_rules() once Source 4 status is known
+                    "Latitude": None,       # filled from Geo_Mapping_Normalized (1c) join
+                    "Longitude": None,
+                    "DC_Status": None,      # filled from Source 4 active-status cross-check
+                }
+            )
+    if not any(r for r in exc.rows if r["Reason_Code"] == "Duplicate_DC_ID"):
+        exc.ok("Duplicate_DC_ID")
+    return out, exc
+
+
+def apply_dc_exclusion_rules(
+    dc_master: Table, exc: Exceptions, constants: BusinessConstants, last_visit_by_dc: Dict[str, str], today: str
+) -> None:
+    """Section 6: rules that remove a DC from consideration entirely.
+    6.4 (Agent-Determined): always block Legal_Hold; Credit_Blocked/Blacklisted are
+    evaluated live elsewhere (see resolve_full_block), not auto-blocked here.
+    6.2 (confirmed default): exclude a DC from lists if visited within the last 5 days."""
+    today_dt = datetime.fromisoformat(today)
+    for dc in dc_master:
+        legal_hold = dc.get("DC_Status") == "Legal_Hold"
+        last_visit = last_visit_by_dc.get(dc["DC_ID"])
+        days_since_visit = None
+        if last_visit:
+            days_since_visit = (today_dt - datetime.fromisoformat(last_visit)).days
+        too_recent = days_since_visit is not None and days_since_visit < constants.min_days_since_last_visit
+        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent
+        dc["In_Scope_Flag"] = in_scope
+        dc["Days_Since_Last_Visit"] = days_since_visit
+        dc["Last_Visit_Date"] = last_visit
+        if legal_hold:
+            exc.flag(dc["DC_ID"], "Source2", "DC_Legal_Hold_Blocked", "DC under Legal_Hold, excluded from all lists")
+
+
+SQL_LIVE_DC_ROSTER = """
+SELECT sap_partner_id, partner_name, node_name, state_name, sales_rep_email, lat_2, long_2
+FROM input_partner_details
+WHERE active = 'true' AND sap_partner_id IS NOT NULL
+"""
+
+SQL_CANONICAL_NODE_MAPPING = """
+SELECT DISTINCT state, node
+FROM input_node_mapping
+WHERE state <> 'State' AND state IS NOT NULL AND state <> ''
+"""
+
+
+def supplement_dc_master_from_live(dc_master: Table, client, exc: Exceptions) -> None:
+    """Confirmed live 2026-08-09: DC_RAnk.csv (Source 2's local export) is missing real,
+    active DCs that exist live in input_partner_details -- 20 entire nodes' worth across
+    9 states, confirmed against the canonical node-state master (input_node_mapping,
+    113 nodes/11 states, matches Metabase exactly) and cross-checked DC-by-DC (e.g. Agra
+    has 2 real live DCs, zero in the local export). This silently excluded those DCs
+    from every NODE/STATE-scoped plan.
+
+    Deliberately scoped to ONLY those ~20 fully-missing CANONICAL nodes, not every
+    individually-missing DC network-wide -- a live check found DC_RAnk.csv is actually
+    missing 9,096 of 19,069 active DCs (48%), including plenty within nodes it already
+    covers. Supplementing all of those would nearly double DC_Master's size on every run
+    -- out of scope here by user decision 2026-08-09.
+
+    "Missing node" is judged against input_node_mapping (the canonical 113-node master,
+    same table Metabase's own count comes from), NOT simply "not already in DC_Master" --
+    a first version used the latter and it was wrong: input_partner_details.node_name
+    carries a lot of non-canonical junk (virtual/cluster labels like 'AHMEDNAGAR_VIRTUAL',
+    'Do not Use', 'Frontier market_Varanasi_Pindra') that were never real nodes to begin
+    with, and "not already in DC_Master" let all of that through as if it were a
+    legitimate gap. Cross-referencing the canonical list first is what correctly admits
+    real missing nodes (Agra, Cuttack, West Medinipur, etc., including oddly-named but
+    genuinely canonical ones like 'Potato Project Virtual') while rejecting the noise.
+
+    Appends each qualifying live-active DC with real Node/State/Assigned_SE_Email/geo
+    from input_partner_details, but Rank/Cohort/Total_Score/NRV/GM/PL%/Avg_Repayment_
+    Days/Credit_Score all left None -- DC_RAnk.csv is the only source for those, so a
+    supplemented DC is honestly unscored (Total_Score_Unscored=True), never a fabricated
+    rank. Every added DC is individually flagged DC_Supplemented_From_Live so it's
+    traceable in the exceptions report, not silent. Mutates dc_master in place (appends)
+    -- called after DC_RAnk.csv's own load_dc_master() and before apply_dc_exclusion_
+    rules(), so a supplemented DC still goes through the same Has_Assigned_SE /
+    Legal_Hold / recent-visit scoping as every other DC."""
+    existing_ids = {dc["DC_ID"] for dc in dc_master}
+    existing_nodes = {dc["Node"].strip().upper() for dc in dc_master if dc.get("Node")}
+    try:
+        canonical_rows = client.execute_sql(REDSHIFT_DB_ID, SQL_CANONICAL_NODE_MAPPING)
+        canonical_nodes = {r["node"].strip().upper() for r in canonical_rows if r.get("node")}
+        live_rows = client.execute_sql(REDSHIFT_DB_ID, SQL_LIVE_DC_ROSTER)
+    except Exception as e:
+        exc.flag("ALL", "Source2", "DC_Live_Supplement_Failed", f"{type(e).__name__}: {e}")
+        return
+
+    missing_canonical_nodes = canonical_nodes - existing_nodes
+
+    added = 0
+    for row in live_rows:
+        dc_id = normalize_id(row.get("sap_partner_id"))
+        node = clean_null(row.get("node_name"))
+        if dc_id is None or dc_id in existing_ids:
+            continue
+        if not node or node.strip().upper() not in missing_canonical_nodes:
+            continue  # only real canonical nodes fully missing from DC_Master qualify -- not junk labels, not individually-missing DCs in a covered node
+        existing_ids.add(dc_id)
+        lat, lon = parse_number(row.get("lat_2")), parse_number(row.get("long_2"))
+        assigned_se_email = clean_null(row.get("sales_rep_email"))
+        dc_master.append(
+            {
+                "DC_ID": dc_id,
+                "DC_Name": clean_null(row.get("partner_name")),
+                "Node": clean_null(row.get("node_name")),
+                "State": clean_null(row.get("state_name")),
+                "Rank": None,
+                "Cohort": None,
+                "Total_Score": None,
+                "Total_Score_Unscored": True,
+                "Assigned_SE_Email": assigned_se_email,
+                "Has_Assigned_SE": assigned_se_email is not None,
+                "NRV_FY2526": None,
+                "GM_FY2526": None,
+                "GM_Percent": None,
+                "PL_Percent": None,
+                "Avg_Repayment_Days": None,
+                "Credit_Score": None,
+                "In_Scope_Flag": None,  # resolved in apply_dc_exclusion_rules(), same as every other DC
+                "Latitude": lat,
+                "Longitude": lon,
+                "DC_Status": None,
+            }
+        )
+        exc.flag(dc_id, "Source2", "DC_Supplemented_From_Live",
+                  f"Node '{node}' entirely missing from DC_RAnk.csv (local export) but active in "
+                  "input_partner_details (live) -- added unscored (no Rank/Cohort/financials available "
+                  "outside DC_RAnk.csv)")
+        added += 1
+    if added:
+        logger.info("  Supplemented %d DC(s) missing from DC_RAnk.csv with live input_partner_details data", added)
+
+
+# =====================================================================================
+# 5. SOURCE 6 -- AOP & TARGET DATA (local, Niyojan dashboard export)
+# =====================================================================================
+
+def load_aop_targets(path: Path = AOP_CSV) -> Tuple[Table, Exceptions]:
+    """Source 6 is a wide, messy dashboard export with no confirmed field structure
+    (doc: 'Fields: SE_ID/DC_ID, Month, Metric, AOP_Target [FILL IN exact structure]',
+    'not yet live-verified'). Confirmed live 2026-08-09: the real 106-column export has
+    NO DC/SE dimension anywhere -- finest grain is Node x Material/SKU x Month. This
+    loader locates the real header row defensively and, as of 2026-08-09, also captures
+    each row's Segment (needed to isolate PRIVATE LABEL rows) and its real GMV (AOP)
+    value per month -- previously only Node/Metric/Status metadata was captured, with no
+    usable number anywhere in the output. Every row still tagged Provisional -- it must
+    not be trusted at the same confidence as the confirmed sources until the business
+    confirms the exact layout. See aop_pl_target_by_node() for how a per-DC figure gets
+    derived from this Node-level data (an allocation estimate, not a confirmed target)."""
+    exc = Exceptions(utc_now_iso())
+    out: Table = []
+    if not path.exists():
+        exc.flag(str(path), "Source6", "AOP_File_Missing", "Niyojan planning file not found")
+        return out, exc
+
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = list(csv.reader(f))
+    header_idx = next((i for i, r in enumerate(reader) if r and r[0].strip() == "Node Key"), None)
+    if header_idx is None:
+        exc.flag(str(path), "Source6", "AOP_Structure_Unrecognized", "Could not locate 'Node Key' header row")
+        return out, exc
+
+    def _norm_header(h: str) -> str:
+        # Raw headers carry embedded newlines/extra whitespace (e.g. 'GMV \nAug 26
+        # (AOP)') -- collapse before matching by name, so a column-order reshuffle in a
+        # future re-export (this file has already broken the agent's default path once
+        # via a filename-suffix change, see AGENT_OPERATING_PROMPTS.md) doesn't silently
+        # misread values via a hardcoded index.
+        return re.sub(r"\s+", " ", h).strip()
+
+    header = [_norm_header(h) for h in reader[header_idx]]
+    # Only Q2 FY26-27 (Jul/Aug/Sep 2026) months exist as real AOP columns in this export;
+    # aop_pl_target_by_node() falls back to the quarterly total /3 for any plan_date
+    # outside this range.
+    gmv_aop_cols = {7: "GMV July 26 (AOP)", 8: "GMV Aug 26 (AOP)", 9: "GMV Sept 26 (AOP)"}
+    for i, raw in enumerate(reader[header_idx + 1 :], start=header_idx + 1):
+        if not any(c.strip() for c in raw):
+            continue
+        record = dict(zip(header, raw))
+        row = {
+            "Node_Key": clean_null(record.get("Node Key")),
+            "State": clean_null(record.get("State")),
+            "Node": clean_null(record.get("Node")),
+            "Zone": clean_null(record.get("Zone")),
+            "RBM": clean_null(record.get("RBM")),
+            "Segment": clean_null(record.get("Segment")),
+            "Metric": clean_null(record.get("Material Name") or record.get("Category")),
+            "AOP_Version": "unverified_local_export",
+            "Last_Adjusted_Date": None,
+            "Status": "Provisional",
+        }
+        for month_num, col_name in gmv_aop_cols.items():
+            row[f"GMV_AOP_Month_{month_num}"] = parse_number(record.get(col_name))
+        row["GMV_AOP_Q2"] = parse_number(record.get("GMV Q2 26 (AOP)"))
+        out.append(row)
+    exc.flag("ALL", "Source6", "AOP_Freshness_Unknown", "Last_Adjusted_Date not derivable from this export; treat AOP figures as Provisional")
+    return out, exc
+
+
+def aop_pl_target_by_node(aop_targets: Table, plan_date: str) -> Dict[str, float]:
+    """Real Node-level PL (Private Label) AOP target for plan_date's month, summed across
+    every PRIVATE LABEL-segment row for that Node -- NOT per-DC/per-SE, the source has no
+    finer grain (see load_aop_targets docstring). Callers needing a per-DC figure must
+    allocate this down themselves (e.g. by trailing PL sales share within the Node) and
+    must label the result an estimate, not a confirmed per-DC AOP target -- see
+    planning/services.py's PL scoring block for the live allocation. Node names are
+    normalized (stripped + uppercased) before summing since the raw export carries the
+    same real node under inconsistent casing (both 'Alwar' and 'ALWAR' rows exist).
+    Falls back to the quarterly total /3 for a plan_date outside Jul-Sep 2026, the only
+    months this export actually covers -- a coarser approximation, not a missing value."""
+    month_num = datetime.fromisoformat(plan_date).date().month
+    in_quarter = month_num in (7, 8, 9)
+    totals: Dict[str, float] = {}
+    for row in aop_targets:
+        if (row.get("Segment") or "").strip().upper() != "PRIVATE LABEL":
+            continue
+        node = (row.get("Node") or "").strip().upper()
+        if not node:
+            continue
+        value = row.get(f"GMV_AOP_Month_{month_num}") if in_quarter else row.get("GMV_AOP_Q2")
+        if value is None:
+            continue
+        value = value if in_quarter else value / 3.0
+        totals[node] = totals.get(node, 0.0) + value
+    return totals
+
+
+# =====================================================================================
+# 6. SOURCES 1 / 3 / 4 -- LIVE METABASE QUERIES (real-time sync)
+# =====================================================================================
+# SQL below mirrors the confirmed join chains, table/column names and quirks documented
+# in the agent prompt (no FILTER clause on Redshift -> CASE WHEN; explicit bool casts).
+# Column names below are CONFIRMED LIVE against the direct-Redshift connection
+# (RedshiftDirectClient, 2026-08-04) via information_schema.columns -- several corrected
+# real assumptions from the doc / earlier sessions:
+#   pathik_report has no plan_execution_date column at all -- it's transaction_date.
+#   attendance_attendance's geo columns are check_in_latitude/longitude (not _lat/_long),
+#     and it also carries total_distance_travelled/osrm_match_coordinates/
+#     osrm_trip_coordinates/google_polyline -- real road-distance data, an alternative
+#     to haversine sequencing the doc left undecided (see sequence_with_distance()).
+#   Node/Block/District/State and ABM/RBM/ZBM/Growth-Manager names+emails all live
+#     directly on input_partner_details (block_name, district_name, node_name, state_name,
+#     abm, "abm email id", rbm, "rbm email id", zbm, "zbm email id", "growth manager name",
+#     "growth manager email id") -- input_se_node_mapping does NOT carry node/block/district
+#     at all (only zone, state, "p&l node"); it's a separate table keyed by
+#     sales_rep_email that only adds employee CODES (emp id se, abm e code, rbm e code,
+#     zbm e code, growth manager e code), joined in for that reason alone.
+
+def _lookback_clause(date_column: str, days: int = LOOKBACK_DAYS) -> str:
+    return f"{date_column} >= CURRENT_DATE - INTERVAL '{days} days'"
+
+
+SQL_SE_VISIT_LOG_1A = f"""
+SELECT visit_email, transaction_date AS plan_execution_date, node_name, number_of_visits
+FROM pathik_report
+WHERE {_lookback_clause('transaction_date')}
+"""
+
+SQL_TASK_NODES_1B = f"""
+SELECT
+    t.id AS task_id, t.plan_id, t.partner_id AS dc_id, t.status AS task_status,
+    t.type AS task_type, t.visit_type_id, t.visit_purpose_id,
+    p.user_id AS se_user_id, p.plan_execution_date, p.status AS plan_status, p.created_by_id,
+    u.mobile AS mobile_number, u.email AS se_email, u.is_active AS se_is_active
+FROM task_management_task t
+JOIN task_management_plan p ON p.id = t.plan_id
+JOIN users_user u ON u.id = p.user_id
+WHERE {_lookback_clause('p.plan_execution_date')}
+"""
+
+SQL_GEO_MAPPING_1C = """
+WITH se_map AS (
+    SELECT DISTINCT
+        sales_rep_email,
+        "emp id se" AS emp_id_se,
+        "abm e code" AS abm_e_code,
+        "rbm e code" AS rbm_e_code,
+        "zbm e code" AS zbm_e_code,
+        "growth manager e code" AS growth_manager_e_code
+    FROM input_se_node_mapping
+)
+SELECT
+    ipd.sap_partner_id AS dc_id, ipd.odoo_partner_id, ipd.ib_partner_id,
+    ipd.lat_2 AS latitude, ipd.long_2 AS longitude, ipd.active, ipd.sales_rep_email,
+    sm.emp_id_se, sm.abm_e_code, sm.rbm_e_code, sm.zbm_e_code, sm.growth_manager_e_code,
+    ipd.abm, ipd."abm email id" AS abm_email,
+    ipd.rbm, ipd."rbm email id" AS rbm_email,
+    ipd.zbm, ipd."zbm email id" AS zbm_email,
+    ipd."growth manager name" AS growth_manager_name, ipd."growth manager email id" AS growth_manager_email,
+    ipd.node_name AS node, ipd.block_name AS block, ipd.district_name AS district, ipd.state_name AS state
+FROM input_partner_details ipd
+LEFT JOIN se_map sm ON sm.sales_rep_email = ipd.sales_rep_email
+WHERE ipd.is_dc = true AND ipd.active = 'true'
+"""
+
+SQL_ATTENDANCE_3A = f"""
+SELECT user_id AS se_user_id, check_in_time, check_out_time,
+       check_in_latitude AS check_in_lat, check_in_longitude AS check_in_long,
+       check_out_latitude AS check_out_lat, check_out_longitude AS check_out_long,
+       google_distance, total_distance_travelled
+FROM attendance_attendance
+WHERE {_lookback_clause('check_in_time')}
+"""
+
+SQL_ACTIVE_ROSTER_4 = f"""
+SELECT
+    t.id AS task_id, p.user_id AS se_user_id, u.is_active AS se_is_active,
+    cc.partner_id AS dc_id, cc.active AS dc_active,  -- cc.id is the internal PK, NOT sap_partner_id -- confirmed live 2026-08-04
+    a.check_in_time AS punch_in_time, a.check_out_time AS punch_out_time,
+    a.check_in_latitude AS punch_in_lat, a.check_in_longitude AS punch_in_long,
+    a.check_out_latitude AS punch_out_lat, a.check_out_longitude AS punch_out_long,
+    a.total_distance_travelled,
+    td.created_at AS visit_check_in_time, td.latitude AS visit_check_in_lat,
+    td.longitude AS visit_check_in_long, td.task_details,
+    t.visit_type_id, t.status AS task_status, p.plan_execution_date
+FROM task_management_task t
+JOIN task_management_plan p ON p.id = t.plan_id
+JOIN users_user u ON u.id = p.user_id
+LEFT JOIN customer_management_customer cc ON cc.id = t.partner_id
+LEFT JOIN attendance_attendance a ON a.user_id = p.user_id AND a.check_in_time::date = p.plan_execution_date
+LEFT JOIN task_management_taskdetails td ON td.task_id = t.id
+WHERE {_lookback_clause('p.plan_execution_date')}
+"""
+
+SQL_SALES_TRANSACTIONS_3D = f"""
+SELECT sap_order_date, order_value, cancellations_flag, business_segment, order_request_id
+FROM coupon_analysis
+WHERE {_lookback_clause('sap_order_date')}
+"""
+
+# SUPERSEDES customer_management_input_outstanding entirely -- confirmed live 2026-08-04
+# that table does not exist anywhere reachable on this Redshift cluster (searched all 32
+# databases the readonly credential can see), and no separate input-backend Postgres
+# credential was available. dc_datamart (dev, Redshift -- same cluster/db as everything
+# else in Source 1c/3d) is a denormalized per-DC datamart with the same information and
+# genuinely fresh data (confirmed live: MAX(last_invoice_date) = 2026-07-30, i.e. days
+# old, not the ~2-year-stale snapshots customer_management_input_outstanding had).
+# Grain: one row per sap_partner_id, except ~100 rows (of ~14,862) have a NULL
+# sap_partner_id -- filtered out below, not a real per-DC duplicate.
+# total_outstanding/total_overdue map directly to the old current_os/current_od; the
+# aging split here (current_month_os/os_1_to_90/os_90_plus) is coarser-grained than the
+# old os_60/overdue_in_7_days but from fresh, reliable data instead of stale text fields.
+SQL_OUTSTANDING_3D = """
+SELECT sap_partner_id AS dc_id, total_outstanding, total_overdue, current_month_os,
+       os_1_to_90, os_90_plus, weighted_avg_repayment_days, last_invoice_date, is_mismatch
+FROM dc_datamart
+WHERE sap_partner_id IS NOT NULL
+"""
+
+# Full 23-column schema confirmed (supersedes the earlier 2-column partial view).
+# status='processed' is the only status that should count as a real order (Source 3d note).
+# credit_on_hold/credit_on_hold_reason feed the 6.4 Credit_Blocked case-by-case check.
+# NEW TRAP, confirmed live (not in the doc): sale_orderrequest.partner_id is the INTERNAL
+# customer_management_customer.id, NOT sap_partner_id directly -- same indirection as
+# task_management_task.partner_id (Source 4). A direct sap_partner_id filter on this table
+# silently returns zero rows. Bridge through customer_management_customer, same as 1b/4.
+SQL_ORDERS_3D = f"""
+SELECT o.id, o.amount_total, o.created_at, o.request_date, o.status, cc.partner_id AS dc_id,
+       o.created_by_id, o.sales_channel, o.payment_mode, o.credit_on_hold,
+       o.credit_on_hold_reason, o.partner_finance_status
+FROM sale_orderrequest o
+JOIN customer_management_customer cc ON cc.id = o.partner_id
+WHERE {_lookback_clause('o.created_at')}
+"""
+
+# Replaced 2026-08-06 -- hyperlocal_order (the original Source 3d liquidation proxy) has
+# NO DC/partner join key at all (columns: id, full_display_address, created_at, source,
+# status; confirmed live), so it was pulled every run and silently discarded, never
+# usable. invoice_liquidation_with_pog is real, live (max invoice_date = today,
+# confirmed), and joins directly on partner_id = sap_partner_id (no bridge table needed,
+# unlike sale_orderrequest/payments_paymenttransaction) -- confirmed live via a join to
+# input_partner_details. Per GR-24 (Guardrails sheet): a confirmed data source is not a
+# confirmed formula -- this feeds normalize_liquidation() for visibility only, NEVER a
+# score/grade, until a Liquidation_Rate formula is signed off.
+SQL_LIQUIDATION_3D = f"""
+SELECT partner_id, invoice_date, billed_qty, liquidated_qty, business_category, net_billed_amount
+FROM invoice_liquidation_with_pog
+WHERE {_lookback_clause('invoice_date')}
+"""
+
+# Source 3f -- Payments (new). Join key customer_id -> partner_id is NOT yet proven to be
+# the same ID space; every derived Last_Payment_Date must be flagged Join_Key_Unconfirmed.
+# Join key CONFIRMED live 2026-08-06: payments_paymenttransaction.customer_id matches
+# customer_management_customer.id (the internal PK), NOT partner_id/sap_partner_id
+# directly -- 521,345 of 538,039 rows (96.9%) matched via .id, 0 matched via .partner_id.
+# Same bridging pattern as sale_orderrequest.partner_id (SQL_ORDERS_3D) -- bridge through
+# customer_management_customer to get sap_partner_id, exactly like Orders.
+SQL_PAYMENTS_3F = f"""
+SELECT cc.partner_id AS dc_id, p.id, p.status, p.created_at, p.reference_number,
+       p.payment_reference_id, p.pg_payment_mode, p.is_va_payment
+FROM payments_paymenttransaction p
+JOIN customer_management_customer cc ON cc.id = p.customer_id
+WHERE {_lookback_clause('p.created_at')}
+"""
+
+# Source 3g -- DC Club Scheme (new). dc_mapping_club_scheme's presence-by-partner_id is a
+# PLAUSIBLE, not confirmed, proxy for enrollment (no explicit is_member/status flag exists).
+# dc_club_slabs defines tier rules (turnover band -> club), not a per-DC assignment --
+# actual tier must be computed downstream against each DC's turnover from Source 3d.
+SQL_DC_CLUB_MAPPING_3G = """
+SELECT partner_id AS dc_id, partner_name, node, state, sales_rep_email, abm, rbm
+FROM dc_mapping_club_scheme
+"""
+
+SQL_DC_CLUB_SLABS_3G = """
+SELECT club, turnover_ll, turnover_ul, tour, tod_percent, score
+FROM dc_club_slabs
+"""
+
+
+def load_live_sources(client: MetabaseClient) -> Tuple[Dict[str, Table], Exceptions]:
+    """Sources 1, 3, 4. Returns empty tables (with an Exceptions_Report entry) per query
+    that couldn't run, instead of raising -- a local-only run should still complete."""
+    exc = Exceptions(utc_now_iso())
+    results: Dict[str, Table] = {}
+    queries = [
+        ("SE_Visit_Log_1a", REDSHIFT_DB_ID, SQL_SE_VISIT_LOG_1A),
+        ("Task_Nodes_1b", INPUT_BACKEND_DB_ID, SQL_TASK_NODES_1B),
+        ("Geo_Mapping_1c", REDSHIFT_DB_ID, SQL_GEO_MAPPING_1C),
+        ("Attendance_3a", INPUT_BACKEND_DB_ID, SQL_ATTENDANCE_3A),
+        ("Active_Roster_4", INPUT_BACKEND_DB_ID, SQL_ACTIVE_ROSTER_4),
+        ("Sales_Transactions_3d", REDSHIFT_DB_ID, SQL_SALES_TRANSACTIONS_3D),
+        ("Outstanding_3d", REDSHIFT_DB_ID, SQL_OUTSTANDING_3D),  # dc_datamart, see SQL_OUTSTANDING_3D docstring
+        ("Orders_3d", INPUT_BACKEND_DB_ID, SQL_ORDERS_3D),
+        ("Liquidation_3d", REDSHIFT_DB_ID, SQL_LIQUIDATION_3D),
+        ("Payments_3f", INPUT_BACKEND_DB_ID, SQL_PAYMENTS_3F),
+        ("DC_Club_Mapping_3g", REDSHIFT_DB_ID, SQL_DC_CLUB_MAPPING_3G),
+        ("DC_Club_Slabs_3g", REDSHIFT_DB_ID, SQL_DC_CLUB_SLABS_3G),
+    ]
+    if not client.configured:
+        exc.flag(
+            "ALL", "Source1/3/4", "Metabase_Not_Configured",
+            "METABASE_URL/METABASE_API_KEY not set -- Sources 1, 3 and 4 skipped this run; "
+            "normalized output covers Sources 2/5/6 (local files) only",
+        )
+        return {name: [] for name, _, _ in queries}, exc
+
+    for name, db_id, sql in queries:
+        # Per-query start/done logging -- previously only "4/6 loading Sources 1/3/4..."
+        # was logged for all 12 queries combined, so a hang anywhere in this loop gave no
+        # indication of which query was stuck (see REDSHIFT_STATEMENT_TIMEOUT_MS above).
+        start = time.monotonic()
+        logger.info("  4/6 querying %s...", name)
+        try:
+            results[name] = client.execute_sql(db_id, sql)
+            exc.ok(f"Live_Pull_{name}")
+            logger.info("  4/6 %s: %d rows in %.1fs", name, len(results[name]), time.monotonic() - start)
+        except Exception as e:  # network/permission/SQL errors -> quarantine, don't crash the run
+            exc.flag(name, "Source1/3/4", "Live_Pull_Failed", f"{type(e).__name__}: {e}")
+            results[name] = []
+            logger.warning("  4/6 %s FAILED after %.1fs: %s: %s", name, time.monotonic() - start, type(e).__name__, e)
+
+    return results, exc
+
+
+# =====================================================================================
+# 7. NORMALIZATION -- assemble Attendance / Visits / Sales tables (Sections 4, 7 output schema)
+# =====================================================================================
+
+def normalize_attendance(raw_attendance: Table, exc: Exceptions) -> Table:
+    out: Table = []
+    for row in raw_attendance:
+        check_in, check_out = row.get("check_in_time"), row.get("check_out_time")
+        status = "Open_Shift" if check_in and not check_out else "Complete"
+        if check_in and check_out and str(check_out) < str(check_in):
+            exc.flag(row.get("se_user_id"), "Source3a", "Attendance_Out_Before_In", "punch_out before punch_in")
+            status = "Invalid"
+        else:
+            exc.ok("Attendance_Consistency")
+        out_zero = is_zero_coord(row.get("check_out_lat"), row.get("check_out_long"))
+        out.append(
+            {
+                "SE_ID": row.get("se_user_id"),
+                "Date": standardize_date(check_in),
+                "Punch_In_Time": check_in,
+                "Punch_Out_Time": check_out,
+                "Punch_In_Lat": parse_number(row.get("check_in_lat")),
+                "Punch_In_Long": parse_number(row.get("check_in_long")),
+                "Punch_Out_Lat": None if out_zero else parse_number(row.get("check_out_lat")),
+                "Punch_Out_Long": None if out_zero else parse_number(row.get("check_out_long")),
+                "Attendance_Status": status,
+            }
+        )
+    return out
+
+
+def normalize_visits(active_roster: Table, task_nodes: Table, config_index: Dict[str, Any], exc: Exceptions) -> Table:
+    """Visits_Normalized: check-in + type + geo, kept at per-visit grain (Section 4/7)."""
+    # visit_type_id -> which fields are expected to be non-null (Section 4 known trap)
+    NO_PARTNER_TYPES = {3, 4, 6}  # External Meeting, Node/Warehouse Visit, Lead Generation
+    seen_keys = set()
+    out: Table = []
+    for row in active_roster:
+        vtype = row.get("visit_type_id")
+        dc_id = normalize_id(row.get("dc_id"))
+        if vtype == 1 and dc_id is None:
+            exc.flag(row.get("task_id"), "Source3b", "Null_Partner_Anomaly", "DC Visit with null partner_id")
+        elif vtype in NO_PARTNER_TYPES and dc_id is not None:
+            exc.ok("Null_Partner_By_Visit_Type")
+
+        check_in = row.get("visit_check_in_time")
+        se_id = row.get("se_user_id")
+        date = standardize_date(row.get("plan_execution_date"))
+        key = (se_id, dc_id, date)
+        if key in seen_keys:
+            exc.flag(key, "Source3b", "Duplicate_Visit", "Repeated (SE_ID, DC_ID, Date) in Visits")
+        else:
+            seen_keys.add(key)
+            exc.ok("Duplicate_Visit")
+
+        photo_logged = photo_logged_from_task_details(row.get("task_details"))
+        duration_min_cfg = parse_number(config_index.get("2.1_valid_visit_duration_min")) or 10.0
+        valid_visit = bool(photo_logged) if photo_logged is not None else None
+        # Visit_Duration_Minutes: no confirmed per-visit source (Section 4) -- never invented.
+        zero_coord = is_zero_coord(row.get("visit_check_in_lat"), row.get("visit_check_in_long"))
+
+        out.append(
+            {
+                "SE_ID": se_id,
+                "DC_ID": dc_id,
+                "Date": date,
+                "Visit_Check_In_Time": check_in,
+                "Visit_Duration_Minutes": "Config_Ambiguous",
+                "Photo_Logged": photo_logged,
+                "Valid_Visit_Flag": valid_visit,
+                "Visit_Type_ID": vtype,
+                "Visit_Check_In_Lat": None if zero_coord else parse_number(row.get("visit_check_in_lat")),
+                "Visit_Check_In_Long": None if zero_coord else parse_number(row.get("visit_check_in_long")),
+                "Task_Status": row.get("task_status"),
+            }
+        )
+    return out
+
+
+def normalize_sales_transactions(
+    sales_raw: Table, outstanding_raw: Table, orders_raw: Table, exc: Exceptions
+) -> Tuple[Table, Dict[str, Dict[str, Any]]]:
+    """Sales_Transactions_Normalized: daily grain, negatives kept & tagged (Section 4/7).
+    Also returns dc_financials, one row per DC, built from Orders (23 cols) and
+    dc_datamart (the Outstanding replacement, see SQL_OUTSTANDING_3D -- confirmed live
+    one row per sap_partner_id, no dedup-by-latest needed the way the old
+    customer_management_input_outstanding required). Orders' credit_on_hold/
+    credit_on_hold_reason are the confirmed data source for the 6.4 Credit_Blocked
+    case-by-case check."""
+    out: Table = []
+    dc_financials: Dict[str, Dict[str, Any]] = {}
+
+    for row in outstanding_raw:
+        dc_id = normalize_id(row.get("dc_id"))
+        if not dc_id:
+            continue
+        fin = dc_financials.setdefault(dc_id, {})
+        fin["Current_Outstanding"] = parse_number(row.get("total_outstanding"))
+        fin["Current_Overdue"] = parse_number(row.get("total_overdue"))
+        fin["Current_Month_OS"] = parse_number(row.get("current_month_os"))
+        fin["OS_1_To_90"] = parse_number(row.get("os_1_to_90"))
+        fin["OS_90_Plus"] = parse_number(row.get("os_90_plus"))
+        fin["Weighted_Avg_Repayment_Days"] = parse_number(row.get("weighted_avg_repayment_days"))
+        fin["Outstanding_Last_Invoice_Date"] = standardize_date(row.get("last_invoice_date"))
+        fin["Outstanding_Is_Mismatch"] = bool(row.get("is_mismatch"))
+    exc.ok("Outstanding_Datamart_Cast")
+
+    latest_processed_order: Dict[str, Dict[str, Any]] = {}
+    latest_order_any_status: Dict[str, Dict[str, Any]] = {}
+    for row in orders_raw:
+        dc_id = normalize_id(row.get("dc_id"))
+        if not dc_id:
+            continue
+        created = row.get("created_at") or ""
+        if dc_id not in latest_order_any_status or created > (latest_order_any_status[dc_id].get("created_at") or ""):
+            latest_order_any_status[dc_id] = row
+        if row.get("status") == "processed":
+            if dc_id not in latest_processed_order or created > (latest_processed_order[dc_id].get("created_at") or ""):
+                latest_processed_order[dc_id] = row
+    for dc_id, row in latest_processed_order.items():
+        fin = dc_financials.setdefault(dc_id, {})
+        fin["Last_Order_Date"] = standardize_date(row.get("created_at"))
+        fin["Last_Order_Value"] = parse_number(row.get("amount_total"))
+    for dc_id, row in latest_order_any_status.items():
+        # credit_on_hold can apply even without a processed order -- checked on the DC's
+        # most recent order of any status, not just processed ones.
+        fin = dc_financials.setdefault(dc_id, {})
+        fin["Credit_On_Hold"] = row.get("credit_on_hold") in (True, "true", "t", 1)
+        fin["Credit_On_Hold_Reason"] = row.get("credit_on_hold_reason")
+        fin["Partner_Finance_Status"] = row.get("partner_finance_status")
+
+    for row in sales_raw:
+        order_value = parse_number(row.get("order_value"))
+        cancelled = row.get("cancellations_flag") in (True, "true", "True", "t", 1)
+        tag = None
+        if order_value is not None and order_value < 0:
+            tag = "Return_Credit"
+            exc.ok("Negative_Billed_Amount_Tagged")
+        out.append(
+            {
+                "Date": standardize_date(row.get("sap_order_date")),
+                "GMV": order_value,
+                "Cancelled": cancelled,
+                "Business_Segment": row.get("business_segment"),
+                "Order_Request_ID": row.get("order_request_id"),
+                "Amount_Tag": tag,
+            }
+        )
+    return out, dc_financials
+
+
+def normalize_payments(payments_raw: Table, exc: Exceptions) -> Tuple[Table, Dict[str, str]]:
+    """Payments_Normalized (Source 3f): Last_Payment_Date = MAX(created_at) WHERE
+    status='SUCCESS', per DC. Join key CONFIRMED live 2026-08-06: SQL_PAYMENTS_3F/
+    _sql_payments() now bridge payments_paymenttransaction.customer_id through
+    customer_management_customer.id -> .partner_id (sap_partner_id), same pattern as
+    Orders -- rows already carry a real dc_id, no longer Join_Key_Unconfirmed."""
+    out: Table = []
+    last_payment_by_dc: Dict[str, str] = {}
+    for row in payments_raw:
+        dc_id = normalize_id(row.get("dc_id"))
+        if not dc_id:
+            continue
+        out.append(
+            {
+                "DC_ID": dc_id,
+                "Payment_Date": standardize_date(row.get("created_at")),
+                "Status": row.get("status"),
+                "Join_Key_Unconfirmed": False,
+            }
+        )
+        if row.get("status") == "SUCCESS":
+            date = standardize_date(row.get("created_at"))
+            if date and (dc_id not in last_payment_by_dc or date > last_payment_by_dc[dc_id]):
+                last_payment_by_dc[dc_id] = date
+    exc.ok("Join_Key_Confirmed") if payments_raw else None
+    return out, last_payment_by_dc
+
+
+def normalize_dc_club(club_mapping_raw: Table, club_slabs_raw: Table, exc: Exceptions) -> Table:
+    """DC_Club_Normalized (Source 3g, new). Presence in dc_mapping_club_scheme by
+    partner_id is a PLAUSIBLE, not confirmed, proxy for enrollment (no explicit
+    is_member/status flag exists). Club_Tier is left null here -- computing it requires
+    comparing the DC's turnover (Source 3d) against dc_club_slabs, which belongs to the
+    scoring/planning layer, not this normalization step (per the doc's own guidance)."""
+    out: Table = []
+    for row in club_mapping_raw:
+        dc_id = normalize_id(row.get("dc_id"))
+        if not dc_id:
+            continue
+        out.append(
+            {
+                "DC_ID": dc_id,
+                "Is_Club_Enrolled": True,  # presence-based, unconfirmed interpretation -- see docstring
+                "Enrollment_Basis": "Presence_In_Mapping_Table_Unconfirmed",
+                "Club_Tier": None,  # computed downstream against dc_club_slabs
+                "Node": row.get("node"),
+                "State": row.get("state"),
+            }
+        )
+    if club_mapping_raw:
+        exc.flag("ALL", "Source3g", "Club_Enrollment_Flag_Unconfirmed", "presence-in-table used as enrollment proxy; no explicit is_member/status column exists")
+    return out
+
+
+def normalize_liquidation(raw: Table, exc: Exceptions) -> Table:
+    """Liquidation_Normalized (Source 3d, wired 2026-08-06 from invoice_liquidation_with_pog
+    -- see SQL_LIQUIDATION_3D for why this replaced the dead hyperlocal_order pull).
+
+    PER GR-24 (Guardrails sheet): a confirmed, DC-joinable data source is NOT a confirmed
+    formula. This function normalizes the raw invoice lines for visibility/future use --
+    it deliberately computes no Liquidation_Rate, no grade, and feeds no dc_financials or
+    BO score. Do not add scoring here without a signed-off Liquidation_Rate formula."""
+    out: Table = []
+    for row in raw:
+        dc_id = normalize_id(row.get("partner_id"))
+        if not dc_id:
+            continue
+        out.append(
+            {
+                "DC_ID": dc_id,
+                "Invoice_Date": standardize_date(row.get("invoice_date")),
+                "Billed_Qty": parse_number(row.get("billed_qty")),
+                "Liquidated_Qty": parse_number(row.get("liquidated_qty")),
+                "Business_Category": row.get("business_category"),
+                "Net_Billed_Amount": parse_number(row.get("net_billed_amount")),
+            }
+        )
+    exc.ok("Liquidation_Normalized") if raw else None
+    return out
+
+
+# =====================================================================================
+# 8. VALIDATION / SANITY CHECKS (Section 5)
+# =====================================================================================
+
+def run_cross_source_checks(dc_master: Table, geo_mapping: Table, exc: Exceptions) -> None:
+    """Geo hierarchy consistency + dual DC-active-status check (Section 5)."""
+    geo_by_dc = {g["DC_ID"]: g for g in geo_mapping if g.get("DC_ID")}
+    for dc in dc_master:
+        geo = geo_by_dc.get(dc["DC_ID"])
+        if geo is None:
+            continue
+        if dc.get("Node") and geo.get("Node") and str(dc["Node"]).strip().lower() != str(geo["Node"]).strip().lower():
+            exc.flag(dc["DC_ID"], "CrossSource", "Geo_Mapping_Conflict", f"Node '{dc['Node']}' vs canonical '{geo['Node']}' (1c)")
+        else:
+            exc.ok("Geo_Hierarchy_Consistency")
+        dc["Latitude"], dc["Longitude"] = geo.get("Latitude"), geo.get("Longitude")
+        if dc["Latitude"] is None or dc["Longitude"] is None:
+            exc.flag(dc["DC_ID"], "Source2", "Geo_Incomplete", "In-scope DC missing resolvable lat/long")
+        else:
+            exc.ok("Geo_Completeness")
+
+
+def referential_integrity_check(visits: Table, sales: Table, dc_ids: set, se_ids: set, exc: Exceptions) -> None:
+    for v in visits:
+        if v["DC_ID"] and v["DC_ID"] not in dc_ids:
+            exc.flag(v["DC_ID"], "Visits", "Referential_Integrity", "DC_ID not found in DC Master")
+        elif v["DC_ID"]:
+            exc.ok("Referential_Integrity_DC")
+        if v["SE_ID"] and se_ids and v["SE_ID"] not in se_ids:
+            exc.flag(v["SE_ID"], "Visits", "Referential_Integrity", "SE_ID not found in Active Roster")
+        elif v["SE_ID"]:
+            exc.ok("Referential_Integrity_SE")
+
+
+def valid_visit_compliance(visits: Table, exc: Exceptions) -> Dict[str, float]:
+    """% of check-ins failing the duration/photo rule, per SE (feeds BO2 downstream)."""
+    by_se: Dict[str, List[bool]] = defaultdict(list)
+    for v in visits:
+        if v["Valid_Visit_Flag"] is not None:
+            by_se[v["SE_ID"]].append(bool(v["Valid_Visit_Flag"]))
+    compliance = {}
+    for se_id, flags in by_se.items():
+        rate = sum(flags) / len(flags) if flags else 0.0
+        compliance[se_id] = rate
+        exc.ok("Valid_Visit_Compliance_Logged")
+    return compliance
+
+
+# =====================================================================================
+# 9. BO1-BO5 SCORING ENGINE (Config Section 1-5 confirmed formulas)
+# =====================================================================================
+
+def completion_multiplier(completion_rate_30d: Optional[float], sample_size: int, min_sample_size: int = 5) -> float:
+    """Tier-2 adaptive-weighting multiplier (feedback loop) -- maps a trailing-30d
+    completion rate (0.0-1.0) linearly onto [0.7, 1.3]: objectives whose assigned tasks
+    are actually getting done get a mild boost, chronically-missed ones get mildly
+    dampened, bounded either way so one bad/good week can't swing scoring by more than
+    30%. Neutral (1.0, no-op) whenever sample_size is too small to be meaningful -- never
+    reweight off a handful of data points."""
+    if completion_rate_30d is None or sample_size < min_sample_size:
+        return 1.0
+    return max(0.7, min(1.3, 0.7 + 0.6 * completion_rate_30d))
+
+
+def score_bo1_private_label(pl_value: float, pl_expected: float, c: BusinessConstants, weight_multiplier: float = 1.0) -> Dict[str, Any]:
+    if not pl_expected:
+        return {"score_pct": None, "grade": None, "reason": "PL_Expected undefined -- Config_Ambiguous"}
+    weight_multiplier = max(0.7, min(1.3, weight_multiplier))
+    pct = (pl_value / pl_expected) * weight_multiplier
+    grade = "A" if pct >= c.bo1_grade_a else "B" if pct >= c.bo1_grade_b else "C" if pct >= c.bo1_grade_c else "D"
+    reason = f"PL at {pct:.0%} of trailing baseline" if pct >= 0 else f"net PL negative this window ({pct:.0%} of baseline -- returns exceeding new PL billing)"
+    if weight_multiplier != 1.0:
+        reason += f"; completion-weighted {weight_multiplier:.2f}x"
+    return {"score_pct": pct, "grade": grade, "reason": reason}
+
+
+def score_bo2_visits(valid_visits: int, total_in_scope_dcs: int, c: BusinessConstants) -> Dict[str, Any]:
+    if not total_in_scope_dcs:
+        return {"coverage_pct": None, "grade": None, "reason": "No in-scope DCs to cover"}
+    coverage = valid_visits / total_in_scope_dcs
+    grade = (
+        "A" if coverage >= c.bo2_coverage_grade_a else
+        "B" if coverage >= c.bo2_coverage_grade_b else
+        "C" if coverage >= c.bo2_coverage_grade_c else "D"
+    )
+    return {"coverage_pct": coverage, "grade": grade}
+
+
+def score_bo3_outstanding(current_os: float, last_month_os: float, sales_growth_pct: float, c: BusinessConstants) -> Dict[str, Any]:
+    """The literal 3.1-3.6 formula -- Expected_Outstanding needs last month's outstanding
+    balance, and no historical/time-series Outstanding source exists anywhere in this
+    pipeline (dc_datamart is a current-snapshot table only), so `last_month_os` has no
+    real caller yet. Kept dormant, doc-faithful, ready for whenever that source exists --
+    see score_bo3_outstanding_live_proxy() for the live-data substitute used today."""
+    expected = last_month_os * (1 + sales_growth_pct) if last_month_os is not None else None
+    if not expected:
+        return {"ratio": None, "grade": None, "reason": "Expected_Outstanding undefined"}
+    ratio = max(min(current_os / expected, c.bo3_ratio_cap_high), c.bo3_ratio_cap_low) if expected else None
+    grade = "A" if ratio and ratio >= c.bo3_grade_a else "B" if ratio and ratio >= c.bo3_grade_b else "C" if ratio and ratio >= c.bo3_grade_c else "D"
+    return {"ratio": ratio, "grade": grade}
+
+
+def score_bo3_outstanding_live_proxy(
+    current_outstanding: Optional[float], current_overdue: Optional[float],
+    os_90_plus: Optional[float], c: BusinessConstants, weight_multiplier: float = 1.0,
+) -> Dict[str, Any]:
+    """NOT the literal 3.1-3.6 formula (see score_bo3_outstanding docstring for why) --
+    a live, per-DC substitute built entirely from dc_datamart fields that are actually
+    available today: Outstanding_Health_Pct = 1 - (Current_Overdue / Current_Outstanding),
+    i.e. what fraction of this DC's balance is NOT overdue. A DC with nothing outstanding
+    is the best case (1.0, Grade A) -- there's no payment risk to flag. Reuses the doc's
+    own 3.6 grade cutoffs (A>=100%, B>=75%, C>=50%, D<50%) against this health fraction
+    for directional consistency (A=best/healthiest, D=worst), not because it's the same
+    ratio the doc defines. os_90_plus is surfaced as a `reason` note when present -- a
+    real >90-day-overdue balance is worth flagging regardless of the overall ratio, but
+    this does NOT change the grade itself (no business-approved downgrade rule for that
+    exists yet -- never invented)."""
+    if not current_outstanding:
+        return {"score_pct": 1.0, "grade": "A", "reason": "no outstanding balance", "basis": "live_proxy_not_3_1_formula"}
+    weight_multiplier = max(0.7, min(1.3, weight_multiplier))
+    overdue_fraction = min((current_overdue or 0.0) / current_outstanding, 1.0)
+    health_pct = max(0.0, min(1.0, (1.0 - overdue_fraction) * weight_multiplier))
+    grade = "A" if health_pct >= c.bo3_grade_a else "B" if health_pct >= c.bo3_grade_b else "C" if health_pct >= c.bo3_grade_c else "D"
+    reason = f"{overdue_fraction:.0%} of outstanding is overdue"
+    if os_90_plus:
+        reason += f"; ₹{os_90_plus:,.0f} is 90+ days overdue"
+    if weight_multiplier != 1.0:
+        reason += f"; completion-weighted {weight_multiplier:.2f}x"
+    return {"score_pct": health_pct, "grade": grade, "reason": reason, "basis": "live_proxy_not_3_1_formula"}
+
+
+def score_bo4_sales_momentum(
+    momentum_this: Optional[float], momentum_prior: Optional[float], business_category: Optional[str], c: BusinessConstants,
+) -> Dict[str, Any]:
+    """4.1-4.3: Momentum = Total_Sales_This_Period / Total_Working_Days_In_Period, graded
+    against Prior_Momentum x Category_Multiplier (4.4, real per-category values -- see
+    BusinessConstants.bo4_category_multipliers). Wired 2026-08-06 from
+    invoice_liquidation_with_pog.net_billed_amount/business_category (confirmed live, see
+    GR-25). Deliberately excluded from Candidate_DCs (8.12) -- this scores a DC, it never
+    selects one; caller-side wiring only stores the result, doesn't qualify against it.
+
+    Category multiplier lookup is case-insensitive against the confirmed 4.4 categories.
+    An unmapped category (Field Crop -- seasonal factor undefined per the sheet itself,
+    or anything else business_category carries that 4.4 never priced) is an honest gap,
+    not a guess -- GR-20 requires exactly this "provisional" treatment for Field Crop."""
+    category_key = (business_category or "").strip().lower()
+    multiplier = c.bo4_category_multipliers.get(category_key)
+    if multiplier is None:
+        reason = (
+            "Field Crop growth multiplier is seasonal/undefined in Source 5 (4.4) -- provisional, pending seasonal table"
+            if category_key == "field crop"
+            else f"no 4.4 growth multiplier defined for category '{business_category}'"
+        )
+        return {"score_pct": None, "grade": None, "reason": reason, "basis": "provisional_no_multiplier"}
+    if not momentum_prior or momentum_this is None:
+        return {"score_pct": None, "grade": None, "reason": "insufficient sales history for momentum comparison", "basis": "live_from_invoice_liquidation_with_pog"}
+    momentum_target = momentum_prior * multiplier
+    if not momentum_target:
+        return {"score_pct": None, "grade": None, "reason": "momentum target is zero", "basis": "live_from_invoice_liquidation_with_pog"}
+    pct = momentum_this / momentum_target
+    grade = "A" if pct >= c.bo4_grade_a else "B" if pct >= c.bo4_grade_b else "C" if pct >= c.bo4_grade_c else "D"
+    reason = f"momentum at {pct:.0%} of target ({business_category} x{multiplier})"
+    return {"score_pct": pct, "grade": grade, "reason": reason, "basis": "live_from_invoice_liquidation_with_pog"}
+
+
+def score_bo5_long_term(meetings_held: int, dcs_onboarded: int, c: BusinessConstants) -> Dict[str, Any]:
+    """5.5: BO5_Score = 0.50 x Meeting_Score_% + 0.50 x Onboarding_Score_%. Wired
+    2026-08-06 -- meetings_held/dcs_onboarded now come from real live data (see
+    planning/services.py's _sql_bo5_meetings()/_sql_bo5_first_orders() docstrings for the
+    Mega-tier-only meeting-count interpretation this depends on). Grade added here reusing
+    BO1's 0.80/0.60/0.40 bands -- Source 5 never defines a BO5 grade cutoff at all, same
+    "reuse for directional consistency only" treatment BO3/BO4 already got."""
+    meeting_pct = meetings_held / c.bo5_meeting_target_per_month
+    onboarding_pct = dcs_onboarded / c.bo5_onboarding_target_per_month
+    score = c.bo5_weight_meeting * meeting_pct + c.bo5_weight_onboarding * onboarding_pct
+    grade = "A" if score >= c.bo5_grade_a else "B" if score >= c.bo5_grade_b else "C" if score >= c.bo5_grade_c else "D"
+    return {"score": score, "grade": grade, "meeting_pct": meeting_pct, "onboarding_pct": onboarding_pct}
+
+
+def compute_fm_urgency(meetings_held_mtd: int, days_left_in_month: int, c: BusinessConstants) -> Dict[str, Any]:
+    """8.11 Layer 0: FM_Urgency tracks whether an SE is falling behind the >=2
+    Mega-meetings/month pace (5.3) and needs one scheduled soon rather than left to
+    month-end. FM_Gap = target - held_MTD; urgent when the days left, spread evenly
+    across the still-needed meetings, drops to Pacing_Buffer_Days or less.
+
+    Wired 2026-08-06 -- shipped compute-and-log only first (verified realistic,
+    non-blanket results and proved task generation was unaffected via a byte-identical
+    before/after diff), then flipped live the same day per direct instruction: this
+    result now feeds generate_se_daily_plan()'s farmer_meeting_scheduled_today
+    parameter directly (planning/services.py). Manually_Scheduled_Today (the other half
+    of 8.11's FM_Scheduled_Today = FM_Urgency OR Manually_Scheduled_Today) still has no
+    usable data source -- the only candidate, task_management_task.visit_purpose_name,
+    is unstructured free text (confirmed live) -- and stays honestly unimplemented, not
+    guessed via string matching."""
+    fm_gap = c.bo5_meeting_target_per_month - meetings_held_mtd
+    if fm_gap <= 0:
+        return {
+            "fm_gap": fm_gap, "fm_days_left": days_left_in_month, "fm_urgency": False,
+            "reason": f"already met the {c.bo5_meeting_target_per_month}/month Mega-meeting target ({meetings_held_mtd} held MTD)",
+        }
+    pacing = days_left_in_month / max(fm_gap, 1)
+    urgent = pacing <= c.pacing_buffer_days
+    reason = (
+        f"{meetings_held_mtd}/{c.bo5_meeting_target_per_month} Mega meetings MTD, {days_left_in_month}d left in month, "
+        f"{fm_gap} still needed -- {'URGENT' if urgent else 'on pace'} "
+        f"(pacing={pacing:.1f}d/meeting vs {c.pacing_buffer_days}d buffer)"
+    )
+    return {"fm_gap": fm_gap, "fm_days_left": days_left_in_month, "fm_urgency": urgent, "reason": reason}
+
+
+def score_se_incentive_wps(
+    revenue_pct: float, collection_pct: float, product_mix_pct: float, farmer_activity_pct: float,
+    trailing_12mo_sales: float, current_os: float, c: BusinessConstants,
+) -> Dict[str, Any]:
+    """SE Incentive Policy FY26-27: 6-month Weighted Performance Score + the two
+    highest-stakes cross-BO triggers (Revenue<60% cliff, OD>10% payout cap)."""
+    if revenue_pct is not None and revenue_pct < c.wps_revenue_cliff_pct:
+        revenue_pct, product_mix_pct = 0.0, 0.0
+        cliff_triggered = True
+    else:
+        cliff_triggered = False
+
+    wps = (
+        (revenue_pct or 0) * c.wps_weight_revenue
+        + (collection_pct or 0) * c.wps_weight_collection
+        + (product_mix_pct or 0) * c.wps_weight_product_mix
+        + (farmer_activity_pct or 0) * c.wps_weight_farmer_activity
+    )
+    od_pct = (current_os / trailing_12mo_sales) if trailing_12mo_sales else None
+    od_cap_triggered = od_pct is not None and od_pct > c.wps_od_cap_pct
+    payout_cap_pct = c.wps_od_capped_payout_pct if od_cap_triggered else None
+
+    return {
+        "wps": wps,
+        "revenue_cliff_triggered": cliff_triggered,
+        "od_pct": od_pct,
+        "od_cap_triggered": od_cap_triggered,
+        "payout_cap_pct": payout_cap_pct,
+    }
+
+
+# =====================================================================================
+# 10. THE 11 AGENT-DETERMINED (DYNAMIC) PARAMETERS -- resolved live, not invented
+# =====================================================================================
+
+def resolve_dynamic_parameters(
+    dc_master: Table, aop_targets: Table, se_visit_history: Dict[str, List[float]], config_rows: Table,
+    constants: Optional["BusinessConstants"] = None,
+) -> Dict[str, Any]:
+    """Condensed resolution logic table (Section 5 of the doc), computed from real data
+    at query time. Each entry is logged for auditability, per 8.5's requirement."""
+    constants = constants or BusinessConstants()
+    resolved: Dict[str, Any] = {}
+
+    # 1.3 PL growth requirement -- from live AOP growth assumption for the territory/quarter
+    aop_growth = next((a for a in aop_targets if a.get("Metric")), None)
+    resolved["1.3_pl_growth_requirement"] = {
+        "value": None,
+        "basis": "AOP_Target_Normalized (Source 6, Provisional)" if aop_growth else "no AOP data available",
+    }
+
+    # 2.3 Effort target -- multiplier from SE's trailing 3-month visit trend, once mapping is clean
+    effort_targets = {}
+    for se_id, visits in se_visit_history.items():
+        trend = (sum(visits[-3:]) / len(visits[-3:])) if visits else None
+        effort_targets[se_id] = trend
+    resolved["2.3_effort_target"] = {"per_se": effort_targets, "basis": "trailing 3-month visit trend"}
+
+    # 2.4 Coverage/effort weighting -- bigger gap gets more weight (computed per SE at score time)
+    resolved["2.4_coverage_effort_weighting"] = {"rule": "weight = 1 - min(coverage_pct, effort_pct)/max(coverage_pct, effort_pct)"}
+
+    # 4.4 BO4 growth multipliers -- REAL category-specific values from Source 5 (GR-25),
+    # replacing the flat 1.05 figure that matched nothing in the sheet.
+    resolved["4.4_bo4_growth_multipliers"] = {
+        "value": constants.bo4_category_multipliers,
+        "basis": "Source 5 confirmed category-specific multipliers (Cattle Feed x1.20, Crop Nutrition x1.15, Crop Protection x1.20); Field Crop provisional -- seasonal factor undefined (GR-20)",
+    }
+    # 4.5 RESOLVED 2026-08-06: Source 5 confirms "keep current cut-offs" (Status:
+    # Confirmed Default) without enumerating real numbers -- BO4 momentum scoring (wired
+    # 2026-08-06 in planning/services.py) reuses BO1's 0.80/0.60/0.40 bands. Still doesn't
+    # affect task selection: BO4/Sales stays out of the Daily Task Assignment Formula's
+    # Candidate_DCs pool (8.12), per GR-25 -- scored and available, not selection-driving.
+    resolved["4.5_bo4_grade_cutoffs"] = {"basis": "Confirmed Default -- reusing BO1's grade bands (Source 5 never enumerated real BO4 numbers)"}
+
+    # 6.1 Excluded DC statuses -- outlier supply-chain cost relative to route/cluster
+    scores_by_node = defaultdict(list)
+    for dc in dc_master:
+        if dc.get("NRV_FY2526"):
+            scores_by_node[dc.get("Node")].append(dc["NRV_FY2526"])
+    resolved["6.1_excluded_dc_statuses"] = {"basis": "Inactive/closed status + supply-chain cost outlier vs route/cluster median"}
+
+    # 6.4 Full block conditions -- Legal_Hold always blocks; Credit_Blocked/Blacklisted case-by-case
+    resolved["6.4_full_block_conditions"] = {"rule": "Legal_Hold -> always block. Credit_Blocked/Blacklisted -> check live OD + SE/DC notes"}
+
+    # 7.3 Tie-break order -- this quarter's top priority first (Outstanding, per Section 9), then default order
+    resolved["7.3_tie_break_order"] = {"order": (constants.quarter_top_priority,) + tuple(o for o in constants.default_objective_priority if o != constants.quarter_top_priority)}
+
+    # 7.4 Override rule (a) -- Outstanding=D caps Overall Sales at B, applied by default, flagged for confirmation
+    resolved["7.4_override_rule_a"] = {"rule": "Outstanding=D caps Overall_Sales at B", "status": "default_applied_pending_confirmation"}
+
+    # 8.5 RESOLVED 2026-08-06: Source 5 confirms real fixed thresholds (Status:
+    # Overridden), not a live-computed default -- Visits: not visited >14 days (=
+    # default) -- Outstanding: balance >=Rs20,000 AND overdue >=15 days (overridden
+    # from the Rs5,000/30-day default) -- PL: <3 orders in 30 days (= default, still
+    # not computable live, see _qualify_pl docstring) -- Long-Term: had PL sales in
+    # last 90 days (= default). These exact numbers are already what
+    # constants.qualify_outstanding_balance/qualify_outstanding_days_overdue/
+    # qualify_visits_days_since encode -- no longer asked before every activation.
+    resolved["8.5_qualification_thresholds"] = {
+        "qualify_visits_days_since": constants.qualify_visits_days_since,
+        "qualify_outstanding_balance": constants.qualify_outstanding_balance,
+        "qualify_outstanding_days_overdue": constants.qualify_outstanding_days_overdue,
+        "qualify_pl_max_orders_30d": constants.qualify_pl_max_orders_30d,
+        "qualify_longterm_pl_lookback_days": constants.qualify_longterm_pl_lookback_days,
+        "basis": "Confirmed/Overridden fixed thresholds (Source 5), not live-computed",
+    }
+
+    # 8.8 Discount cap -- last-approved ceiling as conservative default, exceptions to human review
+    resolved["8.8_discount_cap"] = {"rule": "last-approved category discount ceiling; exceptions routed to human approval"}
+
+    return resolved
+
+
+# =====================================================================================
+# 11. SE DAILY PLAN GENERATION -- matches the doc's Section 10 output shape exactly
+#     (extension beyond the normalization agent's own scope: "prepares data, does not
+#     generate plans" -- built on top of the normalized tables at the user's request)
+# =====================================================================================
+
+# Corrected 2026-08-06 against the real system taxonomy confirmed live in the
+# "Visit Type & Purpose Mapping" / "Visit Type to Purpose (System)" sheets -- "Visit" and
+# "Call" are NOT real Visit Types in task_management (the real ones are DC Visit, Demo
+# Visit, External Meeting, Farmer Meeting, Lead Generation, Node/Warehouse Visit; "Call"
+# never existed as one -- matches the new Daily Task Formula dropping Call-type
+# generation entirely already). "Private Label Product Promotion" is a FARMER MEETING
+# purpose, not a DC Visit purpose -- DC Visit's real purposes are Promise To Bill (P2B),
+# "Promise To Pay / Collection" (note the spacing, exact system string), Query
+# Resolution, Sale, Stock at DC. PL is distinguished by product tag on a Sale-purpose
+# order line, not by a separate Purpose value (per the bridge sheet's own note).
+TASK_TYPE_BY_OBJECTIVE = {
+    "Visits": "DC Visit", "Outstanding": "DC Visit", "PL": "DC Visit",
+    "Sales": "DC Visit", "Liquidation": "DC Visit", "Long-Term": "Farmer Meeting",
+}
+PURPOSE_BY_OBJECTIVE = {
+    "Visits": "Sale", "Outstanding": "Promise To Pay / Collection", "PL": "Sale",
+    "Sales": "Sale", "Long-Term": "Farmer Meeting", "Liquidation": "Config_Ambiguous -- no confirmed purpose",
+}
+
+
+@dataclass
+class DailyTaskRow:
+    """One row per DC per day -- matches the doc's Section 10 15-column output exactly
+    (columns 1-3, 5-15 populated here; column 4 Distance is filled by
+    sequence_with_distance() since it depends on route order)."""
+    Sr_No: int
+    DC_Name: Optional[str]
+    DC_ID: Optional[str]
+    Distance_Km: Optional[float]
+    Recommended_Task_Type: str
+    Purpose_Of_Visit: str
+    Reason_Of_Visit: str
+    Last_Visit_Date: Optional[str]
+    Days_Since_Last_Visit: Optional[int]
+    Present_Outstanding: Optional[float]
+    Present_Overdue: Optional[float]
+    Last_Order_Date: Optional[str]
+    Last_Order_Value: Optional[float]
+    Last_Payment_Date: Optional[str]
+    YTD_Private_Label: Optional[float]
+    DC_Club_Participation: str
+    # Not printed columns, kept for traceability/safety -- Objective is which BO drove
+    # this DC's inclusion (a DC selected under multiple objectives appears once, tagged
+    # with the highest-ranked one, per the new one-row-per-DC shape).
+    Objective: str = ""
+    No_New_Orders: bool = False
+    Credit_On_Hold: bool = False
+    Credit_On_Hold_Reason: Optional[str] = None
+    Estimated_Duration: int = 0
+    Priority_Multiplier: float = 1.0
+    # Confirmed live 2026-08-06 -- payments_paymenttransaction.customer_id bridges
+    # through customer_management_customer.id -> .partner_id, same pattern as Orders.
+    Last_Payment_Join_Key_Unconfirmed: bool = False
+    # Real aging bucket from dc_datamart's os_1_to_90/os_90_plus split -- NOT an exact
+    # "overdue since <date>" or a literal day count: checked live 2026-08-06, no
+    # due-date or days-overdue column exists anywhere in dc_datamart's confirmed schema,
+    # only these two aggregate amount buckets. Never invented a fake exact date/day
+    # count to fill that gap -- this is the honest, real-data substitute for the doc's
+    # own 3.2 aging-bucket concept (0-30/31-60/61-90/90+ collapses to what's actually
+    # available: current-month / 1-90 days / 90+ days).
+    Overdue_Aging_Bucket: Optional[str] = None
+
+
+def haversine_km(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
+    if None in (lat1, lon1, lat2, lon2):
+        return None
+    import math
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi, dlambda = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def sequence_with_distance(
+    rows: List[DailyTaskRow], dc_by_id: Dict[str, Dict[str, Any]], constants: BusinessConstants,
+    punch_in_coords: Optional[Tuple[float, float]] = None,
+) -> Tuple[List[DailyTaskRow], bool, str]:
+    """Section 10 column 4: sequential distance punch-in -> DC1 -> DC2 -> ..., not
+    straight-line to each DC independently. The doc documents two implementation options
+    as still undecided: (a) haversine between confirmed lat/long points [used here], or
+    (b) attendance_attendance's own google_distance/total_distance_travelled/OSRM-matched
+    fields, which may already reflect real road distance -- worth checking before trusting
+    (a) over (b). Degrades PER-DC, not all-or-nothing: confirmed live 2026-08-06 that one
+    genuinely coordinate-less DC in an otherwise-fully-geocoded 5-task list was discarding
+    real distance data for the other 4 -- a single missing DC now only costs that DC's own
+    Distance_Km (None), appended after the sequenced/geocoded DCs, rather than blanking
+    the whole route."""
+    if not rows:
+        return rows, False, "list_order_geo_unavailable"
+
+    def _coords(r: DailyTaskRow) -> Tuple[Optional[float], Optional[float]]:
+        dc = dc_by_id.get(r.DC_ID, {})
+        return dc.get("Latitude"), dc.get("Longitude")
+
+    with_coords = [r for r in rows if None not in _coords(r)]
+    without_coords = [r for r in rows if None in _coords(r)]
+
+    if not with_coords:
+        for i, r in enumerate(rows, 1):
+            r.Sr_No = i
+        return rows, False, "list_order_geo_unavailable"
+
+    remaining = list(with_coords)
+    route: List[DailyTaskRow] = []
+    last_point = punch_in_coords
+    total_km = 0.0
+    while remaining:
+        if last_point is not None:
+            remaining.sort(key=lambda r: haversine_km(last_point[0], last_point[1], *_coords(r)) or 1e9)
+        nxt = remaining.pop(0)
+        leg = haversine_km(last_point[0], last_point[1], *_coords(nxt)) if last_point is not None else 0.0
+        total_km += leg or 0.0
+        nxt.Distance_Km = round(total_km, 1)
+        route.append(nxt)
+        last_point = _coords(nxt)
+
+    for r in without_coords:
+        r.Distance_Km = None
+    route.extend(without_coords)
+
+    for i, r in enumerate(route, 1):
+        r.Sr_No = i
+    basis = "haversine_from_punch_in" if punch_in_coords else "haversine_from_first_dc_no_punch_in"
+    if without_coords:
+        basis += f"_partial_{len(without_coords)}_of_{len(rows)}_dcs_missing_geo"
+    return route, total_km > constants.daily_travel_cap_km, basis
+
+
+def generate_se_daily_plan(
+    se_id: str,
+    se_name: Optional[str],
+    plan_date: str,
+    dc_candidates: Table,
+    bo_scores_by_objective: Dict[str, Dict[str, Any]],
+    dynamic_params: Dict[str, Any],
+    constants: BusinessConstants,
+    attendance_gate_ok: Optional[bool],
+    outstanding_by_dc: Optional[Dict[str, float]] = None,
+    recent_attempts_by_dc: Optional[Dict[str, int]] = None,
+    dc_financials: Optional[Dict[str, Dict[str, Any]]] = None,
+    last_payment_by_dc: Optional[Dict[str, str]] = None,
+    dc_club_by_id: Optional[Dict[str, Dict[str, Any]]] = None,
+    ytd_pl_by_dc: Optional[Dict[str, float]] = None,
+    punch_in_coords: Optional[Tuple[float, float]] = None,
+    farmer_meeting_scheduled_today: bool = False,
+    dc_bo_scores: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    """Section 6 process flow + Section 7/8/10: rank objectives, respect capacity/travel
+    caps, apply the confirmed tie-break/override rules, and shape the output exactly as
+    the doc's Section 10 (updated) specifies: ONE ROW PER DC PER DAY across 15 columns
+    (Sr.No, DC Name, DC ID, Distance, Task Type, Purpose, Reason, Last Visit + days,
+    Present Outstanding, Present Overdue, Last Order date/value, Last Payment date,
+    YTD PL, Club participation) -- not one row per (DC, objective) task as in the prior
+    version. A DC selected under more than one objective is deduplicated to a single row
+    tagged with its highest-ranked objective. Attendance gates whether a plan is generated
+    at all (Section 3a) -- if the gate can't be evaluated, the plan is still produced but
+    tagged Provisional, never silently as if the gate passed."""
+    outstanding_by_dc = outstanding_by_dc or {}
+    recent_attempts_by_dc = recent_attempts_by_dc or {}
+    dc_financials = dc_financials or {}
+    last_payment_by_dc = last_payment_by_dc or {}
+    dc_club_by_id = dc_club_by_id or {}
+    ytd_pl_by_dc = ytd_pl_by_dc or {}
+    dc_bo_scores = dc_bo_scores or {}
+    header = {
+        "SE_ID": se_id, "SE_Name": se_name, "Plan_Date": plan_date,
+        "Total_Capacity_Minutes": constants.total_capacity_min,
+    }
+
+    if attendance_gate_ok is False:
+        return {
+            **header, "Tasks": [],
+            "Skipped_Reason": "No punch-in recorded for this SE today (Section 3a gating signal)",
+            "Data_Confidence": "Live",
+        }
+
+    # Layer 0/1 (8.11) -- farmer-meeting day exclusivity. Layer 0's FM_Urgency (monthly
+    # meeting pacing) needs a Farmer_Meetings data source that doesn't exist anywhere in
+    # this pipeline yet, so it can only be honestly computed as False, never guessed --
+    # this gate only fires when the caller explicitly passes
+    # farmer_meeting_scheduled_today=True (e.g. from a real scheduling system, once one
+    # exists). GR-12 requires that when it fires, the meeting is the ONLY task that day.
+    if farmer_meeting_scheduled_today:
+        fm_row = DailyTaskRow(
+            Sr_No=1, DC_Name=None, DC_ID=None, Distance_Km=None,
+            Recommended_Task_Type="Farmer Meeting", Purpose_Of_Visit="Farmer Meeting",
+            Reason_Of_Visit="8.11 exclusivity: a farmer meeting is scheduled today -- no other task assigned",
+            Last_Visit_Date=None, Days_Since_Last_Visit=None, Present_Outstanding=None,
+            Present_Overdue=None, Last_Order_Date=None, Last_Order_Value=None,
+            Last_Payment_Date=None, YTD_Private_Label=None, DC_Club_Participation="N/A",
+            Objective="Long-Term", Estimated_Duration=constants.meeting_duration_min,
+        )
+        return {
+            **header,
+            "Ranked_Objectives": ["Long-Term"],
+            "Tasks": [fm_row.__dict__],
+            "Capacity_Check": {
+                "Call_Minutes_Used": 0, "Call_Minutes_Budget": constants.call_minutes_per_day,
+                "Field_Minutes_Used": constants.meeting_duration_min, "Field_Minutes_Budget": constants.field_minutes_per_day,
+                "Total_Minutes_Used": constants.meeting_duration_min, "Total_Capacity_Minutes": constants.total_capacity_min,
+                "Objectives_Used": 1, "Max_Objectives": constants.max_objectives_per_day,
+                "Long_Cycle_Used": 1, "Max_Long_Cycle": constants.max_long_cycle_per_day,
+            },
+            "Safety_Flags": {"FM_Exclusivity_Applied": True, "GR_12_Note": "Farmer_Meeting_Task is the sole item in this list, per 8.11/GR-12"},
+            "Travel": {"Sequencing_Basis": "not_applicable_fm_exclusivity", "Daily_Cap_Km": constants.daily_travel_cap_km, "Cap_Exceeded": False},
+            "Data_Confidence": "Live" if attendance_gate_ok is True else "Provisional_No_Attendance_Gate",
+        }
+
+    # 7.4 rule (b), confirmed: if EVERY BO is graded D, switch to the all-D override order.
+    all_d = all(v.get("grade") == "D" for v in bo_scores_by_objective.values())
+    tie_break_order = constants.all_d_override_order if all_d else dynamic_params["7.3_tie_break_order"]["order"]
+
+    def _objective_gap(v: Dict[str, Any]) -> float:
+        """7.1's 'Objective_Score DESC' isn't given a literal cross-BO formula in the doc,
+        so this reads it as achievement-gap-vs-target (1 - pct achieved): a D-graded
+        Outstanding DC ranks ahead of a healthy one, matching the doc's own Section 10
+        worked example. Unscored objectives sort last rather than being guessed at."""
+        magnitude = v.get("score_pct") if v.get("score_pct") is not None else v.get("coverage_pct") if v.get("coverage_pct") is not None else v.get("ratio") if v.get("ratio") is not None else v.get("score")
+        return (1.0 - magnitude) if magnitude is not None else -1.0
+
+    ranked = sorted(
+        bo_scores_by_objective.items(),
+        key=lambda kv: (-_objective_gap(kv[1]), tie_break_order.index(kv[0]) if kv[0] in tie_break_order else 99),
+    )
+    top3 = ranked[: constants.max_objectives_per_day]
+
+    # 7.4 rule (a): Outstanding=D caps Overall Sales at B (default-applied, flagged pending confirmation)
+    outstanding_entry = bo_scores_by_objective.get("Outstanding", {})
+    rule_a_applied = outstanding_entry.get("grade") == "D"
+
+    # 3.7 order-block (No_New_Orders): now driven by the CONFIRMED current_od (actual
+    # overdue amount, Source 3d full schema) when dc_financials is supplied -- any real
+    # overdue balance triggers the flag. Falls back to the older top-quartile-of-current_os
+    # proxy only when dc_financials isn't available, for backward compatibility.
+    os_values = sorted((v for v in outstanding_by_dc.values() if v is not None), reverse=True)
+    os_top_quartile_cut = os_values[len(os_values) // 4] if os_values else None
+
+    def _no_new_orders(dc_id: str) -> bool:
+        fin = dc_financials.get(dc_id)
+        if fin and fin.get("Current_Overdue") is not None:
+            return fin["Current_Overdue"] > 0
+        current_os = outstanding_by_dc.get(dc_id)
+        return os_top_quartile_cut is not None and current_os is not None and current_os >= os_top_quartile_cut
+
+    dc_by_id = {dc["DC_ID"]: dc for dc in dc_candidates}
+    ranked_dcs = sorted(
+        (dc for dc in dc_candidates if dc.get("In_Scope_Flag")),
+        key=lambda d: (
+            d.get("Cohort") != "Strategic", d.get("Cohort") != "Growth",
+            -(d.get("Total_Score") or 0),
+            recent_attempts_by_dc.get(d["DC_ID"], 0) >= constants.contact_fatigue_max_attempts,
+        ),
+    )
+
+    # Layer 2 (8.5/8.12) -- Candidate_DCs = union of the 4 objective qualify-lists,
+    # restricted to {BO1,BO2,BO3,BO5} per 8.12's own definition (BO4 Overall Sales and
+    # Liquidation are NOT part of this candidate pool under the new formula -- a real
+    # behavior change from the old engine, which also generated separate Call-type tasks
+    # for Sales). Each qualifying function reads real per-DC data already threaded into
+    # this call; where the doc's exact condition needs data this pipeline doesn't have,
+    # it degrades honestly (see each docstring) rather than guessing.
+    def _qualify_visits(dc: Dict[str, Any]) -> bool:
+        d = dc.get("Days_Since_Last_Visit")
+        return d is None or d > constants.qualify_visits_days_since
+
+    def _qualify_outstanding(dc: Dict[str, Any]) -> bool:
+        """8.5: balance >=20,000 AND overdue >=15 days. The days-overdue leg has no
+        confirmed per-DC field in dc_datamart's schema (only aggregate aging buckets /
+        weighted_avg_repayment_days) -- balance leg only; Safety_Flags notes this.
+        FIXED 2026-08-06: was reading Current_Overdue here (checking overdue amount),
+        not Current_Outstanding (the actual balance the docstring/qualify_outstanding_
+        balance constant name both describe) -- a DC with a large balance but currently
+        $0 overdue could never qualify, defeating the point of a balance leg that's
+        independent of overdue status."""
+        outstanding = dc_financials.get(dc["DC_ID"], {}).get("Current_Outstanding")
+        return outstanding is not None and outstanding >= constants.qualify_outstanding_balance
+
+    def _qualify_pl(dc: Dict[str, Any]) -> bool:
+        """8.5's literal '<3 PL orders in 30 days' still isn't computable -- needs a
+        per-DC PL order COUNT, and coupon_analysis (the only live PL-transaction source)
+        has no confirmed DC-level join key (see SQL_SALES_TRANSACTIONS_3D). Live proxy
+        wired 2026-08-06 instead: a DC qualifies if its live PL_Ratio (score_bo1_
+        private_label, computed from pathik_report.pl_billed_amount -- recent-30d actual
+        vs a trailing-90d baseline, since 1.2's PL_Expected combination-with-AOP method
+        is itself still TBD in Source 5) grades C or D -- i.e. genuinely underperforming
+        on PL, a more direct read of "does this DC need a PL push" than a raw order
+        count would have been anyway. Requires dc_bo_scores["PL"] to be supplied by the
+        caller (planning/services.py); returns False, the same fail-safe default as
+        before, when no PL score exists for this DC at all."""
+        grade = dc_bo_scores.get(dc["DC_ID"], {}).get("PL", {}).get("grade")
+        return grade in ("C", "D")
+
+    # _qualify_longterm() removed 2026-08-06. Long-Term (BO5) is deliberately excluded
+    # from this DC Visit candidate pool -- 8.11
+    # was rewritten in the 2026-08-06 re-sync to make DC Visit and Farmer Meeting
+    # mutually exclusive BOTH directions ("if the system proposes a DC Visit day, no
+    # Farmer Meeting exists in that day's plan"), and GR-12 was rewritten to match:
+    # "Daily_Task_List may never mix Day_Types". Day_Type is decided once by Layer 0/1
+    # (farmer_meeting_scheduled_today), not per-DC -- so Long-Term/BO5 activity only
+    # ever shows up via the standalone Farmer_Meeting_Task path above, never bundled
+    # into a DC Visit task alongside Visits/Outstanding/PL. Note: the sheet's own Layer
+    # 2 formula text still lists "Qualify_LongTerm" in the Candidate_DCs union, but its
+    # Matched_Purposes set (Promise_To_Bill/Promise_To_Pay_Collection/Query_Resolution/
+    # Sale/Stock_at_DC -- all real DC Visit purposes) never draws from Long-Term either
+    # way, and the Final row's "Matched_Objectives" language wasn't updated to match
+    # Layer 2's rename to "Matched_Purposes" -- read as an incomplete edit in the source
+    # sheet, not a deliberate instruction to violate the GR-12 exclusivity it just added.
+    QUALIFIERS = {"Visits": _qualify_visits, "Outstanding": _qualify_outstanding, "PL": _qualify_pl}
+
+    # Layer 3 -- Priority_Score(DC) = 0.40/0.35/0.25 of the DC's own top-3 matched
+    # objectives' grades. True per-DC BO1/BO3 grading needs data this pipeline doesn't
+    # have yet (historical Outstanding for 3.1's Expected_Outstanding; 1.2's PL_Expected
+    # combination method is itself still TBD in Source 5) -- so this substitutes the
+    # SE-level objective score (_objective_gap) as this DC's proxy grade per matched
+    # objective, same honest-degrade signal the old engine used, just applied per-DC.
+    weights = (constants.rank1_weight, constants.rank2_weight, constants.rank3_weight)
+    pool: List[Tuple[Dict[str, Any], List[str], float]] = []
+    for dc in ranked_dcs:
+        matched = [obj for obj, fn in QUALIFIERS.items() if fn(dc)]
+        if not matched:
+            continue
+        # Prefer a real per-DC grade (dc_bo_scores) over the SE-level proxy when one is
+        # supplied -- e.g. score_bo3_outstanding_live_proxy() gives Outstanding a real,
+        # DC-specific severity instead of every matched DC sharing one SE-wide floor
+        # score. Falls back to the old SE-level _objective_gap() for objectives with no
+        # per-DC score wired yet (PL/Long-Term/Sales/Liquidation, as of 2026-08-06).
+        per_dc = dc_bo_scores.get(dc["DC_ID"], {})
+        gap_by_obj = sorted(
+            ((_objective_gap(per_dc[obj]) if obj in per_dc else _objective_gap(bo_scores_by_objective.get(obj, {})), obj) for obj in matched),
+            reverse=True,
+        )
+        priority_score = sum(w * gap for w, (gap, _) in zip(weights, gap_by_obj))
+        pool.append((dc, [o for _, o in gap_by_obj], priority_score))
+
+    ranked_pool = sorted(
+        pool,
+        key=lambda t: (-t[2], min(tie_break_order.index(o) if o in tie_break_order else 99 for o in t[1])),
+    )
+
+    # FINAL (8.10/GR-11) -- fill up to max_daily_tasks (5) within the field-time budget.
+    # No Call-type tasks in this formula -- Candidate_DCs excludes BO4/Sales entirely
+    # (see Layer 2 docstring above), so call_minutes_used stays 0 by construction.
+    rows: List[DailyTaskRow] = []
+    selected_dc_ids: set = set()
+    call_minutes_used = field_minutes_used = 0
+    credit_blocked_count = 0
+
+    for dc, matched, priority_score in ranked_pool:
+        if len(rows) >= constants.max_daily_tasks:
+            break
+        dc_id = dc["DC_ID"]
+        if dc_id in selected_dc_ids:
+            continue
+        duration = constants.visit_duration_min
+        if field_minutes_used + duration > constants.field_minutes_per_day:
+            break
+        if call_minutes_used + field_minutes_used + duration > constants.total_capacity_min:
+            break
+
+        attempts = recent_attempts_by_dc.get(dc_id, 0)
+        multiplier = (1 - constants.contact_fatigue_priority_cut) if attempts >= constants.contact_fatigue_max_attempts else 1.0
+        fin = dc_financials.get(dc_id, {})
+        club = dc_club_by_id.get(dc_id)
+        credit_on_hold = bool(fin.get("Credit_On_Hold"))
+        if credit_on_hold:
+            credit_blocked_count += 1
+
+        # Real aging bucket, from dc_datamart's own os_1_to_90/os_90_plus split -- see
+        # DailyTaskRow.Overdue_Aging_Bucket docstring for why this isn't an exact date.
+        # Gated on Current_Overdue > 0 first (fixed live 2026-08-06, caught in testing):
+        # os_1_to_90/os_90_plus measure aging of the OUTSTANDING balance overall (likely
+        # since invoice date), not specifically the OVERDUE/past-due portion --
+        # dc_datamart's own is_mismatch flag exists precisely because these breakdowns
+        # don't always reconcile. Attaching an aging label like "(1-90 days)" next to a
+        # genuine Rs0 overdue figure is self-contradictory and misleading, so no bucket
+        # is shown at all unless there's a real overdue amount to attach it to.
+        current_overdue = fin.get("Current_Overdue")
+        os_90_plus, os_1_to_90 = fin.get("OS_90_Plus"), fin.get("OS_1_To_90")
+        if not current_overdue or current_overdue <= 0:
+            overdue_aging = None
+        elif os_90_plus and os_90_plus > 0:
+            overdue_aging = "90+ days"
+        elif os_1_to_90 and os_1_to_90 > 0:
+            overdue_aging = "1-90 days"
+        else:
+            overdue_aging = "Current month"
+
+        # 8.12 bundling: one visit-task covers every matched objective for this DC.
+        purpose = " + ".join(dict.fromkeys(PURPOSE_BY_OBJECTIVE.get(o, o) for o in matched))
+        per_dc_scores = dc_bo_scores.get(dc_id, {})
+        grade_notes = [f"{o} Grade {per_dc_scores[o]['grade']} ({per_dc_scores[o].get('reason', '')})" for o in matched if o in per_dc_scores and per_dc_scores[o].get("grade")]
+        reason = (
+            f"Matched {', '.join(matched)} -- {dc.get('Cohort')} cohort, rank {dc.get('Rank')}"
+            + (f" -- {'; '.join(grade_notes)}" if grade_notes else "")
+            + (f", contact-fatigue -{int(constants.contact_fatigue_priority_cut*100)}% ({attempts} attempts in {constants.contact_fatigue_window_days}d)" if multiplier < 1.0 else "")
+        )
+        rows.append(
+            DailyTaskRow(
+                Sr_No=0, DC_Name=dc.get("DC_Name"), DC_ID=dc_id, Distance_Km=None,
+                Recommended_Task_Type="DC Visit", Purpose_Of_Visit=purpose,
+                Reason_Of_Visit=reason,
+                Last_Visit_Date=dc.get("Last_Visit_Date"), Days_Since_Last_Visit=dc.get("Days_Since_Last_Visit"),
+                Present_Outstanding=fin.get("Current_Outstanding"), Present_Overdue=fin.get("Current_Overdue"),
+                Last_Order_Date=fin.get("Last_Order_Date"), Last_Order_Value=fin.get("Last_Order_Value"),
+                Last_Payment_Date=last_payment_by_dc.get(dc_id), YTD_Private_Label=ytd_pl_by_dc.get(dc_id),
+                DC_Club_Participation=(club.get("Enrollment_Basis") if club and club.get("Is_Club_Enrolled") else "Not enrolled") if dc_club_by_id else "Config_Ambiguous -- DC club data not supplied",
+                Objective=",".join(matched), No_New_Orders=_no_new_orders(dc_id),
+                Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
+                Estimated_Duration=duration, Priority_Multiplier=multiplier,
+                Last_Payment_Join_Key_Unconfirmed=False,
+                Overdue_Aging_Bucket=overdue_aging,
+            )
+        )
+        selected_dc_ids.add(dc_id)
+        field_minutes_used += duration
+
+    # GR-11 -- post-generation safety net, redundant with the loop's own break above but
+    # kept as an explicit second check per the Guardrails sheet's own pattern.
+    if len(rows) > constants.max_daily_tasks:
+        rows = rows[: constants.max_daily_tasks]
+
+    sequenced, travel_cap_warning, sequencing_basis = sequence_with_distance(rows, dc_by_id, constants, punch_in_coords)
+
+    # GR-14 -- independent second-pass exclusion check (redundant with
+    # apply_dc_exclusion_rules() upstream by design, not treated as a duplicate).
+    gr14_violations = [
+        r.DC_ID for r in sequenced
+        if dc_by_id.get(r.DC_ID, {}).get("DC_Status") in ("Inactive", "Closed") or dc_by_id.get(r.DC_ID, {}).get("Legal_Hold")
+    ]
+
+    objectives_used = sorted(
+        {o for r in sequenced for o in r.Objective.split(",") if o},
+        key=lambda o: tie_break_order.index(o) if o in tie_break_order else 99,
+    )
+
+    return {
+        **header,
+        "Ranked_Objectives": objectives_used,
+        "Tasks": [r.__dict__ for r in sequenced],
+        "Capacity_Check": {
+            "Call_Minutes_Used": call_minutes_used, "Call_Minutes_Budget": constants.call_minutes_per_day,
+            "Field_Minutes_Used": field_minutes_used, "Field_Minutes_Budget": constants.field_minutes_per_day,
+            "Total_Minutes_Used": call_minutes_used + field_minutes_used, "Total_Capacity_Minutes": constants.total_capacity_min,
+            "Tasks_Used": len(sequenced), "Max_Daily_Tasks": constants.max_daily_tasks,
+        },
+        "Safety_Flags": {
+            "Rule_7_4a_Applied": rule_a_applied,
+            "Rule_7_4a_Note": "Outstanding=D caps Overall Sales at B -- no longer affects task selection under the new formula, since BO4/Sales isn't part of Candidate_DCs (8.12); kept for informational/audit purposes only" if rule_a_applied else None,
+            "Rule_7_4b_All_D_Reorder_Applied": all_d,
+            "No_New_Orders_DC_Count": sum(1 for r in rows if r.No_New_Orders),
+            "Legal_Hold_Exclusions": "applied upstream in apply_dc_exclusion_rules() -- excluded DCs never reach dc_candidates",
+            "Credit_Blocked_DC_Count": credit_blocked_count,
+            "Credit_Blocked_Basis": "sale_orderrequest.credit_on_hold (Source 3d, confirmed queryable) -- flagged per 6.4, not auto-blocked" if dc_financials else "not evaluated -- dc_financials not supplied this run",
+            "GR_14_Second_Pass_Violations": gr14_violations,
+            "Qualify_Outstanding_Days_Overdue_Leg": "not enforced -- no confirmed per-DC days-overdue field in dc_datamart; balance-only qualification applied (see Layer 2 docstring)",
+            "Qualify_PL_Order_Count": "not enforced -- coupon_analysis has no confirmed DC-level join key; PL objective never qualifies a DC into Candidate_DCs until that's resolved",
+        },
+        "Travel": {"Sequencing_Basis": sequencing_basis, "Daily_Cap_Km": constants.daily_travel_cap_km, "Cap_Exceeded": travel_cap_warning},
+        "Data_Confidence": "Live" if attendance_gate_ok is True else "Provisional_No_Attendance_Gate",
+    }
+
+
+# =====================================================================================
+# 12. PIPELINE ORCHESTRATION (Section 6 process flow)
+# =====================================================================================
+
+def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str, Any]:
+    run_ts = utc_now_iso()
+    plan_date = plan_date or datetime.now(timezone.utc).date().isoformat()
+    all_exceptions: Table = []
+    check_summary: Dict[str, Dict[str, int]] = {}
+
+    def merge(exc: Exceptions) -> None:
+        all_exceptions.extend(exc.rows)
+        for code, counts in exc.summary().items():
+            dst = check_summary.setdefault(code, {"pass": 0, "fail": 0})
+            dst["pass"] += counts["pass"]
+            dst["fail"] += counts["fail"]
+
+    logger.info("1/6 loading Source 5 (Config Master)...")
+    config_rows, exc = load_config()
+    merge(exc)
+    config_index = {r["Param_Key"]: r["Configured_Value"] for r in config_rows}
+
+    logger.info("2/6 loading Source 2 (DC Master + Rank)...")
+    dc_master, exc = load_dc_master()
+    merge(exc)
+
+    logger.info("3/6 loading Source 6 (AOP & Target)...")
+    aop_targets, exc = load_aop_targets()
+    merge(exc)
+
+    logger.info("4/6 loading Sources 1/3/4 (live via Metabase)...")
+    client = get_client()
+    try:
+        live, exc = load_live_sources(client)
+        merge(exc)
+
+        logger.info("  4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...")
+        supplement_exc = Exceptions(run_ts)
+        supplement_dc_master_from_live(dc_master, client, supplement_exc)
+        merge(supplement_exc)
+    finally:
+        client.close()
+
+    logger.info("5/6 normalizing + cross-checking...")
+    attendance_exc = Exceptions(run_ts)
+    attendance = normalize_attendance(live["Attendance_3a"], attendance_exc)
+    merge(attendance_exc)
+    visits_exc = Exceptions(run_ts)
+    visits = normalize_visits(live["Active_Roster_4"], live["Task_Nodes_1b"], config_index, visits_exc)
+    merge(visits_exc)
+    sales_exc = Exceptions(run_ts)
+    sales, dc_financials = normalize_sales_transactions(
+        live["Sales_Transactions_3d"], live["Outstanding_3d"], live["Orders_3d"], sales_exc
+    )
+    merge(sales_exc)
+    payments_exc = Exceptions(run_ts)
+    payments, last_payment_by_dc = normalize_payments(live["Payments_3f"], payments_exc)
+    merge(payments_exc)
+    club_exc = Exceptions(run_ts)
+    dc_club = normalize_dc_club(live["DC_Club_Mapping_3g"], live["DC_Club_Slabs_3g"], club_exc)
+    merge(club_exc)
+    dc_club_by_id = {row["DC_ID"]: row for row in dc_club}
+
+    liquidation_exc = Exceptions(run_ts)
+    liquidation = normalize_liquidation(live["Liquidation_3d"], liquidation_exc)
+    merge(liquidation_exc)
+
+    geo_check_exc = Exceptions(run_ts)
+    run_cross_source_checks(dc_master, live["Geo_Mapping_1c"], geo_check_exc)
+    merge(geo_check_exc)
+
+    constants = BusinessConstants()
+    last_visit_by_dc: Dict[str, str] = {}
+    for v in visits:
+        if v["DC_ID"] and v["Date"]:
+            if v["DC_ID"] not in last_visit_by_dc or v["Date"] > last_visit_by_dc[v["DC_ID"]]:
+                last_visit_by_dc[v["DC_ID"]] = v["Date"]
+    excl_exc = Exceptions(run_ts)
+    apply_dc_exclusion_rules(dc_master, excl_exc, constants, last_visit_by_dc, plan_date)
+    merge(excl_exc)
+
+    ref_exc = Exceptions(run_ts)
+    dc_ids = {dc["DC_ID"] for dc in dc_master}
+    se_ids = {row.get("se_user_id") for row in live["Active_Roster_4"]}
+    referential_integrity_check(visits, sales, dc_ids, se_ids, ref_exc)
+    merge(ref_exc)
+
+    compliance_exc = Exceptions(run_ts)
+    valid_visit_compliance(visits, compliance_exc)
+    merge(compliance_exc)
+
+    logger.info("6/6 scoring + generating SE Daily Plans...")
+    se_visit_history: Dict[str, List[float]] = defaultdict(list)
+    for v in visits:
+        if v["SE_ID"]:
+            se_visit_history[v["SE_ID"]].append(1.0)
+    dynamic_params = resolve_dynamic_parameters(dc_master, aop_targets, se_visit_history, config_rows, constants)
+
+    attendance_by_se_today = {a["SE_ID"] for a in attendance if a["Date"] == plan_date and a["Attendance_Status"] != "Invalid"}
+
+    # 8.7 contact-fatigue: attempts per (SE, DC) within the rolling fatigue window, counted
+    # from every Visits_Normalized row (any status) up to plan_date -- not just valid visits.
+    fatigue_window_start = (datetime.fromisoformat(plan_date) - timedelta(days=constants.contact_fatigue_window_days)).date().isoformat()
+    recent_attempts_all: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for v in visits:
+        if v.get("SE_ID") and v.get("DC_ID") and v.get("Date") and fatigue_window_start <= v["Date"] < plan_date:
+            recent_attempts_all[v["SE_ID"]][v["DC_ID"]] += 1
+
+    se_names = {row.get("se_user_id"): row.get("se_email") for row in live["Task_Nodes_1b"]}
+    punch_in_by_se: Dict[str, Tuple[float, float]] = {}
+    for a in attendance:
+        if a["Date"] == plan_date and a.get("Punch_In_Lat") is not None and a.get("Punch_In_Long") is not None:
+            punch_in_by_se[a["SE_ID"]] = (a["Punch_In_Lat"], a["Punch_In_Long"])
+
+    daily_plans = []
+    for se_id in sorted(se_ids) if se_ids else []:
+        se_dc_candidates = [dc for dc in dc_master if dc.get("Assigned_SE_Email")]  # scoped further by real join in production
+        bo_scores = {
+            "Visits": score_bo2_visits(sum(1 for v in visits if v["SE_ID"] == se_id and v["Valid_Visit_Flag"]), len(se_dc_candidates), constants),
+            "PL": {"score_pct": None, "grade": None, "reason": "PL_Value/PL_Expected need Sales_Transactions_Normalized joined by DC -- wire in once live"},
+            "Outstanding": {"ratio": None, "grade": None},
+            "Sales": {"score_pct": None, "grade": None},
+            "Liquidation": {"score_pct": None, "grade": None, "reason": "no confirmed scoring formula exists (Source 3d Provisional)"},
+            "Long-Term": score_bo5_long_term(0, 0, constants),
+        }
+        attendance_gate_ok = (se_id in attendance_by_se_today) if client.configured else None
+        plan = generate_se_daily_plan(
+            se_id, se_names.get(se_id), plan_date, se_dc_candidates, bo_scores, dynamic_params, constants,
+            attendance_gate_ok, recent_attempts_by_dc=dict(recent_attempts_all.get(se_id, {})),
+            dc_financials=dc_financials, last_payment_by_dc=last_payment_by_dc, dc_club_by_id=dc_club_by_id,
+            punch_in_coords=punch_in_by_se.get(se_id),
+        )
+        daily_plans.append(plan)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tables = {
+        "DC_Master_Normalized": dc_master,
+        "Config_Normalized": config_rows,
+        "AOP_Target_Normalized": aop_targets,
+        "Attendance_Normalized": attendance,
+        "Visits_Normalized": visits,
+        "Sales_Transactions_Normalized": sales,
+        "Payments_Normalized": payments,
+        "DC_Club_Normalized": dc_club,
+        "Liquidation_Normalized": liquidation,
+        "Geo_Mapping_Normalized": live["Geo_Mapping_1c"],
+        "Task_Nodes_Normalized": live["Task_Nodes_1b"],
+        "Exceptions_Report": all_exceptions,
+        "SE_Daily_Plan": daily_plans,
+    }
+    for name, data in tables.items():
+        with (output_dir / f"{name}.json").open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+
+    run_summary = {
+        "Run_Timestamp": run_ts,
+        "Plan_Date": plan_date,
+        "Metabase_Configured": client.configured,
+        "Row_Counts": {name: len(data) for name, data in tables.items()},
+        "Check_Summary": check_summary,
+        "Dynamic_Parameters_Resolved": dynamic_params,
+        "Note": (
+            "Sources 1/3/4 were skipped (Metabase not configured) -- normalized output "
+            "reflects Sources 2/5/6 only; SE_Daily_Plan tasks are Provisional."
+            if not client.configured else
+            "All 6 sources pulled this run."
+        ),
+    }
+    with (output_dir / "Run_Summary.json").open("w", encoding="utf-8") as f:
+        json.dump(run_summary, f, indent=2, default=str)
+
+    logger.info("Done. Wrote %d tables + run summary to %s", len(tables), output_dir)
+    return run_summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", default=str(BASE_DIR / "output"), help="Where normalized tables + plan are written")
+    parser.add_argument("--date", default=None, help="Plan date YYYY-MM-DD (default: today)")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s")
+    summary = run_pipeline(Path(args.output_dir), plan_date=args.date)
+    print(json.dumps(summary, indent=2, default=str))
+
+
+if __name__ == "__main__":
+    main()

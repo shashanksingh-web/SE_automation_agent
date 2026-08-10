@@ -1,0 +1,46 @@
+SE Daily Task Assignment — Layered Formula (feeds 8.10-8.12),,,
+Each layer below is its own sub-formula on its own variable. The Final Master Formula at the bottom injects all four layers in sequence to produce the SE's actual daily task list (max 5 tasks/day).,,,
+Layer,Variable,Formula,Purpose
+Layer 0,"FM_Urgency
+(monthly pacing)","FM_Meetings_Held_MTD = COUNT(Farmer_Meetings WHERE SE=SE AND Period=Current_Month)
+FM_Gap = 2 − FM_Meetings_Held_MTD
+FM_Days_Left = Days_Remaining_In_Month
+FM_Urgency = (FM_Gap > 0) AND (FM_Days_Left ÷ MAX(FM_Gap,1) ≤ Pacing_Buffer_Days)",Tracks whether the SE is falling behind the ≥2 mega-meetings/month target (5.3) and needs one scheduled soon rather than left to month-end
+Layer 1,"Day_Type
+(exclusivity gate)","FM_Scheduled_Today = (FM_Urgency = TRUE) OR (Manually_Scheduled_Today = TRUE)
+
+Day_Type = IF FM_Scheduled_Today = TRUE THEN ""Farmer Meeting"" ELSE ""DC Visit""
+
+IF Day_Type = ""Farmer Meeting"":
+    Daily_Task_List = [Farmer_Meeting_Task]  ← no DC Visit this day
+    STOP — skip Layers 2-4 entirely
+IF Day_Type = ""DC Visit"":
+    proceed to Layer 2  ← no Farmer Meeting this day","Implements 8.11: DC Visit and Farmer Meeting (the two real Visit Types) are mutually exclusive both ways — Day_Type is decided once, before either branch runs"
+Layer 2,"Candidate_DCs
+(pool + purpose bundling)","Candidate_DCs = Qualify_Visits ∪ Qualify_Outstanding ∪ Qualify_PL ∪ Qualify_LongTerm  (per 8.5)
+
+FOR each DC in Candidate_DCs:
+    Matched_Purposes(DC) = subset of {Promise_To_Bill, Promise_To_Pay_Collection,
+        Query_Resolution, Sale, Stock_at_DC}  (real Visit Purposes under DC Visit)
+    IF DC ∈ Qualify_Outstanding → add Promise_To_Pay_Collection (+ Promise_To_Bill if billing-specific)
+    IF DC ∈ Qualify_PL → add Sale
+    Query_Resolution / Stock_at_DC may be added ad hoc by the SE regardless of algorithm pre-load
+    Task_Weight(DC) = 1  ← one DC Visit = one task slot, regardless of purpose count","Implements 8.12: a DC qualifying on multiple objective lists is bundled into a single DC Visit carrying multiple real system Purposes, per the ""Visit Type & Purpose Mapping"" bridge sheet"
+Layer 3,"Priority_Score(DC)
+(ranking)","Priority_Score(DC) = 0.40×Score_Rank1(DC) + 0.35×Score_Rank2(DC) + 0.25×Score_Rank3(DC)
+  [DC's top-3 graded objectives per 7.1, with 7.4 override rules applied]
+
+Ranked_Pool = SORT(Candidate_DCs, BY Priority_Score DESC,
+               TIE_BREAK = 7.3 order: Outstanding → PL → Visits → Long-Term)",Determines the order candidates are considered in when filling the day's task slots
+FINAL,"Daily_Task_List
+(master formula)","Daily_Task_List = []
+Time_Used = 0
+
+FOR DC in Ranked_Pool:
+    IF COUNT(Daily_Task_List) ≥ 5: BREAK
+    Est_Duration = Visit_Duration(45–60 min, per 8.3)
+    IF Time_Used + Est_Duration > Field_Minutes_Available(420 min, per 8.2): BREAK
+    APPEND (DC, Matched_Objectives(DC)) TO Daily_Task_List
+    Time_Used += Est_Duration
+
+RETURN Daily_Task_List","Injects Layers 0-3: applies the farmer-meeting gate first, then fills up to 5 task slots from the ranked, bundled candidate pool within the SE's time budget"

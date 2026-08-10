@@ -1,0 +1,19 @@
+Watching for file changes with StatReloader
+2026-08-09 14:40:44,741 INFO django.utils.autoreload: Watching for file changes with StatReloader
+Not Found: /
+2026-08-09 14:40:48,880 WARNING django.request: Not Found: /
+[09/Aug/2026 14:40:48] "GET / HTTP/1.1" 404 2313
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-10 07:43:28,870 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 09, 2026 - 14:40:44
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-10 07:43:29,441 INFO django.utils.autoreload: Watching for file changes with StatReloader

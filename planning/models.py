@@ -1,0 +1,241 @@
+from django.db import models
+
+
+class PlanRun(models.Model):
+    """One activation of the SE Daily Task Agent (se_daily_plan_agent.generate_se_daily_plan)
+    at a given scope. Mirrors se_daily_plan_agent.py's own Run_Summary shape -- see
+    AGENT_OPERATING_PROMPTS.md for what each agent does and does not guarantee."""
+
+    class ScopeType(models.TextChoices):
+        SE = "SE", "SE"
+        ABM = "ABM", "ABM"
+        NODE = "NODE", "Node"
+        BLOCK = "BLOCK", "Block"
+        DISTRICT = "DISTRICT", "District"
+        STATE = "STATE", "State"
+
+    class Status(models.TextChoices):
+        PENDING_REVIEW = "PENDING_REVIEW", "Pending Review"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
+    scope_type = models.CharField(max_length=10, choices=ScopeType.choices)
+    scope_value = models.CharField(max_length=255)
+    plan_date = models.DateField()
+    run_timestamp = models.DateTimeField(auto_now_add=True)
+    metabase_configured = models.BooleanField(default=False)
+    se_count = models.IntegerField(default=0)
+    dc_count = models.IntegerField(default=0)
+    task_count = models.IntegerField(default=0)
+    # 7.3/8.5/4.4/4.5 custom-value status at the time of this run -- see
+    # [[ask-custom-config-before-planning]] in memory / AGENT_OPERATING_PROMPTS.md Prompt 0.
+    dynamic_parameters = models.JSONField(default=dict, blank=True)
+    note = models.TextField(blank=True, default="")
+    # SEs in scope who got 0 tasks, with why -- e.g. [{"se_id": ..., "se_email": ...,
+    # "reason": "No punch-in recorded for this SE today (Section 3a gating signal)"}].
+    # generate_se_daily_plan() (se_daily_plan_agent.py) computes this in-memory per SE
+    # (attendance gate fail, or no in-scope DC qualified for any objective) but never
+    # persisted it before -- an SE with 0 tasks left no DailyTask row and no other trace,
+    # so the reason was lost the moment the request finished. Wired 2026-08-08.
+    skipped_ses = models.JSONField(default=list, blank=True)
+
+    # Orchestration/lifecycle fields (soft approval gate -- status is an audit trail, not
+    # a filter: GET endpoints keep returning runs regardless of status, since no reviewer
+    # workflow exists yet to guarantee someone actually approves every run every day).
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING_REVIEW)
+    reviewed_by = models.CharField(max_length=255, blank=True, default="")
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    error_message = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField(blank=True, null=True)
+    finished_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["-run_timestamp"]
+        indexes = [
+            models.Index(fields=["scope_type", "scope_value", "plan_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.scope_type}:{self.scope_value} @ {self.plan_date} ({self.run_timestamp:%Y-%m-%d %H:%M})"
+
+
+class DailyTask(models.Model):
+    """One row per DC per SE per day -- the doc's Section 10 15-column output shape,
+    exactly as produced by se_daily_plan_agent.DailyTaskRow. Persisted flat (not
+    normalized further) so the table maps 1:1 onto what the agent already returns."""
+
+    plan_run = models.ForeignKey(PlanRun, related_name="tasks", on_delete=models.CASCADE)
+
+    se_id = models.CharField(max_length=64)
+    se_name = models.CharField(max_length=255, blank=True, null=True)
+    plan_date = models.DateField()
+
+    # Columns 1-3
+    sr_no = models.IntegerField()
+    dc_name = models.CharField(max_length=255, blank=True, null=True)
+    # Nullable since 2026-08-06 -- a Farmer Meeting task (8.11 Layer 0/1, FM_Urgency)
+    # genuinely isn't tied to a specific DC at generation time (Layer 0/1 returns early,
+    # before any DC-level candidate logic runs), unlike every other DailyTask row.
+    dc_id = models.CharField(max_length=32, blank=True, null=True)
+    # Column 4
+    distance_km = models.FloatField(blank=True, null=True)
+    # Columns 5-7
+    recommended_task_type = models.CharField(max_length=32)
+    purpose_of_visit = models.CharField(max_length=128, blank=True, default="")
+    reason_of_visit = models.CharField(max_length=255, blank=True, default="")
+    # Column 8
+    last_visit_date = models.DateField(blank=True, null=True)
+    days_since_last_visit = models.IntegerField(blank=True, null=True)
+    # Columns 9-10
+    present_outstanding = models.FloatField(blank=True, null=True)
+    present_overdue = models.FloatField(blank=True, null=True)
+    # Real aging bucket from dc_datamart's os_1_to_90/os_90_plus split -- not an exact
+    # "overdue since <date>"/day-count, since no such field exists in dc_datamart's
+    # confirmed schema (checked live 2026-08-06). See DailyTaskRow.Overdue_Aging_Bucket.
+    overdue_aging_bucket = models.CharField(max_length=20, blank=True, null=True)
+    # Columns 11-12
+    last_order_date = models.DateField(blank=True, null=True)
+    last_order_value = models.FloatField(blank=True, null=True)
+    # Column 13
+    last_payment_date = models.DateField(blank=True, null=True)
+    last_payment_join_key_unconfirmed = models.BooleanField(default=True)
+    # Column 14
+    ytd_private_label = models.FloatField(blank=True, null=True)
+    # Column 15
+    dc_club_participation = models.CharField(max_length=64, blank=True, default="")
+
+    # Not printed columns, kept for traceability/safety (see DailyTaskRow docstring)
+    objective = models.CharField(max_length=32, blank=True, default="")
+    no_new_orders = models.BooleanField(default=False)
+    credit_on_hold = models.BooleanField(default=False)
+    credit_on_hold_reason = models.CharField(max_length=128, blank=True, null=True)
+    estimated_duration = models.IntegerField(default=0)
+    priority_multiplier = models.FloatField(default=1.0)
+
+    # Feedback-loop outcome fields (Tier 1) -- populated later by `reconcile_outcomes`,
+    # once plan_date has passed and real Visits/Sales/Payments data for that day exists.
+    # UNKNOWN (not COMPLETED/MISSED) is the honest default until reconciliation runs --
+    # never guessed at generation time, same honest-degrade pattern as the rest of the
+    # pipeline (see se_daily_plan_agent.py's own guardrail language).
+    class OutcomeStatus(models.TextChoices):
+        UNKNOWN = "UNKNOWN", "Unknown"
+        COMPLETED = "COMPLETED", "Completed"
+        PARTIAL = "PARTIAL", "Partial"
+        MISSED = "MISSED", "Missed"
+
+    outcome_status = models.CharField(max_length=16, choices=OutcomeStatus.choices, default=OutcomeStatus.UNKNOWN)
+    actual_visit_date = models.DateField(blank=True, null=True)
+    actual_order_value = models.FloatField(blank=True, null=True)
+    actual_payment_amount = models.FloatField(blank=True, null=True)
+    reconciled_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["plan_run", "se_id", "sr_no"]
+        indexes = [
+            models.Index(fields=["se_id", "plan_date"]),
+            models.Index(fields=["dc_id"]),
+        ]
+
+    def __str__(self):
+        return f"{self.se_id} #{self.sr_no} {self.dc_name} ({self.objective})"
+
+
+class ExceptionRecord(models.Model):
+    """Exceptions_Report entries tied to a PlanRun -- Section 5/7's guardrail: an
+    exceptions report ships on every run, including clean ones, never silently."""
+
+    plan_run = models.ForeignKey(PlanRun, related_name="exceptions", on_delete=models.CASCADE)
+    record_id = models.CharField(max_length=128, blank=True, null=True)
+    source = models.CharField(max_length=64)
+    reason_code = models.CharField(max_length=64)
+    detail = models.TextField()
+    run_timestamp = models.DateTimeField()
+
+    class Meta:
+        ordering = ["plan_run", "reason_code"]
+
+    def __str__(self):
+        return f"{self.reason_code} ({self.source})"
+
+
+class DCVisitStreak(models.Model):
+    """Repeat-skip tracking per (SE, DC), independent of any single DailyTask/PlanRun --
+    a DC missed 3+ consecutive times gets escalated (priority_multiplier boost) the next
+    time it's scored, per `reconcile_outcomes`. Reset to 0 on any COMPLETED/PARTIAL
+    outcome for that pair."""
+
+    se_id = models.CharField(max_length=64)
+    dc_id = models.CharField(max_length=32)
+    consecutive_misses = models.IntegerField(default=0)
+    last_outcome_date = models.DateField(blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["se_id", "dc_id"], name="unique_se_dc_streak"),
+        ]
+
+    def __str__(self):
+        return f"{self.se_id}/{self.dc_id}: {self.consecutive_misses} consecutive misses"
+
+
+class ObjectiveCompletionStats(models.Model):
+    """Trailing-30d completion rate per (SE, objective) -- rolled up by
+    `compute_completion_stats` from DailyTask.outcome_status, consumed by BO1/BO3 scoring
+    as a bounded (0.7x-1.3x) weighting multiplier (Tier 2 adaptive weighting). Neutral
+    (1.0x) whenever sample_size is too small to be meaningful -- see
+    se_daily_plan_agent.completion_multiplier()."""
+
+    se_id = models.CharField(max_length=64)
+    objective = models.CharField(max_length=32)
+    completion_rate_30d = models.FloatField()
+    sample_size = models.IntegerField()
+    computed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["se_id", "objective"], name="unique_se_objective_stats"),
+        ]
+
+    def __str__(self):
+        return f"{self.se_id}/{self.objective}: {self.completion_rate_30d:.0%} (n={self.sample_size})"
+
+
+class ScheduledScope(models.Model):
+    """A (scope_type, scope_value) pair `run_scheduled_tuff` runs TUFF for once daily via
+    cron, independent of any ad-hoc `activate_tuff`/`generate_se_plan` CLI invocation.
+    `active=False` lets a scope be paused without deleting its history."""
+
+    scope_type = models.CharField(max_length=10, choices=PlanRun.ScopeType.choices)
+    scope_value = models.CharField(max_length=255)
+    active = models.BooleanField(default=True)
+    last_run_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["scope_type", "scope_value"], name="unique_scheduled_scope"),
+        ]
+
+    def __str__(self):
+        return f"{self.scope_type}:{self.scope_value} ({'active' if self.active else 'paused'})"
+
+
+class PitchScript(models.Model):
+    """The Pitching Agent's output -- one per DailyTask, generated automatically right
+    after task assignment (planning/pitching.py). Config-driven from pitch_config/'s 5
+    CSVs (Visit-Purpose taxonomy, Ask/Tell/Wish structure, S1-S8 applicable-data-source
+    mapping) -- see AGENT_OPERATING_PROMPTS.md / the pitching-agent memory for the full
+    design. purpose_key is the matched Purpose or Purpose-combo (set-matched, since the
+    task engine's own combo ordering doesn't always match pitch_config's key ordering)."""
+
+    daily_task = models.OneToOneField(DailyTask, related_name="pitch", on_delete=models.CASCADE)
+    purpose_key = models.CharField(max_length=255)
+    script_hindi = models.TextField()
+    # e.g. ["S5 Outstanding", "S8 YTD PL Sale"] / ["S4 Current Inventory (no DC-level source)"]
+    data_sources_used = models.JSONField(default=list, blank=True)
+    data_sources_skipped = models.JSONField(default=list, blank=True)
+    generated_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Pitch for {self.daily_task_id} ({self.purpose_key})"

@@ -1,0 +1,13 @@
+Required Data Sources — SE Field Notes (refined),,
+"Source: handwritten field notes. Replaces the earlier 7-item preface list with the 8 sources actually named on-ground. Note per notes: too many data points confuse the pitch — the point is to pull the RIGHT subset per visit purpose, strategically, to find the win — not to surface all 8 every time.",,
+ID,Data Source,What it is / why it matters
+S1,Same-Block Purchase (Product-wise),"Table of what fellow retailers in the same block bought, broken out by product — the peer-proof lever for a Sale pitch."
+S2,Last Discount & Suggested Discount,"What discount the DC got last time, plus the system-suggested discount for this visit — the close lever."
+S3,Historical Purchase & Sale by DC,"This DC's own buying/selling pattern over time — used to spot preference, cycle, and payment behavior."
+S4,Current Inventory,What's physically/system-recorded as in stock at the DC right now.
+S5,Outstanding,The DC's current due amount and aging — the core lever for P2B and Collection.
+S6,Last Year DC Purchase,What this DC bought in the same period last year — seasonal benchmark.
+S7,YTD of DC Purchase,This DC's total purchase so far this year — tracks progress against expectation.
+S8,YTD of Private Label Sale,This DC's Private Label sale so far this year — the specific lever for the PL push (BO1).
+,,
+"User model (from notes): User = SE (Sales Executive). DC Partner = the retailer who sells on to farmers. SE already understands English and has the judgement to know what to say — the gap is data discipline, not language. One visit happens per DC, and a single visit can carry multiple tasks/purposes.",,

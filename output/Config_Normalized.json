@@ -1,0 +1,560 @@
+[
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 0 \u2014 Ground Rules (apply to every objective)",
+    "Param_Key": "0.1",
+    "Parameter": "Scoring level",
+    "Configured_Value": "Both, kept \u2014 but DC rating treated as high priority; SE grade benchmarked against last year's performance (not just this-month average)",
+    "Formula": "N/A \u2014 organisational rule, not a numeric formula. Two independent scores computed: DC_Score (per DC, see BO1-BO5 below) and SE_Score = f(This_Year_Performance, Last_Year_Performance) [benchmark formula TBD]",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 0 \u2014 Ground Rules (apply to every objective)",
+    "Param_Key": "0.2",
+    "Parameter": "Time period definitions",
+    "Configured_Value": "Confirmed \u2014 'last 90 days' window (today minus 90 days) is the primary lookback used across objectives",
+    "Formula": "Period_Start = TODAY() \u2212 90; Period_End = TODAY(). This window is the primary lookback referenced wherever an 'average' or 'recent performance' formula is used below.",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 0 \u2014 Ground Rules (apply to every objective)",
+    "Param_Key": "0.3",
+    "Parameter": "Mid-month target scaling",
+    "Configured_Value": "No \u2014 always compare against the full month's target (scaling down would weaken the SE's habit of hitting full target early)",
+    "Formula": "Effective_Target = Full_Month_Target (constant all month; NOT Full_Month_Target \u00d7 Days_Passed \u00f7 Days_In_Month)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 0 \u2014 Ground Rules (apply to every objective)",
+    "Param_Key": "0.4",
+    "Parameter": "Grade scale meaning",
+    "Configured_Value": "Confirmed \u2014 A=best, D=worst, based on: Avg. repayment days, Gross margin (\u20b9), Private Label value, Net revenue value, Gross margin %",
+    "Formula": "N/A \u2014 defines grade direction only (A=highest performance, D=lowest), applied uniformly to every grade formula below.",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 1 \u2014 Objective 1 (BO1): Private Label Sales",
+    "Param_Key": "1.1",
+    "Parameter": "PL measurement unit",
+    "Configured_Value": "Expanded \u2014 track all three measures in parallel: (1) Total value of PL orders (\u20b9) [original \u2605 default], (2) Number of PL orders placed, (3) Number of distinct DCs buying PL",
+    "Formula": "PL_Value (\u20b9) = SUM(Order_Line_Value) WHERE Product.Tag=\"Private Label\" AND Order_Date in period.\nPL_Order_Count = COUNT(Orders) WHERE Product.Tag=\"Private Label\" AND Order_Date in period.\nPL_DC_Count = COUNT(DISTINCT DC_ID) WHERE DC placed \u22651 Private Label order AND Order_Date in period",
+    "Status": "Expanded (Multi-Metric)"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 1 \u2014 Objective 1 (BO1): Private Label Sales",
+    "Param_Key": "1.2",
+    "Parameter": "PL comparison baseline",
+    "Configured_Value": "Overridden \u2014 compare against BOTH: (1) average of the last 90 days, and (2) the AOP annual target; AOP parameter itself flexes with weather, new product launches, and sales team headcount on ground",
+    "Formula": "PL_Expected_90d = AVERAGE(PL_Actual) over trailing 90 days; PL_Expected_AOP = AOP_Target_PL (adjusted periodically for weather / new-product / team-size factors). PL_Expected = COMBINE(PL_Expected_90d, PL_Expected_AOP) [combination method TBD \u2014 e.g. average of the two, or MAX/MIN]",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 1 \u2014 Objective 1 (BO1): Private Label Sales",
+    "Param_Key": "1.3",
+    "Parameter": "PL growth requirement",
+    "Configured_Value": "Growth requirement is not a fixed number \u2014 instead, require x% growth tied to the AOP target",
+    "Formula": "PL_Expected = AOP_Target_PL \u00d7 (1 + x%_dynamic)",
+    "Status": "Agent-Determined (Dynamic)"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 1 \u2014 Objective 1 (BO1): Private Label Sales",
+    "Param_Key": "1.4",
+    "Parameter": "PL product definition",
+    "Configured_Value": "Any product already tagged as Private Label (own product) in the system",
+    "Formula": "Include Order_Line WHERE Product.Tag = \"Private Label\" (system tag; no separate brand list or category filter needed)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 1 \u2014 Objective 1 (BO1): Private Label Sales",
+    "Param_Key": "1.5",
+    "Parameter": "PL grade cut-offs",
+    "Configured_Value": "Custom cut-offs \u2014 A = 80-100% \u00b7 B = 60-80% \u00b7 C = 40-60% \u00b7 D < 40%",
+    "Formula": "PL_Ratio = PL_Actual \u00f7 PL_Expected. Grade = IF(PL_Ratio\u22650.80,\"A\", IF(PL_Ratio\u22650.60,\"B\", IF(PL_Ratio\u22650.40,\"C\",\"D\")))",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 2 \u2014 Objective 2 (BO2): DC Visits (Coverage & Effort)",
+    "Param_Key": "2.1",
+    "Parameter": "Valid visit definition",
+    "Configured_Value": "A visit must include: staying at the DC for at least 10 minutes AND logging a photograph",
+    "Formula": "Valid_Visit = (Visit_Duration_Minutes \u2265 10) AND (Photo_Logged = TRUE)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 2 \u2014 Objective 2 (BO2): DC Visits (Coverage & Effort)",
+    "Param_Key": "2.2",
+    "Parameter": "Coverage target",
+    "Configured_Value": "Fixed target \u2014 all mapped DCs in the SE's territory must be covered within the month (not a multiplier of last month)",
+    "Formula": "Coverage_Target = COUNT(All Mapped DCs in SE Territory); Coverage_% = COUNT(DISTINCT DCs Visited This Month) \u00f7 Coverage_Target",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 2 \u2014 Objective 2 (BO2): DC Visits (Coverage & Effort)",
+    "Param_Key": "2.3",
+    "Parameter": "Effort target",
+    "Configured_Value": "Variable / not fixed \u2014 condition: DC-to-SE mapping must first be corrected (no under-mapping or over-mapping) before an effort multiplier is meaningful",
+    "Formula": "Effort_Target = Last_Month_Total_Visits \u00d7 Multiplier_Dynamic, computed only after Mapping_Correction_Complete = TRUE",
+    "Status": "Agent-Determined (Dynamic)"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 2 \u2014 Objective 2 (BO2): DC Visits (Coverage & Effort)",
+    "Param_Key": "2.4",
+    "Parameter": "Combine coverage + effort",
+    "Configured_Value": "Weighted average of coverage % and effort % (not multiplication)",
+    "Formula": "BO2_Score = (W1 \u00d7 Coverage_%) + (W2 \u00d7 Effort_%), where W1 + W2 = 100%, weights set dynamically",
+    "Status": "Agent-Determined (Dynamic)"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 2 \u2014 Objective 2 (BO2): DC Visits (Coverage & Effort)",
+    "Param_Key": "2.5",
+    "Parameter": "Min days before revisit",
+    "Configured_Value": "5 days under normal conditions; if the DC has an overdue (OD) balance, timing instead depends on direct DC/SE communication",
+    "Formula": "Revisit_Allowed = (Days_Since_Last_Visit \u2265 5) OR (DC.OD_Status = TRUE AND Agreed_Revisit_Date reached)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 2 \u2014 Objective 2 (BO2): DC Visits (Coverage & Effort)",
+    "Param_Key": "2.6",
+    "Parameter": "Overdue weighting for visit priority",
+    "Configured_Value": "Confirmed \u2014 overdue after 30 days; large DC capped at 2\u00d7 weight vs. a small DC",
+    "Formula": "Overdue_Flag = (Days_Since_Last_Visit > 30); Priority_Weight = Base_Weight \u00d7 Size_Multiplier, where Size_Multiplier = MIN(DC_Size_Ratio, 2.0)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 2 \u2014 Objective 2 (BO2): DC Visits (Coverage & Effort)",
+    "Param_Key": "2.7",
+    "Parameter": "BO2 grade cut-offs",
+    "Configured_Value": "Confirmed \u2014 kept as-is",
+    "Formula": "CovEffort_Grade = IF(BO2_Score\u22651.0,\"A\",IF(BO2_Score\u22650.7,\"B\",IF(BO2_Score\u22650.4,\"C\",\"D\"))). VisitPriority_Grade = IF(Priority_Score\u22651.5,\"A\",IF(Priority_Score\u22651.0,\"B\",IF(Priority_Score\u22650.5,\"C\",\"D\")))",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 3 \u2014 Objective 3 (BO3): Outstanding Payments (AR)",
+    "Param_Key": "3.1",
+    "Parameter": "Expected outstanding balance",
+    "Configured_Value": "Confirmed \u2014 as above",
+    "Formula": "Expected_Outstanding = Last_Month_Outstanding \u00d7 (1 + Sales_Growth_%)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 3 \u2014 Objective 3 (BO3): Outstanding Payments (AR)",
+    "Param_Key": "3.2",
+    "Parameter": "Aging buckets",
+    "Configured_Value": "Confirmed \u2014 0-30 \u00b7 31-60 \u00b7 61-90 \u00b7 90+ days",
+    "Formula": "Bucket = IF(Days_Overdue\u226430,\"0-30\",IF(Days_Overdue\u226460,\"31-60\",IF(Days_Overdue\u226490,\"61-90\",\"90+\")))",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 3 \u2014 Objective 3 (BO3): Outstanding Payments (AR)",
+    "Param_Key": "3.3",
+    "Parameter": "Aging bucket risk weights",
+    "Configured_Value": "Confirmed \u2014 0.2 / 0.5 / 0.8 / 1.0",
+    "Formula": "Risk_Weight = LOOKUP(Bucket, {\"0-30\":0.2, \"31-60\":0.5, \"61-90\":0.8, \"90+\":1.0}); DC_Risk_Amount = SUM(Bucket_Amount \u00d7 Risk_Weight) across all buckets",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 3 \u2014 Objective 3 (BO3): Outstanding Payments (AR)",
+    "Param_Key": "3.4",
+    "Parameter": "Score cap vs. expected",
+    "Configured_Value": "Confirmed \u2014 cap between 50% and 150% of expected",
+    "Formula": "Outstanding_Ratio = MIN(MAX(DC_Risk_Amount \u00f7 Expected_Outstanding, 0.50), 1.50)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 3 \u2014 Objective 3 (BO3): Outstanding Payments (AR)",
+    "Param_Key": "3.5",
+    "Parameter": "What counts as outstanding",
+    "Configured_Value": "Confirmed \u2014 all open, unpaid invoices (including disputed amounts)",
+    "Formula": "Outstanding_Amount = SUM(Invoice_Amount) WHERE Invoice_Status = \"Open/Unpaid\" (no exclusion for disputed or billing-error line items)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 3 \u2014 Objective 3 (BO3): Outstanding Payments (AR)",
+    "Param_Key": "3.6",
+    "Parameter": "BO3 grade cut-offs",
+    "Configured_Value": "Confirmed \u2014 as above",
+    "Formula": "BO3_Grade = IF(Outstanding_Ratio\u22651.0,\"A\",IF(Outstanding_Ratio\u22650.75,\"B\",IF(Outstanding_Ratio\u22650.50,\"C\",\"D\")))  \u2014 formula unchanged from system; ratio direction as originally defined by engine (confirm with engineering if 'higher = better' or 'higher = riskier')",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 3 \u2014 Objective 3 (BO3): Outstanding Payments (AR)",
+    "Param_Key": "3.7",
+    "Parameter": "\ud83d\udd12 Block orders on D grade",
+    "Configured_Value": "Confirmed \u2014 Yes, block new order booking until the balance is cleared",
+    "Formula": "IF DC.BO3_Grade = \"D\" THEN Block_New_Order = TRUE (cleared only when Outstanding_Amount = 0)",
+    "Status": "Safety Rule - Confirmed"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 4 \u2014 Objective 4 (BO4): Overall Sales Growth",
+    "Param_Key": "4.1",
+    "Parameter": "Primary focus of BO4",
+    "Configured_Value": "Both \u2014 momentum sets the daily priority; reactivation of quiet DCs builds the visit list",
+    "Formula": "BO4_Priority_Score = Momentum (see 4.2); BO4_Visit_List = RANK(DCs, BY Reactivation_Need DESC) WHERE DC.Status = \"Quiet/Silent\"",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 4 \u2014 Objective 4 (BO4): Overall Sales Growth",
+    "Param_Key": "4.2",
+    "Parameter": "Momentum measurement",
+    "Configured_Value": "Sales \u00f7 all working days (including days with no selling)",
+    "Formula": "Momentum = Total_Sales_This_Period \u00f7 Total_Working_Days_In_Period (denominator = ALL working days, not just days with a sale)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 4 \u2014 Objective 4 (BO4): Overall Sales Growth",
+    "Param_Key": "4.3",
+    "Parameter": "Spread measurement",
+    "Configured_Value": "Number of DCs that bought something, compared against a 12-month base (not current-territory ratio)",
+    "Formula": "Spread_Ratio = COUNT(DISTINCT DCs_With_Purchase_This_Month) \u00f7 AVERAGE(COUNT(DISTINCT DCs_With_Purchase)) over trailing 12 months",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 4 \u2014 Objective 4 (BO4): Overall Sales Growth",
+    "Param_Key": "4.4",
+    "Parameter": "BO4 growth target multipliers",
+    "Configured_Value": "Category-specific multipliers: Cattle Feed \u00d71.2 \u00b7 Crop Nutrition \u00d71.15 \u00b7 Crop Protection \u00d71.2 \u00b7 Field Crop = depends on seasonality (no fixed multiplier given)",
+    "Formula": "Momentum_Target = Last_Period_Momentum \u00d7 Category_Multiplier, where Category_Multiplier = LOOKUP(Product_Category, {\"Cattle Feed\":1.20, \"Crop Nutrition\":1.15, \"Crop Protection\":1.20, \"Field Crop\":Seasonal_Factor[TBD]})",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 4 \u2014 Objective 4 (BO4): Overall Sales Growth",
+    "Param_Key": "4.5",
+    "Parameter": "BO4 grade cut-offs",
+    "Configured_Value": "Confirmed \u2014 keep the current (\u2605) cut-offs, no custom thresholds",
+    "Formula": "BO4_Grade = [existing system cut-off logic, unchanged]",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 5 \u2014 Objective 5 (BO5): Long-Term Growth (Farmer Meetings & Onboarding)",
+    "Param_Key": "5.1",
+    "Parameter": "Valid farmer meeting",
+    "Configured_Value": "Two-tier definition \u2014 Mega farmer meeting: 50+ farmers \u00b7 Regular farmer meeting: 10+ farmers",
+    "Formula": "Valid_Meeting = (Attendee_Count \u2265 50 AND Meeting_Type=\"Mega\") OR (Attendee_Count \u2265 10 AND Meeting_Type=\"Regular\")",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 5 \u2014 Objective 5 (BO5): Long-Term Growth (Farmer Meetings & Onboarding)",
+    "Param_Key": "5.2",
+    "Parameter": "New DC onboarded definition",
+    "Configured_Value": "Confirmed \u2014 DC places its first order",
+    "Formula": "Onboarded = (First_Order_Placed = TRUE)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 5 \u2014 Objective 5 (BO5): Long-Term Growth (Farmer Meetings & Onboarding)",
+    "Param_Key": "5.3",
+    "Parameter": "Farmer meeting target",
+    "Configured_Value": "Flat target \u2014 2 Mega farmer meetings per month",
+    "Formula": "Meeting_Target = 2 Mega meetings / month (flat; not scaled by count of PL-active DCs)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 5 \u2014 Objective 5 (BO5): Long-Term Growth (Farmer Meetings & Onboarding)",
+    "Param_Key": "5.4",
+    "Parameter": "New DC onboarding target",
+    "Configured_Value": "Flat target \u2014 2 new DCs onboarded per month",
+    "Formula": "Onboarding_Target = 2 new DCs / month (flat; not scaled by territory size)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 5 \u2014 Objective 5 (BO5): Long-Term Growth (Farmer Meetings & Onboarding)",
+    "Param_Key": "5.5",
+    "Parameter": "BO5 internal weighting",
+    "Configured_Value": "50% / 50%",
+    "Formula": "BO5_Score = 0.50 \u00d7 Meeting_Score_% + 0.50 \u00d7 Onboarding_Score_%, where Meeting_Score_% = Meetings_Held \u00f7 Meeting_Target and Onboarding_Score_% = DCs_Onboarded \u00f7 Onboarding_Target",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 5 \u2014 Objective 5 (BO5): Long-Term Growth (Farmer Meetings & Onboarding)",
+    "Param_Key": "5.6",
+    "Parameter": "BO5 measurement frequency",
+    "Configured_Value": "Monthly",
+    "Formula": "Recalculate BO5_Score on Calculation_Frequency = \"Monthly\" (was \"Weekly\")",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 6 \u2014 Rules That Remove a DC From Consideration Entirely",
+    "Param_Key": "6.1",
+    "Parameter": "Excluded DC statuses",
+    "Configured_Value": "Inactive/closed DCs excluded; additionally factor in supply-chain variable cost as an exclusion consideration",
+    "Formula": "Exclude DC WHERE Status IN (\"Inactive\",\"Closed\") OR Supply_Chain_Cost_Ratio > Dynamic_Outlier_Threshold(route/cluster)",
+    "Status": "Agent-Determined (Dynamic)"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 6 \u2014 Rules That Remove a DC From Consideration Entirely",
+    "Param_Key": "6.2",
+    "Parameter": "Min days since last visit (global)",
+    "Configured_Value": "Confirmed \u2014 5 days",
+    "Formula": "Exclude DC FROM all lists WHERE Days_Since_Last_Visit < 5",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 6 \u2014 Rules That Remove a DC From Consideration Entirely",
+    "Param_Key": "6.3",
+    "Parameter": "Seasonal skip rule",
+    "Configured_Value": "No \u2014 cattle feed and other products are used constantly, so no seasonal skip applied",
+    "Formula": "Seasonal_Skip = FALSE (always included; no crop-calendar filter applied to any DC)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 6 \u2014 Rules That Remove a DC From Consideration Entirely",
+    "Param_Key": "6.4",
+    "Parameter": "Full block conditions",
+    "Configured_Value": "For an overdue (OD) DC, the SE should still visit (not fully blocked); only a legal/compliance hold removes the DC from all lists entirely",
+    "Formula": "Full_Block = (DC.Legal_Hold = TRUE); Credit_Blocked/Blacklisted DCs evaluated live, not auto-blocked",
+    "Status": "Agent-Determined (Dynamic)"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 7 \u2014 Turning the 5 Objectives Into One Daily Priority",
+    "Param_Key": "7.1",
+    "Parameter": "# objectives feeding ranking",
+    "Configured_Value": "Confirmed \u2014 top 3 objectives",
+    "Formula": "Ranked_Objectives = TOP 3 objectives BY Objective_Score DESC (per DC or per SE)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 7 \u2014 Turning the 5 Objectives Into One Daily Priority",
+    "Param_Key": "7.2",
+    "Parameter": "1st/2nd/3rd priority weighting",
+    "Configured_Value": "Confirmed \u2014 40% / 35% / 25%",
+    "Formula": "Daily_Priority_Score = 0.40 \u00d7 Score_Rank1 + 0.35 \u00d7 Score_Rank2 + 0.25 \u00d7 Score_Rank3",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 7 \u2014 Turning the 5 Objectives Into One Daily Priority",
+    "Param_Key": "7.3",
+    "Parameter": "Default tie-break order",
+    "Configured_Value": "Custom order confirmed: Outstanding Payments, Private Label Sale, DC Visits, Long-Term Growth",
+    "Formula": "Tie_Break_Order = [Outstanding Payments, Private Label, DC Visits, Long-Term Growth, Overall Sales(position TBD)]",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 7 \u2014 Turning the 5 Objectives Into One Daily Priority",
+    "Param_Key": "7.4",
+    "Parameter": "Override rules",
+    "Configured_Value": "Rule (b) explicitly confirmed \u2014 all-D reorder to Visits, PL, Overall Sales, Outstanding, Long-Term. Rule (a) [Outstanding=D caps Overall Sales at B] not explicitly re-confirmed",
+    "Formula": "Rule_A [applied by default]: IF BO3_Grade=\"D\" THEN BO4_Grade = MIN(BO4_Grade,\"B\"). Rule_B [confirmed]: IF ALL(BO1..BO5 Grades)=\"D\" THEN Priority_Order = [Visits, PL, Overall Sales, Outstanding, Long-Term]",
+    "Status": "Agent-Determined (Dynamic)"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.1",
+    "Parameter": "Objectives per day + long-cycle cap",
+    "Configured_Value": "Confirmed \u2014 max 3 objectives/day; 1 long-cycle activity/day",
+    "Formula": "Max_Objectives_Per_Day = 3; Max_Long_Cycle_Activities_Per_Day = 1 (long-cycle = farmer meeting or onboarding)",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.2",
+    "Parameter": "SE daily working capacity",
+    "Configured_Value": "Custom \u2014 8-hour day = 60 min calls + 7 hrs field",
+    "Formula": "Call_Minutes_Available = 60; Field_Minutes_Available = 7 \u00d7 60 = 420; Total_Minutes = 480 (8 hrs)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.3",
+    "Parameter": "Assumed activity durations",
+    "Configured_Value": "Custom \u2014 Call 10 min \u00b7 Visit 45-60 min \u00b7 Farmer meeting 180 min (or full day if Mega meeting) \u00b7 Onboarding 120 min",
+    "Formula": "Call_Duration = 10 min; Visit_Duration = 45\u201360 min; Meeting_Duration = IF(Meeting_Type=\"Mega\", Full_Day, 180 min); Onboarding_Duration = 120 min",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.4",
+    "Parameter": "Max DCs per objective per day/week",
+    "Configured_Value": "Confirmed \u2014 as above",
+    "Formula": "Daily_Plan_Cap = {Visits:6/day, Outstanding:4/day, PL:5/day, Long_Term:2/week}",
+    "Status": "Confirmed Default"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.5",
+    "Parameter": "Qualification conditions per list",
+    "Configured_Value": "Confirmed with one override \u2014 Visits: not visited in 14 days (= \u2605 default) \u00b7 Outstanding: balance \u2265\u20b920,000 & overdue \u226515 days (overridden from \u2605 \u20b95,000/30 days) \u00b7 PL: <3 orders in 30 days (= \u2605 default) \u00b7 Long-Term: had PL sales in last 90 days (= \u2605 default)",
+    "Formula": "Qualify_Visits = (Days_Since_Last_Visit > 14); Qualify_Outstanding = (Balance \u2265 20000 AND Days_Overdue \u2265 15); Qualify_PL = (PL_Order_Count_30d < 3); Qualify_LongTerm = (Had_PL_Sale_Last_90d = TRUE)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.6",
+    "Parameter": "'Win' definition per objective",
+    "Configured_Value": "Same, except Outstanding = payment received only (promise-to-pay date removed as a qualifying win)",
+    "Formula": "PL_Win=(Order_Booked=TRUE); Visit_Win=(Visit_Completed=TRUE); Outstanding_Win=(Payment_Received=TRUE); Sales_Win=(Order_Placed=TRUE); LongTerm_Win=(Meeting_Held=TRUE OR DC_Onboarded=TRUE)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.7",
+    "Parameter": "Contact-fatigue limits",
+    "Configured_Value": "Max 2 attempts per 3-day gap; wait 2 days after a failed call; wait per route-planning schedule (not a fixed day count) after a failed visit; -30% priority after 2 attempts",
+    "Formula": "Max_Attempts = 2 per rolling 3-day window; Wait_After_Failed_Call = 2 days; Wait_After_Failed_Visit = Route_Plan_Schedule (variable); IF Attempts\u22652 THEN Priority = Priority \u00d7 (1 \u2212 0.30)",
+    "Status": "Overridden"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.8",
+    "Parameter": "Additional safety rules",
+    "Configured_Value": "Visit-before-PL-order rule retained; add: maximum discount the SE/system may offer (% not yet specified) and DC approval required in-system before order creation",
+    "Formula": "REQUIRE Visit_Completed=TRUE BEFORE Order_Booking(\"Private Label\"); Discount_% \u2264 [Max_Discount_Dynamic]; REQUIRE DC_Approval_In_System=TRUE BEFORE Order_Creation",
+    "Status": "Agent-Determined (Dynamic)"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.9",
+    "Parameter": "Monthly travel distance cap",
+    "Configured_Value": "1,600 km per SE per month",
+    "Formula": "Total_Monthly_Travel_KM \u2264 1600; route planner rejects/re-sequences any day's visit plan that would push the SE's cumulative monthly distance past this cap",
+    "Status": "New Parameter"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.10",
+    "Parameter": "Maximum daily tasks",
+    "Configured_Value": "5 tasks maximum per day",
+    "Formula": "COUNT(Daily_Task_List) \u2264 5 \u2014 see the \"Daily Task Assignment Formula\" sheet for the full layered logic that populates this list",
+    "Status": "New Parameter"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.11",
+    "Parameter": "DC Visit / Farmer Meeting exclusivity",
+    "Configured_Value": "Mutually exclusive, both directions: if the system proposes a DC Visit day, no Farmer Meeting exists in that day's plan, and if a Farmer Meeting is scheduled, no DC Visit exists in that day's plan",
+    "Formula": "IF Day_Type = \"Farmer Meeting\": Daily_Task_List = [Farmer_Meeting_Task] only, DC_Visit tasks excluded.\nIF Day_Type = \"DC Visit\": Daily_Task_List = [DC_Visit_Task, ...] only, Farmer_Meeting_Task excluded.\nDay_Type is decided once per day by Layer 1 before either branch runs \u2014 never both in the same Daily_Task_List",
+    "Status": "New Parameter"
+  },
+  {
+    "Kind": "all_parameters",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "8.12",
+    "Parameter": "DC Visit purpose bundling",
+    "Configured_Value": "Yes \u2014 a single DC Visit can bundle multiple Visit Purposes from the real system list (Promise To Bill (P2B), Promise To Pay / Collection, Query Resolution, Sale, Stock at DC) in one meeting, as mapped in the \"Visit Type & Purpose Mapping\" and \"Visit Type to Purpose (System)\" sheets, rather than requiring a separate visit per purpose",
+    "Formula": "Matched_Purposes(DC) = subset of {Promise_To_Bill, Promise_To_Pay_Collection, Query_Resolution, Sale, Stock_at_DC} that apply this visit:\n  IF DC \u2208 Qualify_Outstanding (8.5) \u2192 include Promise_To_Pay_Collection (and Promise_To_Bill where a billing commitment is the ask)\n  IF DC \u2208 Qualify_PL or Qualify_Visits-driven order opportunity \u2192 include Sale\n  Query_Resolution and Stock_at_DC may be logged ad hoc by the SE regardless of what the algorithm pre-loaded\nTask_Weight(DC) = 1 regardless of |Matched_Purposes(DC)| \u2014 one DC Visit = one task slot, however many purposes it carries",
+    "Status": "New Parameter"
+  },
+  {
+    "Kind": "se_incentive_policy",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "10.1",
+    "Parameter": "Parameter weightage",
+    "Configured_Value": "WPS = (Revenue% \u00d7 0.25) + (Collection% \u00d7 0.30) + (Product Mix% \u00d7 0.25) + (Farmer Meeting% \u00d7 0.20)",
+    "Formula": "WPS = (Revenue% \u00d7 0.25) + (Collection% \u00d7 0.30) + (Product Mix% \u00d7 0.25) + (Farmer Meeting% \u00d7 0.20)",
+    "Status": null
+  },
+  {
+    "Kind": "se_incentive_policy",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "10.2",
+    "Parameter": "Revenue (Net Sales)",
+    "Configured_Value": "Revenue_% = MIN(Invoiced_Sales_After_Returns \u00f7 AOP_GMV_Target, 2.00); IF Revenue_% < 0.60 THEN Revenue_Score = 0 AND ProductMix_Score = 0",
+    "Formula": "Revenue_% = MIN(Invoiced_Sales_After_Returns \u00f7 AOP_GMV_Target, 2.00); IF Revenue_% < 0.60 THEN Revenue_Score = 0 AND ProductMix_Score = 0",
+    "Status": null
+  },
+  {
+    "Kind": "se_incentive_policy",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "10.3",
+    "Parameter": "Product Mix",
+    "Configured_Value": "Mix_Score = \u03a3(Product_Score \u00d7 Contribution_%); Achievement = IF(Mix_Score>3,150%,IF(Mix_Score\u22652.5,120%,IF(Mix_Score\u22652,100%,IF(Mix_Score\u22651.5,50%,0%)))); forced to 0% if Revenue_% < 0.60",
+    "Formula": "Mix_Score = \u03a3(Product_Score \u00d7 Contribution_%); Achievement = IF(Mix_Score>3,150%,IF(Mix_Score\u22652.5,120%,IF(Mix_Score\u22652,100%,IF(Mix_Score\u22651.5,50%,0%)))); forced to 0% if Revenue_% < 0.60",
+    "Status": null
+  },
+  {
+    "Kind": "se_incentive_policy",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "10.4",
+    "Parameter": "Collection (OD)",
+    "Configured_Value": "OD_% = Outstanding_Overdue \u00f7 Sales_Trailing_12M; Collection_Achievement = IF(OD_%>0.10,0%,IF(OD_%\u22650.06,60%,IF(OD_%\u22650.04,80%,IF(OD_%\u22650.02,100%,IF(OD_%\u22650.01,150%,200%))))); IF OD_%>0.10 THEN Final_Payout_% = MIN(Final_Payout_%, 70%)",
+    "Formula": "OD_% = Outstanding_Overdue \u00f7 Sales_Trailing_12M; Collection_Achievement = IF(OD_%>0.10,0%,IF(OD_%\u22650.06,60%,IF(OD_%\u22650.04,80%,IF(OD_%\u22650.02,100%,IF(OD_%\u22650.01,150%,200%))))); IF OD_%>0.10 THEN Final_Payout_% = MIN(Final_Payout_%, 70%)",
+    "Status": null
+  },
+  {
+    "Kind": "se_incentive_policy",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "10.5",
+    "Parameter": "Farmer Meeting (Long-Term Growth)",
+    "Configured_Value": "Meetings_Per_Month_Target = 2; Min_Attendees = 50; IF Meetings_6M < 8 THEN Score = 0; Achievement = MIN(Meetings_Held \u00f7 12, 100%)",
+    "Formula": "Meetings_Per_Month_Target = 2; Min_Attendees = 50; IF Meetings_6M < 8 THEN Score = 0; Achievement = MIN(Meetings_Held \u00f7 12, 100%)",
+    "Status": null
+  },
+  {
+    "Kind": "se_incentive_policy",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "10.6",
+    "Parameter": "Final Payout Slab",
+    "Configured_Value": "Payout_% = IF(WPS<60%,0%,IF(WPS<70%,50%,IF(WPS<80%,70%,IF(WPS<90%,80%,IF(WPS<100%,90%,IF(WPS<120%,100%,IF(WPS<150%,120%,150%)))))))",
+    "Formula": "Payout_% = IF(WPS<60%,0%,IF(WPS<70%,50%,IF(WPS<80%,70%,IF(WPS<90%,80%,IF(WPS<100%,90%,IF(WPS<120%,100%,IF(WPS<150%,120%,150%)))))))",
+    "Status": null
+  },
+  {
+    "Kind": "se_incentive_policy",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "10.7",
+    "Parameter": "Administrative & payout rules",
+    "Configured_Value": "N/A \u2014 administrative rules, not a scoring formula",
+    "Formula": "N/A \u2014 administrative rules, not a scoring formula",
+    "Status": null
+  },
+  {
+    "Kind": "se_incentive_policy",
+    "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
+    "Param_Key": "10.8",
+    "Parameter": "Quality issue adjustment",
+    "Configured_Value": "IF Quality_Impact_Value \u2265 State_Threshold(state) THEN Adjust_Next_Quarter_Calc = TRUE, State_Threshold = 50L for {UP,BH,MP,MH,WB,JH}, 25L for {RJ,OD,HR,GJ,CH}",
+    "Formula": "IF Quality_Impact_Value \u2265 State_Threshold(state) THEN Adjust_Next_Quarter_Calc = TRUE, State_Threshold = 50L for {UP,BH,MP,MH,WB,JH}, 25L for {RJ,OD,HR,GJ,CH}",
+    "Status": null
+  }
+]
