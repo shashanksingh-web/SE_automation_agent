@@ -11,17 +11,10 @@ and Geo_Mapping_Normalized.json (live-only, Source 1c) for Districts/Blocks/ZBM/
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
-def _load(output_dir: Path, filename: str) -> list:
-    path = output_dir / filename
-    if not path.exists():
-        raise FileNotFoundError(f"{path} not found -- run se_daily_plan_agent.py (Data Normalization Agent) first.")
-    with open(path) as f:
-        return json.load(f)
+from .data_cache import load_output_json as _load
 
 
 def _norm(v: Optional[str]) -> str:

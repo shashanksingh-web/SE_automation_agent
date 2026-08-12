@@ -39,7 +39,7 @@ from django.utils import timezone
 sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
-from . import routing
+from . import data_cache, routing
 from .models import DailyTask, ExceptionRecord, ObjectiveCompletionStats, PlanRun
 from .notify import send_alert
 
@@ -55,15 +55,18 @@ def _dc_master_path() -> Path:
 
 
 def load_dc_master() -> agent.Table:
-    import json
-
-    path = _dc_master_path()
-    if not path.exists():
+    # Cached by planning.data_cache -- called once per generate_plan_for_scope(), and
+    # run_scheduled_tuff calls that in a loop over every active ScheduledScope (93 in
+    # this deployment) without normalization changing in between; re-parsing this
+    # ~12MB/19k-row file fresh on every scope cost ~84ms x 93 = ~7.8s of pure redundant
+    # I/O per cron run before this cache existed.
+    try:
+        return data_cache.load_output_json(_output_dir(), "DC_Master_Normalized.json")
+    except FileNotFoundError as e:
         raise PlanningError(
-            f"{path} not found. Run the Data Normalization Agent first: "
+            f"{e} Run the Data Normalization Agent first: "
             "`python se_daily_plan_agent.py` from the project root (see AGENT_OPERATING_PROMPTS.md Prompt 1)."
         )
-    return json.load(open(path))
 
 
 def load_aop_targets() -> agent.Table:
@@ -71,12 +74,10 @@ def load_aop_targets() -> agent.Table:
     PL scoring block in generate_plan_for_scope), not a hard requirement the way
     DC_Master is -- missing/absent output degrades PL_Expected to its trailing-average
     leg only, same honest-degrade pattern as everywhere else, rather than raising."""
-    import json
-
-    path = Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output" / "AOP_Target_Normalized.json"
-    if not path.exists():
+    try:
+        return data_cache.load_output_json(_output_dir(), "AOP_Target_Normalized.json")
+    except FileNotFoundError:
         return []
-    return json.load(open(path))
 
 
 def _sql_list(ids: List[str]) -> str:

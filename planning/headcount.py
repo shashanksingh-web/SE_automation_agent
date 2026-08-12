@@ -30,28 +30,24 @@ Geo_Mapping (live-only, Source 1c never normalizes into DC_Master)."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
+
+from .data_cache import load_output_json
 
 
 def _norm(email: Optional[str]) -> str:
     return (email or "").strip().lower()
 
 
-def _load(output_dir: Path, filename: str) -> list:
-    path = output_dir / filename
-    if not path.exists():
-        raise FileNotFoundError(f"{path} not found -- run se_daily_plan_agent.py (Data Normalization Agent) first.")
-    with open(path) as f:
-        return json.load(f)
-
-
 def compute_active_headcount_bifurcation(output_dir: Path) -> Dict[str, Any]:
-    task_nodes = _load(output_dir, "Task_Nodes_Normalized.json")
-    geo_mapping = _load(output_dir, "Geo_Mapping_Normalized.json")
-    dc_master = _load(output_dir, "DC_Master_Normalized.json")
-    visits = _load(output_dir, "Visits_Normalized.json")
+    # Cached by planning.data_cache -- Task_Nodes/Visits alone are ~400ms each to parse
+    # (~40-47MB, 110k+ rows); this endpoint is meant to be hit repeatedly by a frontend,
+    # so paying that cost only when the underlying file actually changes matters.
+    task_nodes = load_output_json(output_dir, "Task_Nodes_Normalized.json")
+    geo_mapping = load_output_json(output_dir, "Geo_Mapping_Normalized.json")
+    dc_master = load_output_json(output_dir, "DC_Master_Normalized.json")
+    visits = load_output_json(output_dir, "Visits_Normalized.json")
 
     active_se: Dict[str, str] = {}  # lower email -> original casing (first seen)
     se_user_to_email: Dict[Any, str] = {}

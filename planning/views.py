@@ -11,6 +11,11 @@ from .services import _output_dir as _planning_output_dir
 
 def _serialize_task(t: DailyTask) -> dict:
     return {
+        # The DailyTask row's own DB id -- needed by the frontend to call
+        # GET /pitch/<daily_task_id>/ for this task (PitchScript is keyed on it, not on
+        # DC_ID/Sr_No). Never exposed before this, so a task row had no way to open its
+        # own pitch script.
+        "DailyTask_ID": t.id,
         "Sr_No": t.sr_no, "DC_Name": t.dc_name, "DC_ID": t.dc_id, "Distance_Km": t.distance_km,
         "Recommended_Task_Type": t.recommended_task_type, "Purpose_Of_Visit": t.purpose_of_visit,
         "Reason_Of_Visit": t.reason_of_visit, "Last_Visit_Date": t.last_visit_date,

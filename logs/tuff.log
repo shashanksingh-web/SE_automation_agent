@@ -1011,3 +1011,34 @@
 2026-08-12 11:10:46,602 WARNING django.request: Unprocessable Content: /api/planning/tuff/STATE/Nonexistentistan/
 2026-08-12 13:14:25,146 INFO django.utils.autoreload: Watching for file changes with StatReloader
 2026-08-12 13:18:41,776 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-12 14:54:49,549 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-12 14:56:32,821 WARNING django.request: Not Found: /api/planning/pitch/1/
+2026-08-12 15:10:44,755 ERROR django.request: Bad Gateway: /api/planning/state/Maharashtra/
+2026-08-12 15:22:01,747 ERROR django.request: Bad Gateway: /api/planning/state/Uttar Pradesh/
+2026-08-12 15:25:02,867 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #508 (ABM=E02190260 @ 2026-08-12): 17 exceptions across 139 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 15:33:01,627 ERROR django.request: Bad Gateway: /api/planning/state/Jharkhand/
+2026-08-12 15:33:02,845 ERROR django.request: Bad Gateway: /api/planning/state/West Bengal/
+2026-08-12 15:33:03,462 ERROR django.request: Bad Gateway: /api/planning/state/Chhattisgarh/
+2026-08-12 15:33:05,891 ERROR django.request: Bad Gateway: /api/planning/state/Jharkhand/
+2026-08-12 15:33:10,154 ERROR django.request: Bad Gateway: /api/planning/state/Chhattisgarh/
+2026-08-12 15:33:11,796 ERROR django.request: Bad Gateway: /api/planning/state/West Bengal/
+2026-08-12 15:33:16,306 ERROR django.request: Bad Gateway: /api/planning/state/Orissa/
+2026-08-12 15:33:20,102 ERROR django.request: Bad Gateway: /api/planning/state/Orissa/
+2026-08-12 15:33:37,854 ERROR django.request: Bad Gateway: /api/planning/state/Orissa/
+2026-08-12 15:33:38,549 ERROR django.request: Bad Gateway: /api/planning/state/Jharkhand/
+2026-08-12 15:33:41,362 ERROR django.request: Bad Gateway: /api/planning/state/West Bengal/
+2026-08-12 15:33:42,456 ERROR django.request: Bad Gateway: /api/planning/state/Orissa/
+2026-08-12 15:33:47,348 ERROR django.request: Bad Gateway: /api/planning/state/Jharkhand/
+2026-08-12 15:33:48,447 ERROR django.request: Bad Gateway: /api/planning/state/West Bengal/
+2026-08-12 15:33:51,490 ERROR django.request: Bad Gateway: /api/planning/state/Uttar Pradesh/
+2026-08-12 15:46:39,636 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 15:46:40,113 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-12 15:46:48,425 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 15:46:48,749 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-12 15:47:02,091 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/headcount.py changed, reloading.
+2026-08-12 15:47:02,420 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-12 15:47:14,797 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/directory.py changed, reloading.
+2026-08-12 15:47:15,169 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-12 15:49:58,340 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-12 15:49:58,922 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-12 15:50:19,582 INFO django.utils.autoreload: Watching for file changes with StatReloader
