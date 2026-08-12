@@ -16,10 +16,10 @@ class Command(BaseCommand):
     guarantee. Also used as the second half of `activate_tuff` -- see that command for
     the combined normalize-then-plan flow."""
 
-    help = "Run the SE Daily Task Agent for one scope (SE/ABM/Node/Block/District/State) and save the result."
+    help = "Run the SE Daily Task Agent for one scope (SE/ABM/RBM/Node/Block/District/State) and save the result."
 
     def add_arguments(self, parser):
-        parser.add_argument("scope_type", choices=[c.value for c in PlanRun.ScopeType], help="SE, ABM, NODE, BLOCK, DISTRICT, or STATE")
+        parser.add_argument("scope_type", choices=[c.value for c in PlanRun.ScopeType], help="SE, ABM, RBM, NODE, BLOCK, DISTRICT, or STATE")
         parser.add_argument("scope_value", help="e.g. an SE email, a node name, a state name, an ABM employee code, ...")
         parser.add_argument("--date", default=None, help="Plan date YYYY-MM-DD (default: today)")
         parser.add_argument("--json", action="store_true", help="Print the full plan as JSON instead of a summary")

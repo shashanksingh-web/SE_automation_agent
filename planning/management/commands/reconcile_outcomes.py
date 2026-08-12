@@ -32,7 +32,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--date", required=True, help="Plan date YYYY-MM-DD to reconcile (must be in the past)")
-        parser.add_argument("--scope-type", default=None, help="Restrict to one PlanRun scope type (SE/ABM/NODE/BLOCK/DISTRICT/STATE)")
+        parser.add_argument("--scope-type", default=None, help="Restrict to one PlanRun scope type (SE/ABM/RBM/NODE/BLOCK/DISTRICT/STATE)")
         parser.add_argument("--scope-value", default=None, help="Restrict to one PlanRun scope value (requires --scope-type)")
 
     def handle(self, *args, **options):

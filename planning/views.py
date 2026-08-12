@@ -1,8 +1,11 @@
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 
-from .models import DailyTask, PlanRun
-from .services import PlanningError, generate_plan_for_scope
+from .headcount import compute_active_headcount_bifurcation
+from .models import DailyTask, PitchScript, PlanRun
+from .routing import RoutingError, list_route_plans, select_default_route_plan
+from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
+from .services import _output_dir as _planning_output_dir
 
 
 def _serialize_task(t: DailyTask) -> dict:
@@ -72,6 +75,11 @@ def abm_plan(request, scope_value: str):
     return _generate_and_respond(request, PlanRun.ScopeType.ABM, scope_value)
 
 
+def rbm_plan(request, scope_value: str):
+    """GET /api/planning/rbm/<rbm_code>/?date=YYYY-MM-DD -- requires live Metabase (Source 1c)."""
+    return _generate_and_respond(request, PlanRun.ScopeType.RBM, scope_value)
+
+
 def node_plan(request, scope_value: str):
     """GET /api/planning/node/<node_name>/?date=YYYY-MM-DD"""
     return _generate_and_respond(request, PlanRun.ScopeType.NODE, scope_value)
@@ -90,6 +98,121 @@ def district_plan(request, scope_value: str):
 def state_plan(request, scope_value: str):
     """GET /api/planning/state/<state_name>/?date=YYYY-MM-DD"""
     return _generate_and_respond(request, PlanRun.ScopeType.STATE, scope_value)
+
+
+@require_GET
+def normalize(request):
+    """GET /api/planning/normalize/?date=YYYY-MM-DD&force=true -- Data Normalization
+    Agent, once-per-day dedup (see planning.services.run_normalization_step). Always
+    returns 200 with Reused indicating whether a live pull actually happened, so a
+    caller can tell "ran fresh" from "reused today's data" without parsing free text."""
+    date = request.GET.get("date")
+    force = request.GET.get("force", "").lower() in ("1", "true", "yes")
+    try:
+        result = run_normalization_step(date=date, force=force)
+    except PlanningError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    except Exception as e:
+        return JsonResponse({"error": f"{type(e).__name__}: {e}"}, status=502)
+    return JsonResponse(result, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def tuff(request, scope_type: str, scope_value: str):
+    """GET /api/planning/tuff/<scope_type>/<scope_value>/?date=YYYY-MM-DD&force_normalization=true&skip_normalization=true
+    -- Agent TUFF: Step 1 (Data Normalization, once-per-day) + Step 2 (SE Daily Task +
+    Pitching + Routing) in one call, mirroring `manage.py activate_tuff`. Response
+    combines Step 1's outcome (Normalization) with the same PlanRun shape the scope
+    endpoints (se_plan/state_plan/...) return."""
+    plan_date = request.GET.get("date")
+    force_normalization = request.GET.get("force_normalization", "").lower() in ("1", "true", "yes")
+    skip_normalization = request.GET.get("skip_normalization", "").lower() in ("1", "true", "yes")
+    try:
+        plan_run, normalization_info = activate_tuff_scope(
+            scope_type, scope_value, plan_date,
+            force_normalization=force_normalization, skip_normalization=skip_normalization,
+        )
+    except PlanningError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    except Exception as e:
+        return JsonResponse({"error": f"{type(e).__name__}: {e}"}, status=502)
+    return JsonResponse(
+        {"Normalization": normalization_info, **_serialize_plan_run(plan_run)},
+        safe=False, json_dumps_params={"default": str},
+    )
+
+
+@require_GET
+def route_plans(request, se: str, plan_date: str):
+    """GET /api/planning/routes/<se>/<plan_date>/?plan_run=<id> -- the Routing Agent's
+    >=3 synced RoutePlans for one SE/day (R5.2's presentation fields)."""
+    plan_run_id = request.GET.get("plan_run")
+    try:
+        result = list_route_plans(se, plan_date, int(plan_run_id) if plan_run_id else None)
+    except RoutingError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    return JsonResponse(result, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def select_route_plan_view(request, se: str, plan_date: str, plan_type: str):
+    """GET /api/planning/routes/<se>/<plan_date>/select/<plan_type>/?plan_run=<id> --
+    the trust-equivalent of the Routing Agent's R5.3 ("the SE selects the final plan"),
+    same as `manage.py select_route_plan --select`. Flips is_default_selected and
+    re-syncs DailyTask rows from the newly-selected plan's stops."""
+    plan_run_id = request.GET.get("plan_run")
+    try:
+        result = select_default_route_plan(se, plan_date, plan_type.upper(), int(plan_run_id) if plan_run_id else None)
+    except RoutingError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    return JsonResponse(result, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def pitch_script(request, daily_task_id: int):
+    """GET /api/planning/pitch/<daily_task_id>/ -- the Pitching Agent's output for one
+    DailyTask (Hindi script + which data sources it did/didn't have). 404 if the task
+    has no pitch -- Farmer Meeting tasks (no dc_id) never get one, by design."""
+    try:
+        pitch = PitchScript.objects.select_related("daily_task").get(daily_task_id=daily_task_id)
+    except PitchScript.DoesNotExist:
+        return JsonResponse({"error": f"No PitchScript for DailyTask {daily_task_id} (Farmer Meeting tasks never get one)."}, status=404)
+    return JsonResponse({
+        "DailyTask_ID": pitch.daily_task_id,
+        "SE": pitch.daily_task.se_name or pitch.daily_task.se_id,
+        "DC_Name": pitch.daily_task.dc_name,
+        "Purpose_Key": pitch.purpose_key,
+        "Script_Hindi": pitch.script_hindi,
+        "Data_Sources_Used": pitch.data_sources_used,
+        "Data_Sources_Skipped": pitch.data_sources_skipped,
+        "Generated_At": pitch.generated_at,
+    }, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def headcount_bifurcation(request):
+    """GET /api/planning/headcount/?list=true -- active headcount bifurcated by SE/ABM/
+    RBM role and by Node/Block/District/State, plus an overall total (see
+    planning.headcount's module docstring for the resolution logic and its honest
+    limitations). list=true includes each bucket's individual emails, not just counts
+    -- matches `manage.py show_headcount_bifurcation --list`."""
+    try:
+        result = compute_active_headcount_bifurcation(_planning_output_dir())
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    if request.GET.get("list", "").lower() not in ("1", "true", "yes"):
+        result = {
+            "overall_total": result["overall_total"],
+            "se_role_count": len(result["se_role"]),
+            "abm_role_count": len(result["abm_role"]),
+            "rbm_role_count": len(result["rbm_role"]),
+            "no_role_count": len(result["no_role"]),
+            "by_node": {k: len(v) for k, v in result["by_node"].items()},
+            "by_block": {k: len(v) for k, v in result["by_block"].items()},
+            "by_district": {k: len(v) for k, v in result["by_district"].items()},
+            "by_state": {k: len(v) for k, v in result["by_state"].items()},
+        }
+    return JsonResponse(result, safe=False, json_dumps_params={"default": str})
 
 
 @require_GET

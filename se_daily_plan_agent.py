@@ -41,7 +41,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 try:
     import requests
@@ -74,11 +74,14 @@ DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAn
 # live here now; DC_RAnk.csv (Source 2) and the AOP dashboard (Source 6) stayed at BASE_DIR.
 CONFIG_DIR = Path(os.environ.get("SE_AGENT_CONFIG_DIR", BASE_DIR / "config and parameter "))
 CONFIG_ALL_PARAMS_CSV = Path(
-    os.environ.get("SE_AGENT_CONFIG_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - All Parameters (2).csv")
+    # Bumped to (3) 2026-08-12 -- the (2) export was replaced on disk, not just
+    # supplemented; pointing at a deleted file silently degraded every run to
+    # Config_File_Missing since the upload, not just a cosmetic mismatch.
+    os.environ.get("SE_AGENT_CONFIG_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - All Parameters (3).csv")
 )
 CONFIG_SE_INCENTIVE_CSV = Path(
     os.environ.get(
-        "SE_AGENT_INCENTIVE_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - SE Incentive Policy (FY26-27) (2).csv"
+        "SE_AGENT_INCENTIVE_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - SE Incentive Policy (FY26-27) (3).csv"
     )
 )
 # "Open Questions (Sec 9).csv" was retired in the 2026-08-06 re-sync -- superseded by
@@ -301,6 +304,17 @@ class RedshiftDirectClient:
                 last_error = e
                 logger.warning("Redshift connection to %s died mid-run", dbname)
                 self._connections.pop(dbname, None)
+            except Exception:
+                # Any other failure (bad SQL, permission denied, etc.) leaves this
+                # connection's transaction aborted -- every later query reusing the same
+                # connection (see _get_connection) would otherwise fail with
+                # InFailedSqlTransaction even though nothing is wrong with it
+                # individually. Confirmed live 2026-08-12: a single permission-denied
+                # query on dc_datamart took 3 unrelated, working queries down with it on
+                # every run since. Roll back so the connection is usable again, then
+                # propagate this query's own real error unretried, same as before.
+                conn.rollback()
+                raise
         raise last_error
 
     def close(self) -> None:
@@ -764,21 +778,23 @@ def supplement_dc_master_from_live(dc_master: Table, client, exc: Exceptions) ->
     has 2 real live DCs, zero in the local export). This silently excluded those DCs
     from every NODE/STATE-scoped plan.
 
-    Deliberately scoped to ONLY those ~20 fully-missing CANONICAL nodes, not every
-    individually-missing DC network-wide -- a live check found DC_RAnk.csv is actually
-    missing 9,096 of 19,069 active DCs (48%), including plenty within nodes it already
-    covers. Supplementing all of those would nearly double DC_Master's size on every run
-    -- out of scope here by user decision 2026-08-09.
+    Originally scoped to ONLY those ~20 fully-missing CANONICAL nodes, deliberately
+    excluding the other 9,096 of 19,069 active DCs (48%) missing within nodes DC_Master
+    already covers -- flagged as too large a behavior change at the time (nearly doubles
+    DC_Master's size). Extended network-wide 2026-08-12 by user decision, after a real
+    STATE=Rajasthan plan run silently excluded 14 of 24 actually-assigned live SEs (DCs
+    existed live, in nodes DC_Master already had, but not the specific DC rows) -- the
+    within-node gap isn't a hypothetical, it visibly cuts real SEs out of real plans, so
+    the full fix is now in scope.
 
-    "Missing node" is judged against input_node_mapping (the canonical 113-node master,
-    same table Metabase's own count comes from), NOT simply "not already in DC_Master" --
-    a first version used the latter and it was wrong: input_partner_details.node_name
-    carries a lot of non-canonical junk (virtual/cluster labels like 'AHMEDNAGAR_VIRTUAL',
-    'Do not Use', 'Frontier market_Varanasi_Pindra') that were never real nodes to begin
-    with, and "not already in DC_Master" let all of that through as if it were a
-    legitimate gap. Cross-referencing the canonical list first is what correctly admits
-    real missing nodes (Agra, Cuttack, West Medinipur, etc., including oddly-named but
-    genuinely canonical ones like 'Potato Project Virtual') while rejecting the noise.
+    "Real node" is still judged against input_node_mapping (the canonical 113-node
+    master, same table Metabase's own count comes from), NOT simply "not already in
+    DC_Master" -- a first version used the latter and it was wrong: input_partner_
+    details.node_name carries a lot of non-canonical junk (virtual/cluster labels like
+    'AHMEDNAGAR_VIRTUAL', 'Do not Use', 'Frontier market_Varanasi_Pindra') that were
+    never real nodes to begin with. Cross-referencing the canonical list first is what
+    correctly admits every real missing DC (whether its node is entirely new to
+    DC_Master or already partially covered) while still rejecting the noise.
 
     Appends each qualifying live-active DC with real Node/State/Assigned_SE_Email/geo
     from input_partner_details, but Rank/Cohort/Total_Score/NRV/GM/PL%/Avg_Repayment_
@@ -805,10 +821,11 @@ def supplement_dc_master_from_live(dc_master: Table, client, exc: Exceptions) ->
     for row in live_rows:
         dc_id = normalize_id(row.get("sap_partner_id"))
         node = clean_null(row.get("node_name"))
+        node_key = node.strip().upper() if node else None
         if dc_id is None or dc_id in existing_ids:
             continue
-        if not node or node.strip().upper() not in missing_canonical_nodes:
-            continue  # only real canonical nodes fully missing from DC_Master qualify -- not junk labels, not individually-missing DCs in a covered node
+        if not node_key or node_key not in canonical_nodes:
+            continue  # only real canonical nodes qualify -- rejects junk/virtual node labels
         existing_ids.add(dc_id)
         lat, lon = parse_number(row.get("lat_2")), parse_number(row.get("long_2"))
         assigned_se_email = clean_null(row.get("sales_rep_email"))
@@ -836,10 +853,15 @@ def supplement_dc_master_from_live(dc_master: Table, client, exc: Exceptions) ->
                 "DC_Status": None,
             }
         )
-        exc.flag(dc_id, "Source2", "DC_Supplemented_From_Live",
-                  f"Node '{node}' entirely missing from DC_RAnk.csv (local export) but active in "
-                  "input_partner_details (live) -- added unscored (no Rank/Cohort/financials available "
-                  "outside DC_RAnk.csv)")
+        if node_key in missing_canonical_nodes:
+            reason = (f"Node '{node}' entirely missing from DC_RAnk.csv (local export) but active in "
+                      "input_partner_details (live) -- added unscored (no Rank/Cohort/financials available "
+                      "outside DC_RAnk.csv)")
+        else:
+            reason = (f"DC missing from DC_RAnk.csv (local export) within node '{node}', which DC_Master "
+                      "otherwise covers, but active in input_partner_details (live) -- added unscored "
+                      "(no Rank/Cohort/financials available outside DC_RAnk.csv)")
+        exc.flag(dc_id, "Source2", "DC_Supplemented_From_Live", reason)
         added += 1
     if added:
         logger.info("  Supplemented %d DC(s) missing from DC_RAnk.csv with live input_partner_details data", added)
@@ -963,12 +985,6 @@ def aop_pl_target_by_node(aop_targets: Table, plan_date: str) -> Dict[str, float
 def _lookback_clause(date_column: str, days: int = LOOKBACK_DAYS) -> str:
     return f"{date_column} >= CURRENT_DATE - INTERVAL '{days} days'"
 
-
-SQL_SE_VISIT_LOG_1A = f"""
-SELECT visit_email, transaction_date AS plan_execution_date, node_name, number_of_visits
-FROM pathik_report
-WHERE {_lookback_clause('transaction_date')}
-"""
 
 SQL_TASK_NODES_1B = f"""
 SELECT
@@ -1128,7 +1144,12 @@ def load_live_sources(client: MetabaseClient) -> Tuple[Dict[str, Table], Excepti
     exc = Exceptions(utc_now_iso())
     results: Dict[str, Table] = {}
     queries = [
-        ("SE_Visit_Log_1a", REDSHIFT_DB_ID, SQL_SE_VISIT_LOG_1A),
+        # SE_Visit_Log_1a (SQL_SE_VISIT_LOG_1A) removed 2026-08-12 -- confirmed zero
+        # downstream consumers (never read from `live` anywhere in this file or
+        # planning/), yet the single most expensive query in the whole pipeline: 2.07M
+        # pathik_report rows, ~80s/run (~40% of the entire live-query phase). If a real
+        # consumer for Source 1a's visit_email/number_of_visits ever gets built, re-add
+        # it filtered/aggregated server-side rather than pulling 2M raw rows again.
         ("Task_Nodes_1b", INPUT_BACKEND_DB_ID, SQL_TASK_NODES_1B),
         ("Geo_Mapping_1c", REDSHIFT_DB_ID, SQL_GEO_MAPPING_1C),
         ("Attendance_3a", INPUT_BACKEND_DB_ID, SQL_ATTENDANCE_3A),
@@ -1223,9 +1244,15 @@ def normalize_visits(active_roster: Table, task_nodes: Table, config_index: Dict
             exc.ok("Duplicate_Visit")
 
         photo_logged = photo_logged_from_task_details(row.get("task_details"))
-        duration_min_cfg = parse_number(config_index.get("2.1_valid_visit_duration_min")) or 10.0
         valid_visit = bool(photo_logged) if photo_logged is not None else None
-        # Visit_Duration_Minutes: no confirmed per-visit source (Section 4) -- never invented.
+        # Visit_Duration_Minutes -- RESOLVED 2026-08-12 (business decision, confirmed in
+        # the updated Data Normalization Agent doc): no per-visit check-out timestamp
+        # exists anywhere in the data model (task_management_taskdetails carries one
+        # check-in timestamp per visit, nothing else), so every visit gets a flat
+        # assumed 45 minutes, used for both planning and BO2 grading. No longer
+        # Config_Ambiguous. Since 45 >= the 10-minute valid-visit threshold, BO2's
+        # duration condition always passes now -- Valid_Visit_Flag above depends on
+        # Photo_Logged alone, which is the confirmed, intended outcome, not a bug.
         zero_coord = is_zero_coord(row.get("visit_check_in_lat"), row.get("visit_check_in_long"))
 
         out.append(
@@ -1234,7 +1261,7 @@ def normalize_visits(active_roster: Table, task_nodes: Table, config_index: Dict
                 "DC_ID": dc_id,
                 "Date": date,
                 "Visit_Check_In_Time": check_in,
-                "Visit_Duration_Minutes": "Config_Ambiguous",
+                "Visit_Duration_Minutes": 45.0,
                 "Photo_Logged": photo_logged,
                 "Valid_Visit_Flag": valid_visit,
                 "Visit_Type_ID": vtype,
@@ -1857,6 +1884,463 @@ def sequence_with_distance(
     return route, total_km > constants.daily_travel_cap_km, basis
 
 
+# =====================================================================================
+# 10a. ROUTING AGENT -- Models 1-3 (Routing_Agent_Configuration_Sheet_v5_FINAL, v5)
+# =====================================================================================
+# Pure algorithmic logic only -- persistence, guardrail filtering (GR-R1 geo, GR-R2
+# Legal_Hold), and Origin_Point resolution live in planning/routing.py, which calls
+# these. Each builder takes the SAME candidate shape generate_se_daily_plan() already
+# produces for its route_selector branch: [{"row": DailyTaskRow, "dc": dict,
+# "priority_score": float, "matched": [str]}, ...], plus an origin (lat, lon) tuple, and
+# returns a common shape: {"stops": [...], "dropped": [...], "total_distance_km",
+# "total_travel_min", "total_visit_min", "priority_score_captured", "feasible",
+# "infeasibility_reason"}. "dropped" here only ever means "this model's own
+# priority/efficiency cutoff left it out" -- guardrail-level drops (bad geo, Legal_Hold)
+# already happened before these are called, per planning/routing.py's docstring.
+
+R3_1_CIRCUITY_FACTOR = 1.4  # R3.1, FINAL: Haversine x 1.4 is the locked primary per-leg distance method.
+R1_1_FIELD_MINUTES_CAP = 420  # R1.1, HARD cap (GR-R3)
+# R1.2, MINIMUM FLOOR (RE-CONFIRMED 2026-08-12 by the v7 Outcome Example, which reversed
+# an earlier 2026-08-12 "ceiling" reading based on a side-file that claimed a correction
+# never actually written back into the Routing Agent's own sheets. v7 is decisive: its
+# own header states "Min_Travel_Minutes >= 180 (R1.2)" and all 3 of its worked-example
+# plans have travel times of 195/220/240 min -- every one comfortably ABOVE 180, none
+# below, which is only self-consistent with a floor. Matches v5's own original R1.2/GR-R5
+# wording ("cumulative floor", reason code Travel_Floor_Not_Met) too. A route is
+# feasible only if SUM(Travel_Time_Leg) >= 180.
+R1_2_MIN_TRAVEL_MINUTES = 180
+R1_7_MAX_STOPS = 5  # R1.7, HARD cap (GR-R4)
+R3_2_DEFAULT_AVG_SPEED_KMPH = 25.0  # R3.2 -- undefined in the sheet; bottom of its own suggested 25-30 km/h range
+
+
+def circuity_distance_km(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
+    """R3.1, FINAL: Distance_Leg(i,j) = Haversine(i,j) x 1.4. Same None-propagation
+    convention as haversine_km() -- an incomplete point yields an incomplete distance,
+    never a guessed number."""
+    straight = haversine_km(lat1, lon1, lat2, lon2)
+    return None if straight is None else straight * R3_1_CIRCUITY_FACTOR
+
+
+def travel_time_minutes(distance_km: Optional[float], avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH) -> Optional[float]:
+    """R3.2: Travel_Time_Leg = Distance_Leg / Avg_Speed_Kmph. avg_speed_kmph has no
+    confirmed value anywhere in the Routing Agent's own sheet -- flagged there as "the
+    single most important undefined number in the whole sheet," recommending an ops call
+    over the 25-30 km/h range for mixed rural/semi-urban roads. Defaults to 25 (the
+    slower end of that range) until that call happens -- worth knowing this is no longer
+    the "conservative" choice it was under the old ceiling reading: against R1.2's
+    RE-CONFIRMED >=180-min FLOOR, a slower assumed speed inflates computed travel time
+    for any given distance, making the floor easier to satisfy on paper than an SE's
+    actual drive time might support. Neither 25 nor 30 has been re-picked with that in
+    mind -- still genuinely undefined, still worth the same ops call the sheet asks for,
+    just flagging the direction changed. Callers should flag this Provisional rather
+    than treat it as confirmed."""
+    if distance_km is None:
+        return None
+    return (distance_km / avg_speed_kmph) * 60.0
+
+
+def _candidate_coords(c: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    dc = c["dc"]
+    return dc.get("Latitude"), dc.get("Longitude")
+
+
+def _route_metrics(stop_candidates: List[Dict[str, Any]], origin: Tuple[float, float], avg_speed_kmph: float) -> Dict[str, Any]:
+    """Given candidates already in visit order (not including the origin/return legs),
+    computes the closed route (origin -> stop_1 -> ... -> stop_N -> origin)'s per-leg
+    and total distance/travel-time/visit-time, and its cumulative Priority_Score
+    captured. Shared by all 3 models so they can't drift on how a route's numbers add up."""
+    stops: List[Dict[str, Any]] = []
+    total_distance = total_travel = total_visit = priority_captured = 0.0
+    last_point = origin
+    cumulative_minutes = 0.0
+    for c in stop_candidates:
+        lat, lon = _candidate_coords(c)
+        leg_km = circuity_distance_km(last_point[0], last_point[1], lat, lon) or 0.0
+        leg_min = travel_time_minutes(leg_km, avg_speed_kmph) or 0.0
+        visit_min = c["row"].Estimated_Duration
+        total_distance += leg_km
+        total_travel += leg_min
+        total_visit += visit_min
+        priority_captured += c["priority_score"]
+        cumulative_minutes += leg_min + visit_min
+        stops.append({
+            "row": c["row"], "distance_from_prev_km": round(leg_km, 2),
+            "travel_time_from_prev_min": round(leg_min, 1), "eta_minutes": round(cumulative_minutes, 1),
+        })
+        last_point = (lat, lon)
+    # Closing leg back to Origin_Point (R3.3: routes are closed).
+    return_km = circuity_distance_km(last_point[0], last_point[1], origin[0], origin[1]) or 0.0
+    return_min = travel_time_minutes(return_km, avg_speed_kmph) or 0.0
+    total_distance += return_km
+    total_travel += return_min
+    return {
+        "stops": stops, "total_distance_km": round(total_distance, 2), "total_travel_min": round(total_travel, 1),
+        "total_visit_min": round(total_visit, 1), "priority_score_captured": round(priority_captured, 4),
+        "return_leg_km": round(return_km, 2), "return_leg_min": round(return_min, 1),
+    }
+
+
+def _within_caps(metrics: Dict[str, Any]) -> bool:
+    """GR-R3 (<=420 total), GR-R4 (<=5 stops, enforced by callers via candidate-set size,
+    not here), GR-R5 (>=180 travel-only floor -- RE-CONFIRMED 2026-08-12 by the v7
+    Outcome Example, reversing an earlier same-day "ceiling" reading; see R1_2_MIN_TRAVEL_MINUTES)."""
+    total_minutes = metrics["total_travel_min"] + metrics["total_visit_min"]
+    return metrics["total_travel_min"] >= R1_2_MIN_TRAVEL_MINUTES and total_minutes <= R1_1_FIELD_MINUTES_CAP
+
+
+def _two_opt(order: List[Dict[str, Any]], origin: Tuple[float, float], avg_speed_kmph: float) -> List[Dict[str, Any]]:
+    """Standard 2-opt local search minimizing total route distance, treating the closed
+    route's origin as a fixed anchor (only the visit-order among stops is permuted).
+    Used by both Model 2 (Distance-Min) and Model 3 (Balanced) to polish their
+    construction heuristics -- same improvement pass, different starting tour."""
+    if len(order) < 3:
+        return order
+
+    def _tour_distance(seq: List[Dict[str, Any]]) -> float:
+        return _route_metrics(seq, origin, avg_speed_kmph)["total_distance_km"]
+
+    best = list(order)
+    best_dist = _tour_distance(best)
+    improved = True
+    while improved:
+        improved = False
+        for i in range(len(best) - 1):
+            for j in range(i + 1, len(best)):
+                candidate = best[: i] + best[i : j + 1][::-1] + best[j + 1 :]
+                dist = _tour_distance(candidate)
+                if dist < best_dist - 1e-9:
+                    best, best_dist = candidate, dist
+                    improved = True
+    return best
+
+
+def build_route_priority_max(
+    candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
+    avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
+) -> Dict[str, Any]:
+    """Model 1 (R4.1), recommended primary -- Google OR-Tools Routing Solver, Orienteering
+    / Prize-Collecting formulation: single vehicle, closed route (R3.3), one Time
+    Dimension capped at Field_Minutes_Available (R1.1=420, GR-R3), a Count dimension
+    capped at 5 stops (R1.7, GR-R4), and AddDisjunction(node, penalty=Priority_Score(DC))
+    per candidate so every DC is optionally visitable at the cost of its own priority if
+    skipped -- maximizing SUM(Priority_Score * Visited) is then minimizing total
+    skip-penalty, since arc cost is set to 0 (Model 1 has "No distance cap," per OQ-13 --
+    time/count are hard constraints here, never part of the objective).
+
+    R1.2's >=180-min travel floor is deliberately NOT hard-constrained inside the solver
+    (unlike R1.1/R1.7 above): GR-R5 asks to "fail safe rather than force artificial
+    detours" when the floor can't be met, and forcing a lower bound on the solver's own
+    Time Dimension would instead make the whole problem infeasible whenever the
+    priority-maximal stop set is geographically clustered -- silently discarding a
+    perfectly good, high-priority route rather than showing it with an honest shortfall
+    noted. So: solve for max-priority under the real hard caps first, exactly like
+    Models 2/3 already do, then check the floor post-hoc via _within_caps() and flag
+    (not discard) if the resulting route falls short -- same pattern, same honesty,
+    across all 3 models."""
+    from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
+    if not candidates:
+        return {
+            "stops": [], "dropped": [], "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True, "infeasibility_reason": "",
+        }
+
+    with_coords = [c for c in candidates if None not in _candidate_coords(c)]
+    without_coords = [c for c in candidates if None in _candidate_coords(c)]
+    dropped = [{"dc_id": c["dc"]["DC_ID"], "reason": "Geo_Incomplete"} for c in without_coords]
+
+    if not with_coords:
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True,
+            "infeasibility_reason": "No candidate had usable geo-coordinates",
+        }
+
+    points = [origin] + [_candidate_coords(c) for c in with_coords]
+    n = len(points)
+
+    def _travel_min(i: int, j: int) -> int:
+        dist = circuity_distance_km(points[i][0], points[i][1], points[j][0], points[j][1])
+        minutes = travel_time_minutes(dist, avg_speed_kmph) or 0.0
+        return int(round(minutes))
+
+    def _visit_min(i: int) -> int:
+        return 0 if i == 0 else int(round(with_coords[i - 1]["row"].Estimated_Duration))
+
+    manager = pywrapcp.RoutingIndexManager(n, 1, 0)
+    routing = pywrapcp.RoutingModel(manager)
+
+    # Total-time transit (travel + visit-at-origin-of-leg) -- caps R1.1.
+    def total_time_callback(from_index, to_index):
+        i, j = manager.IndexToNode(from_index), manager.IndexToNode(to_index)
+        return _travel_min(i, j) + _visit_min(i)
+
+    total_time_idx = routing.RegisterTransitCallback(total_time_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(routing.RegisterTransitCallback(lambda a, b: 0))
+    routing.AddDimension(total_time_idx, 0, R1_1_FIELD_MINUTES_CAP, True, "TotalTime")
+
+    # No travel-only dimension here -- R1.2's floor is checked post-solve (see the
+    # docstring above for why a hard lower-bound constraint isn't used).
+
+    # Stop-count transit -- caps R1.7 (<=5 real stops, excludes the depot).
+    def count_callback(from_index, to_index):
+        i = manager.IndexToNode(from_index)
+        return 0 if i == 0 else 1
+
+    count_idx = routing.RegisterTransitCallback(count_callback)
+    routing.AddDimension(count_idx, 0, R1_7_MAX_STOPS, True, "StopCount")
+
+    # Every candidate is optional -- skipping node i costs its own Priority_Score,
+    # scaled to an integer (OR-Tools requires integer costs).
+    for i, c in enumerate(with_coords, start=1):
+        penalty = max(1, int(round(c["priority_score"] * 1000)))
+        routing.AddDisjunction([manager.NodeToIndex(i)], penalty)
+
+    search_params = pywrapcp.DefaultRoutingSearchParameters()
+    search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    search_params.time_limit.FromSeconds(5)
+
+    solution = routing.SolveWithParameters(search_params)
+    if solution is None:
+        # No feasible route at all, not even an empty one -- shouldn't happen since every
+        # node is skippable, but fail safe (GR-R5) rather than raise.
+        return {
+            "stops": [], "dropped": dropped + [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords],
+            "total_distance_km": 0.0, "total_travel_min": 0.0, "total_visit_min": 0.0, "priority_score_captured": 0.0,
+            "feasible": False, "infeasibility_reason": "OR-Tools found no feasible solution, including the empty route",
+        }
+
+    visited_order: List[Dict[str, Any]] = []
+    index = routing.Start(0)
+    while not routing.IsEnd(index):
+        node = manager.IndexToNode(index)
+        if node != 0:
+            visited_order.append(with_coords[node - 1])
+        index = solution.Value(routing.NextVar(index))
+
+    visited_ids = {c["dc"]["DC_ID"] for c in visited_order}
+    dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Not_Selected_By_Solver"} for c in with_coords if c["dc"]["DC_ID"] not in visited_ids]
+
+    metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
+    feasible = _within_caps(metrics)
+    return {
+        "stops": metrics["stops"], "dropped": dropped,
+        "total_distance_km": metrics["total_distance_km"], "total_travel_min": metrics["total_travel_min"],
+        "total_visit_min": metrics["total_visit_min"], "priority_score_captured": metrics["priority_score_captured"],
+        "feasible": feasible,
+        "infeasibility_reason": "" if feasible else "Travel_Floor_Not_Met: solver's own max-priority route falls short of the 180-min travel floor (or exceeds the 420-min total) -- shown as best available, not forced into artificial detours (GR-R5)",
+    }
+
+
+def _greedy_nearest_neighbor(candidates: List[Dict[str, Any]], origin: Tuple[float, float]) -> List[Dict[str, Any]]:
+    remaining = list(candidates)
+    order: List[Dict[str, Any]] = []
+    last_point = origin
+    while remaining:
+        remaining.sort(key=lambda c: circuity_distance_km(last_point[0], last_point[1], *_candidate_coords(c)) or 1e9)
+        nxt = remaining.pop(0)
+        order.append(nxt)
+        last_point = _candidate_coords(nxt)
+    return order
+
+
+def build_route_distance_min(
+    candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
+    avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
+) -> Dict[str, Any]:
+    """Model 2 (R4.2), recommended secondary -- Nearest-Neighbor construction + 2-opt
+    local-search improvement over circuity-adjusted distances. Visit_Set =
+    TOP-K(Ranked_Pool BY Priority_Score) for the largest K whose resulting closed route
+    still satisfies R1.1/R1.2/R1.7 -- tries K from min(5, N) down to 0."""
+    with_coords = [c for c in candidates if None not in _candidate_coords(c)]
+    without_coords = [c for c in candidates if None in _candidate_coords(c)]
+    dropped = [{"dc_id": c["dc"]["DC_ID"], "reason": "Geo_Incomplete"} for c in without_coords]
+
+    by_priority = sorted(with_coords, key=lambda c: -c["priority_score"])
+    max_k = min(R1_7_MAX_STOPS, len(by_priority))
+
+    best_metrics = None
+    best_k = 0
+    for k in range(max_k, 0, -1):
+        top_k = by_priority[:k]
+        order = _two_opt(_greedy_nearest_neighbor(top_k, origin), origin, avg_speed_kmph)
+        metrics = _route_metrics(order, origin, avg_speed_kmph)
+        if _within_caps(metrics):
+            best_metrics, best_k = metrics, k
+            break
+
+    if best_metrics is None:
+        # No K reaches the 180-min floor (or some K blows the 420-min total) -- fail
+        # safe with the FULLEST attempt (max_k, all available candidates) shown anyway,
+        # per GR-R5, rather than an empty plan with no explanation. Under a floor (not a
+        # ceiling), more stops means more cumulative travel, so max_k is the closest
+        # this construction can get -- the opposite of the old ceiling-era fallback,
+        # which showed the smallest (K=1) attempt instead.
+        if by_priority:
+            order = _two_opt(_greedy_nearest_neighbor(by_priority[:max_k], origin), origin, avg_speed_kmph)
+            best_metrics = _route_metrics(order, origin, avg_speed_kmph)
+            best_k = max_k
+            feasible = False
+            reason = "Travel_Floor_Not_Met: even using every available candidate, this route falls short of the 180-min travel floor (or exceeds the 420-min total) -- shown as best available (GR-R5)"
+        else:
+            return {
+                "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+                "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True, "infeasibility_reason": "",
+            }
+    else:
+        feasible, reason = True, ""
+
+    selected_ids = {c["dc"]["DC_ID"] for c in by_priority[:best_k]}
+    dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords if c["dc"]["DC_ID"] not in selected_ids]
+
+    return {
+        "stops": best_metrics["stops"], "dropped": dropped,
+        "total_distance_km": best_metrics["total_distance_km"], "total_travel_min": best_metrics["total_travel_min"],
+        "total_visit_min": best_metrics["total_visit_min"], "priority_score_captured": best_metrics["priority_score_captured"],
+        "feasible": feasible, "infeasibility_reason": reason,
+    }
+
+
+def _clarke_wright_order(candidates: List[Dict[str, Any]], origin: Tuple[float, float]) -> List[Dict[str, Any]]:
+    """Classic Clarke-Wright Savings construction, adapted to a single vehicle: starts
+    with each candidate as its own depot-out-and-back route, merges the pair with the
+    highest savings s(i,j) = d(depot,i) + d(depot,j) - d(i,j) into one path whenever
+    both are still route endpoints, repeats until every candidate is one merged path,
+    then that path becomes the visit order (closing the loop back to depot happens in
+    _route_metrics, same as every other model)."""
+    if len(candidates) <= 1:
+        return list(candidates)
+
+    dist_from_origin = {c["dc"]["DC_ID"]: circuity_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0 for c in candidates}
+    by_id = {c["dc"]["DC_ID"]: c for c in candidates}
+    ids = list(by_id.keys())
+
+    def d(a: str, b: str) -> float:
+        ca, cb = by_id[a], by_id[b]
+        return circuity_distance_km(*_candidate_coords(ca), *_candidate_coords(cb)) or 0.0
+
+    savings = sorted(
+        ((dist_from_origin[a] + dist_from_origin[b] - d(a, b), a, b) for idx, a in enumerate(ids) for b in ids[idx + 1 :]),
+        key=lambda t: -t[0],
+    )
+
+    routes: Dict[str, List[str]] = {i: [i] for i in ids}  # dc_id -> the path it currently belongs to (by identity of the list)
+    route_of: Dict[str, List[str]] = {i: routes[i] for i in ids}
+    for _, a, b in savings:
+        ra, rb = route_of[a], route_of[b]
+        if ra is rb:
+            continue
+        # Merge only when both are still endpoints of their (distinct) routes.
+        if a not in (ra[0], ra[-1]) or b not in (rb[0], rb[-1]):
+            continue
+        if ra[-1] != a:
+            ra.reverse()
+        if rb[0] != b:
+            rb.reverse()
+        merged = ra + rb
+        for node in merged:
+            route_of[node] = merged
+
+    final_route = route_of[ids[0]]
+    return [by_id[i] for i in final_route]
+
+
+def build_route_balanced(
+    candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
+    avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
+    node_avg_travel_min: Optional[float] = None,
+    node_avg_travel_range: Optional[Tuple[float, float]] = None,
+    alpha_min: float = 0.4, alpha_max: float = 0.8, global_default_alpha: float = 0.6,
+) -> Dict[str, Any]:
+    """Model 3 (R4.3), recommended tertiary -- Clarke-Wright Savings construction + 2-opt,
+    over a handful of candidate visit-sets (top-K by priority, K=1..5, same sweep as
+    Model 2), each scored by Blended_Score = alpha * Normalized_Priority_Captured +
+    (1-alpha) * (1 - Normalized_Travel_Time), picking whichever K maximizes it -- the
+    highest-scoring FEASIBLE (R1.1/R1.2/R1.7) set wins. alpha is derived per-node from
+    historical average travel time (OQ-20, CONFIRMED bounds Alpha_Min=0.4/Alpha_Max=0.8,
+    higher historical travel -> LOWER alpha) when node_avg_travel_min and
+    node_avg_travel_range are both supplied; falls back to Global_Default_Alpha=0.6
+    otherwise -- which is what actually happens in this build today, since no historical
+    per-node travel-time aggregation is wired yet (see planning/routing.py). Flagged, not
+    silently pretended to be dynamic."""
+    if node_avg_travel_min is not None and node_avg_travel_range and node_avg_travel_range[1] > node_avg_travel_range[0]:
+        lo, hi = node_avg_travel_range
+        normalized = (node_avg_travel_min - lo) / (hi - lo)
+        normalized = min(1.0, max(0.0, normalized))
+        alpha = alpha_min + (alpha_max - alpha_min) * (1 - normalized)
+    else:
+        alpha = global_default_alpha
+
+    with_coords = [c for c in candidates if None not in _candidate_coords(c)]
+    without_coords = [c for c in candidates if None in _candidate_coords(c)]
+    dropped = [{"dc_id": c["dc"]["DC_ID"], "reason": "Geo_Incomplete"} for c in without_coords]
+
+    if not with_coords:
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True,
+            "infeasibility_reason": "" if not candidates else "No candidate had usable geo-coordinates",
+            "alpha_used": round(alpha, 3),
+        }
+
+    by_priority = sorted(with_coords, key=lambda c: -c["priority_score"])
+    max_k = min(R1_7_MAX_STOPS, len(by_priority))
+
+    # Build every K=1..max_k option first, THEN normalize priority/travel across the
+    # options actually being compared (min-max, same convention the alpha formula
+    # itself uses via Min/Max_Across_All_Nodes) -- normalizing against an unrelated
+    # absolute scale (e.g. the full candidate pool's total priority, or the raw 180-min
+    # figure) instead structurally punishes every K>1 option, since travel grows with
+    # K while priority is compared against candidates that were never in contention.
+    raw = []  # (k, metrics, feasible)
+    for k in range(1, max_k + 1):
+        top_k = by_priority[:k]
+        order = _two_opt(_clarke_wright_order(top_k, origin), origin, avg_speed_kmph)
+        metrics = _route_metrics(order, origin, avg_speed_kmph)
+        raw.append((k, metrics, _within_caps(metrics)))
+
+    priorities = [m["priority_score_captured"] for _, m, _ in raw]
+    travels = [m["total_travel_min"] for _, m, _ in raw]
+    p_lo, p_hi = min(priorities), max(priorities)
+    t_lo, t_hi = min(travels), max(travels)
+
+    evaluated = []  # (blended_score, k, metrics, feasible)
+    for k, metrics, feasible in raw:
+        norm_priority = (metrics["priority_score_captured"] - p_lo) / (p_hi - p_lo) if p_hi > p_lo else 1.0
+        norm_travel = (metrics["total_travel_min"] - t_lo) / (t_hi - t_lo) if t_hi > t_lo else 0.0
+        blended = alpha * norm_priority + (1 - alpha) * (1 - norm_travel)
+        evaluated.append((blended, k, metrics, feasible))
+
+    if not evaluated:
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True, "infeasibility_reason": "",
+        }
+
+    feasible_options = [e for e in evaluated if e[3]]
+    if feasible_options:
+        blended, best_k, best_metrics, feasible = max(feasible_options, key=lambda e: e[0])
+        reason = ""
+    else:
+        # Nothing reaches the 180-min floor (or something blows the 420-min total) --
+        # fail safe with whichever evaluated K got CLOSEST to the floor (highest travel
+        # time), not the best blended score -- under a floor, more travel is closer to
+        # feasible, and the blended score's own efficiency term would otherwise favor
+        # showing the LEAST-travelled (least helpful) option here. Per GR-R5.
+        blended, best_k, best_metrics, feasible = max(evaluated, key=lambda e: e[2]["total_travel_min"])
+        reason = "Travel_Floor_Not_Met: no candidate set reaches the 180-min travel floor (or stays under the 420-min total) -- shown as best available (GR-R5)"
+
+    selected_ids = {c["dc"]["DC_ID"] for c in by_priority[:best_k]}
+    dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords if c["dc"]["DC_ID"] not in selected_ids]
+
+    return {
+        "stops": best_metrics["stops"], "dropped": dropped,
+        "total_distance_km": best_metrics["total_distance_km"], "total_travel_min": best_metrics["total_travel_min"],
+        "total_visit_min": best_metrics["total_visit_min"], "priority_score_captured": best_metrics["priority_score_captured"],
+        "feasible": feasible, "infeasibility_reason": reason, "alpha_used": round(alpha, 3),
+    }
+
+
 def generate_se_daily_plan(
     se_id: str,
     se_name: Optional[str],
@@ -1875,6 +2359,7 @@ def generate_se_daily_plan(
     punch_in_coords: Optional[Tuple[float, float]] = None,
     farmer_meeting_scheduled_today: bool = False,
     dc_bo_scores: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+    route_selector: Optional[Callable[..., Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Section 6 process flow + Section 7/8/10: rank objectives, respect capacity/travel
     caps, apply the confirmed tie-break/override rules, and shape the output exactly as
@@ -1885,7 +2370,20 @@ def generate_se_daily_plan(
     version. A DC selected under more than one objective is deduplicated to a single row
     tagged with its highest-ranked objective. Attendance gates whether a plan is generated
     at all (Section 3a) -- if the gate can't be evaluated, the plan is still produced but
-    tagged Provisional, never silently as if the gate passed."""
+    tagged Provisional, never silently as if the gate passed.
+
+    route_selector: optional, wired 2026-08-12 for the Routing Agent (planning/routing.py).
+    When None (the default -- Step 1's legacy run_pipeline() path), behavior is
+    byte-for-byte unchanged from before this parameter existed: Layer 3 greedily fills
+    ranked_pool into a single Tasks list capped at max_daily_tasks, then
+    sequence_with_distance() sequences it. When provided (the real Django path via
+    planning/services.py), Layer 3 instead builds a fully-formed candidate row for
+    EVERY ranked_pool entry (no capacity trimming) and hands the whole list to
+    route_selector(candidates, se_id, plan_date, punch_in_coords, constants, dc_by_id),
+    which returns the shape {"Tasks": [...], "Sequencing_Basis": str,
+    "Travel_Cap_Exceeded": bool} -- this is the seam the Routing Agent's Models 1-3
+    plug into, without touching anything downstream of Layer 3 (capacity/safety-flag
+    reporting, GR-14 checks, the return dict) here."""
     outstanding_by_dc = outstanding_by_dc or {}
     recent_attempts_by_dc = recent_attempts_by_dc or {}
     dc_financials = dc_financials or {}
@@ -2068,33 +2566,17 @@ def generate_se_daily_plan(
         key=lambda t: (-t[2], min(tie_break_order.index(o) if o in tie_break_order else 99 for o in t[1])),
     )
 
-    # FINAL (8.10/GR-11) -- fill up to max_daily_tasks (5) within the field-time budget.
-    # No Call-type tasks in this formula -- Candidate_DCs excludes BO4/Sales entirely
-    # (see Layer 2 docstring above), so call_minutes_used stays 0 by construction.
-    rows: List[DailyTaskRow] = []
-    selected_dc_ids: set = set()
-    call_minutes_used = field_minutes_used = 0
-    credit_blocked_count = 0
-
-    for dc, matched, priority_score in ranked_pool:
-        if len(rows) >= constants.max_daily_tasks:
-            break
+    # Per-DC row construction -- shared by both the legacy greedy-fill path and the
+    # Routing Agent path below, so the two never drift apart on what a candidate's
+    # Purpose/Reason/financials/overdue-aging actually say. Pure per-DC transform, no
+    # capacity state -- safe to call for every ranked_pool entry, not just selected ones.
+    def _build_candidate_row(dc: Dict[str, Any], matched: List[str]) -> DailyTaskRow:
         dc_id = dc["DC_ID"]
-        if dc_id in selected_dc_ids:
-            continue
-        duration = constants.visit_duration_min
-        if field_minutes_used + duration > constants.field_minutes_per_day:
-            break
-        if call_minutes_used + field_minutes_used + duration > constants.total_capacity_min:
-            break
-
         attempts = recent_attempts_by_dc.get(dc_id, 0)
         multiplier = (1 - constants.contact_fatigue_priority_cut) if attempts >= constants.contact_fatigue_max_attempts else 1.0
         fin = dc_financials.get(dc_id, {})
         club = dc_club_by_id.get(dc_id)
         credit_on_hold = bool(fin.get("Credit_On_Hold"))
-        if credit_on_hold:
-            credit_blocked_count += 1
 
         # Real aging bucket, from dc_datamart's own os_1_to_90/os_90_plus split -- see
         # DailyTaskRow.Overdue_Aging_Bucket docstring for why this isn't an exact date.
@@ -2125,32 +2607,74 @@ def generate_se_daily_plan(
             + (f" -- {'; '.join(grade_notes)}" if grade_notes else "")
             + (f", contact-fatigue -{int(constants.contact_fatigue_priority_cut*100)}% ({attempts} attempts in {constants.contact_fatigue_window_days}d)" if multiplier < 1.0 else "")
         )
-        rows.append(
-            DailyTaskRow(
-                Sr_No=0, DC_Name=dc.get("DC_Name"), DC_ID=dc_id, Distance_Km=None,
-                Recommended_Task_Type="DC Visit", Purpose_Of_Visit=purpose,
-                Reason_Of_Visit=reason,
-                Last_Visit_Date=dc.get("Last_Visit_Date"), Days_Since_Last_Visit=dc.get("Days_Since_Last_Visit"),
-                Present_Outstanding=fin.get("Current_Outstanding"), Present_Overdue=fin.get("Current_Overdue"),
-                Last_Order_Date=fin.get("Last_Order_Date"), Last_Order_Value=fin.get("Last_Order_Value"),
-                Last_Payment_Date=last_payment_by_dc.get(dc_id), YTD_Private_Label=ytd_pl_by_dc.get(dc_id),
-                DC_Club_Participation=(club.get("Enrollment_Basis") if club and club.get("Is_Club_Enrolled") else "Not enrolled") if dc_club_by_id else "Config_Ambiguous -- DC club data not supplied",
-                Objective=",".join(matched), No_New_Orders=_no_new_orders(dc_id),
-                Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
-                Estimated_Duration=duration, Priority_Multiplier=multiplier,
-                Last_Payment_Join_Key_Unconfirmed=False,
-                Overdue_Aging_Bucket=overdue_aging,
-            )
+        return DailyTaskRow(
+            Sr_No=0, DC_Name=dc.get("DC_Name"), DC_ID=dc_id, Distance_Km=None,
+            Recommended_Task_Type="DC Visit", Purpose_Of_Visit=purpose,
+            Reason_Of_Visit=reason,
+            Last_Visit_Date=dc.get("Last_Visit_Date"), Days_Since_Last_Visit=dc.get("Days_Since_Last_Visit"),
+            Present_Outstanding=fin.get("Current_Outstanding"), Present_Overdue=fin.get("Current_Overdue"),
+            Last_Order_Date=fin.get("Last_Order_Date"), Last_Order_Value=fin.get("Last_Order_Value"),
+            Last_Payment_Date=last_payment_by_dc.get(dc_id), YTD_Private_Label=ytd_pl_by_dc.get(dc_id),
+            DC_Club_Participation=(club.get("Enrollment_Basis") if club and club.get("Is_Club_Enrolled") else "Not enrolled") if dc_club_by_id else "Config_Ambiguous -- DC club data not supplied",
+            Objective=",".join(matched), No_New_Orders=_no_new_orders(dc_id),
+            Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
+            Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,
+            Last_Payment_Join_Key_Unconfirmed=False,
+            Overdue_Aging_Bucket=overdue_aging,
         )
-        selected_dc_ids.add(dc_id)
-        field_minutes_used += duration
 
-    # GR-11 -- post-generation safety net, redundant with the loop's own break above but
-    # kept as an explicit second check per the Guardrails sheet's own pattern.
-    if len(rows) > constants.max_daily_tasks:
-        rows = rows[: constants.max_daily_tasks]
+    if route_selector is None:
+        # FINAL (8.10/GR-11) -- fill up to max_daily_tasks (5) within the field-time
+        # budget. No Call-type tasks in this formula -- Candidate_DCs excludes BO4/Sales
+        # entirely (see Layer 2 docstring above), so call_minutes_used stays 0 by
+        # construction. Unchanged since before route_selector existed -- Step 1's
+        # legacy run_pipeline() path (route_selector=None) always takes this branch.
+        rows: List[DailyTaskRow] = []
+        selected_dc_ids: set = set()
+        call_minutes_used = field_minutes_used = 0
+        credit_blocked_count = 0
 
-    sequenced, travel_cap_warning, sequencing_basis = sequence_with_distance(rows, dc_by_id, constants, punch_in_coords)
+        for dc, matched, priority_score in ranked_pool:
+            if len(rows) >= constants.max_daily_tasks:
+                break
+            dc_id = dc["DC_ID"]
+            if dc_id in selected_dc_ids:
+                continue
+            duration = constants.visit_duration_min
+            if field_minutes_used + duration > constants.field_minutes_per_day:
+                break
+            if call_minutes_used + field_minutes_used + duration > constants.total_capacity_min:
+                break
+            row = _build_candidate_row(dc, matched)
+            if row.Credit_On_Hold:
+                credit_blocked_count += 1
+            rows.append(row)
+            selected_dc_ids.add(dc_id)
+            field_minutes_used += duration
+
+        # GR-11 -- post-generation safety net, redundant with the loop's own break
+        # above but kept as an explicit second check per the Guardrails sheet's pattern.
+        if len(rows) > constants.max_daily_tasks:
+            rows = rows[: constants.max_daily_tasks]
+
+        sequenced, travel_cap_warning, sequencing_basis = sequence_with_distance(rows, dc_by_id, constants, punch_in_coords)
+    else:
+        # Routing Agent path (planning/routing.py) -- every ranked_pool candidate gets a
+        # fully-formed row (no capacity trimming here; that's the Routing Agent's job,
+        # against the real 420-min-total/180-min-travel-floor/5-task caps per Models
+        # 1-3), tagged with its Priority_Score so the router can rank/select/sequence
+        # for real.
+        candidates = [
+            {"row": _build_candidate_row(dc, matched), "dc": dc, "priority_score": priority_score, "matched": matched}
+            for dc, matched, priority_score in ranked_pool
+        ]
+        selector_result = route_selector(candidates, se_id, plan_date, punch_in_coords, constants, dc_by_id)
+        sequenced = selector_result["Tasks"]
+        travel_cap_warning = selector_result.get("Travel_Cap_Exceeded", False)
+        sequencing_basis = selector_result.get("Sequencing_Basis", "routing_agent")
+        field_minutes_used = sum(r.Estimated_Duration for r in sequenced)
+        call_minutes_used = 0
+        credit_blocked_count = sum(1 for r in sequenced if r.Credit_On_Hold)
 
     # GR-14 -- independent second-pass exclusion check (redundant with
     # apply_dc_exclusion_rules() upstream by design, not treated as a duplicate).
@@ -2178,7 +2702,7 @@ def generate_se_daily_plan(
             "Rule_7_4a_Applied": rule_a_applied,
             "Rule_7_4a_Note": "Outstanding=D caps Overall Sales at B -- no longer affects task selection under the new formula, since BO4/Sales isn't part of Candidate_DCs (8.12); kept for informational/audit purposes only" if rule_a_applied else None,
             "Rule_7_4b_All_D_Reorder_Applied": all_d,
-            "No_New_Orders_DC_Count": sum(1 for r in rows if r.No_New_Orders),
+            "No_New_Orders_DC_Count": sum(1 for r in sequenced if r.No_New_Orders),
             "Legal_Hold_Exclusions": "applied upstream in apply_dc_exclusion_rules() -- excluded DCs never reach dc_candidates",
             "Credit_Blocked_DC_Count": credit_blocked_count,
             "Credit_Blocked_Basis": "sale_orderrequest.credit_on_hold (Source 3d, confirmed queryable) -- flagged per 6.4, not auto-blocked" if dc_financials else "not evaluated -- dc_financials not supplied this run",

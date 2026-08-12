@@ -11,24 +11,26 @@ Scope resolution:
     NODE     -- scope_value is the Node name
     STATE    -- scope_value is the State name
     ABM      -- scope_value is the ABM employee code (from Geo_Mapping / Source 1c)
+    RBM      -- scope_value is the RBM employee code (from Geo_Mapping / Source 1c)
     BLOCK    -- scope_value is the Block name (from Geo_Mapping / Source 1c)
     DISTRICT -- scope_value is the District name (from Geo_Mapping / Source 1c)
 
 NODE/STATE/SE resolve directly against DC_Master_Normalized.json (local, produced by a
-prior `python se_daily_plan_agent.py` run). ABM/BLOCK/DISTRICT need the canonical geo
-hierarchy (Source 1c, question 4647) which only exists live -- those three scopes pull
-input_partner_details + input_se_node_mapping fresh on every call rather than caching,
-so they will error clearly if METABASE_URL/METABASE_API_KEY aren't set, rather than
-silently resolving against stale or absent data.
+prior `python se_daily_plan_agent.py` run). ABM/RBM/BLOCK/DISTRICT need the canonical
+geo hierarchy (Source 1c, question 4647) which only exists live -- those four scopes
+pull input_partner_details + input_se_node_mapping fresh on every call rather than
+caching, so they will error clearly if METABASE_URL/METABASE_API_KEY aren't set, rather
+than silently resolving against stale or absent data.
 """
 
 from __future__ import annotations
 
 import calendar
+import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from django.conf import settings
 from django.db import transaction
@@ -37,6 +39,7 @@ from django.utils import timezone
 sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
+from . import routing
 from .models import DailyTask, ExceptionRecord, ObjectiveCompletionStats, PlanRun
 from .notify import send_alert
 
@@ -192,38 +195,53 @@ def _fiscal_year_start(plan_date: str) -> str:
 
 
 def _sql_ytd_pl(dc_ids: List[str], fy_start: str, plan_date: str) -> str:
-    # pathik_report.pl_billed_amount (Redshift, dev) -- confirmed live columns
-    # (sap_partner_id, transaction_date, pl_billed_amount), per the doc's Table 2 row 14
-    # spec. coupon_analysis (Sales_Transactions_3d) has no DC-level join key in its
-    # confirmed schema, so it can't drive this despite also carrying PL-tagged rows.
+    # Real PL source, confirmed 2026-08-12 (Data Norm Agent doc, Source 3h, live query):
+    # products_template.business_segment_name = 'PRIVATE LABEL' is the actual PL tag --
+    # replaces the pathik_report.pl_billed_amount proxy this used before. Join chain
+    # (input_backend_db, same as sale_orderrequest elsewhere in this file):
+    # sale_orderrequestline -> sale_orderrequest (order date/status/DC bridge) ->
+    # products_product -> products_template (the PL flag). status='processed' excludes
+    # non-real/cancelled orders, per the confirmed trap on sale_orderrequest elsewhere.
     return f"""
-    SELECT sap_partner_id AS dc_id, SUM(pl_billed_amount) AS ytd_pl
-    FROM pathik_report
-    WHERE sap_partner_id IN ({_sql_list(dc_ids)})
-      AND transaction_date >= '{fy_start}' AND transaction_date <= '{plan_date}'
-    GROUP BY sap_partner_id
+    SELECT cc.partner_id AS dc_id, SUM(sol.price_unit * sol.quantity) AS ytd_pl
+    FROM sale_orderrequestline sol
+    JOIN sale_orderrequest sor ON sor.id = sol.order_request_id
+    JOIN customer_management_customer cc ON cc.id = sor.partner_id
+    JOIN products_product pp ON pp.id = sol.product_id
+    JOIN products_template pt ON pt.id = pp.template_id
+    WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
+      AND sor.status = 'processed'
+      AND pt.business_segment_name = 'PRIVATE LABEL'
+      AND sor.created_at >= '{fy_start}' AND sor.created_at <= '{plan_date}'
+    GROUP BY cc.partner_id
     """
 
 
 def _sql_pl_metrics(dc_ids: List[str], plan_date: str) -> str:
-    # Real per-DC BO1 (PL) scoring, wired 2026-08-06 -- same pathik_report.pl_billed_amount
-    # source as YTD PL, same honest-degrade pattern as BO3: 1.2's PL_Expected combination
-    # method (90-day-average vs AOP target) is itself still TBD in Source 5, and the
-    # AOP-target leg needs a per-DC AOP join that isn't confirmed either -- so this uses
-    # ONLY the 90-day-average leg, scaled to a 30-day-equivalent baseline, compared
-    # against the actual trailing-30-day PL. recent_start/ninety_start computed in Python
-    # to keep this SQL simple.
+    # Real per-DC BO1 (PL) scoring -- same confirmed PRIVATE LABEL source as
+    # _sql_ytd_pl above (see its comment for the join chain/status filter), replacing
+    # pathik_report.pl_billed_amount as of 2026-08-12. Same honest-degrade pattern as
+    # BO3: 1.2's PL_Expected combination method (90-day-average vs AOP target) is itself
+    # still TBD in Source 5, so this uses ONLY the 90-day-average leg, scaled to a
+    # 30-day-equivalent baseline, compared against the actual trailing-30-day PL.
+    # recent_start/ninety_start computed in Python to keep this SQL simple.
     d = datetime.fromisoformat(plan_date).date()
     recent_start = (d - timedelta(days=30)).isoformat()
     ninety_start = (d - timedelta(days=90)).isoformat()
     return f"""
-    SELECT sap_partner_id AS dc_id,
-           SUM(CASE WHEN transaction_date >= '{recent_start}' THEN pl_billed_amount ELSE 0 END) AS pl_actual_30d,
-           SUM(pl_billed_amount) AS pl_sum_90d
-    FROM pathik_report
-    WHERE sap_partner_id IN ({_sql_list(dc_ids)})
-      AND transaction_date >= '{ninety_start}' AND transaction_date <= '{plan_date}'
-    GROUP BY sap_partner_id
+    SELECT cc.partner_id AS dc_id,
+           SUM(CASE WHEN sor.created_at >= '{recent_start}' THEN sol.price_unit * sol.quantity ELSE 0 END) AS pl_actual_30d,
+           SUM(sol.price_unit * sol.quantity) AS pl_sum_90d
+    FROM sale_orderrequestline sol
+    JOIN sale_orderrequest sor ON sor.id = sol.order_request_id
+    JOIN customer_management_customer cc ON cc.id = sor.partner_id
+    JOIN products_product pp ON pp.id = sol.product_id
+    JOIN products_template pt ON pt.id = pp.template_id
+    WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
+      AND sor.status = 'processed'
+      AND pt.business_segment_name = 'PRIVATE LABEL'
+      AND sor.created_at >= '{ninety_start}' AND sor.created_at <= '{plan_date}'
+    GROUP BY cc.partner_id
     """
 
 
@@ -413,6 +431,28 @@ def _sql_punch_in(se_user_ids: List[int], plan_date: str) -> str:
     """
 
 
+def _sql_prev_punch_in(se_user_ids: List[int], plan_date: str) -> str:
+    # Routing Agent R0.4, CONFIRMED (OQ-2/OQ-11): Origin_Point = the SE's previous
+    # working day's punch-in, not today's -- distinct from _sql_punch_in() above (which
+    # is plan_date's own punch-in, used as a fallback by planning.routing when no
+    # prior-day one exists). No DISTINCT ON (unsupported on this cluster's Postgres
+    # dialect, per every other query in this file) -- two window functions instead:
+    # day_rank picks each SE's most recent date strictly before plan_date, rn_in_day
+    # picks that date's earliest check-in (same "earliest of the day" convention as
+    # _sql_punch_in).
+    return f"""
+    SELECT se_user_id, lat, lon FROM (
+        SELECT user_id AS se_user_id, check_in_latitude AS lat, check_in_longitude AS lon,
+               ROW_NUMBER() OVER (PARTITION BY user_id, check_in_time::date ORDER BY check_in_time ASC) AS rn_in_day,
+               DENSE_RANK() OVER (PARTITION BY user_id ORDER BY check_in_time::date DESC) AS day_rank
+        FROM attendance_attendance
+        WHERE user_id IN ({",".join(str(u) for u in se_user_ids)})
+          AND check_in_time < '{plan_date}'
+    ) t
+    WHERE rn_in_day = 1 AND day_rank = 1
+    """
+
+
 # --- Reconciliation SQL builders (feedback loop, Tier 1) -- same join keys/tables as
 # _sql_last_visit()/_sql_orders() above, just windowed forward [plan_date, plan_date+2]
 # instead of a trailing lookback, since these answer "did the assigned task actually
@@ -458,7 +498,7 @@ def _resolve_geo_mapping(client: "agent.MetabaseClient", geo_mapping_cache: Opti
         return geo_mapping_cache["value"]
     if not client.configured:
         raise PlanningError(
-            "ABM/BLOCK/DISTRICT scopes require the canonical geo hierarchy (Source 1c), "
+            "ABM/RBM/BLOCK/DISTRICT scopes require the canonical geo hierarchy (Source 1c), "
             "which only exists live. Set METABASE_URL/METABASE_API_KEY to use this scope."
         )
     geo_mapping = client.execute_sql(agent.REDSHIFT_DB_ID, _sql_geo_mapping_full())
@@ -478,20 +518,20 @@ def resolve_scope_dcs(
         dcs = [d for d in dc_master if d.get("State") == scope_value]
     elif scope_type == PlanRun.ScopeType.SE:
         dcs = [d for d in dc_master if d.get("Assigned_SE_Email") == scope_value]
-    elif scope_type in (PlanRun.ScopeType.ABM, PlanRun.ScopeType.BLOCK, PlanRun.ScopeType.DISTRICT):
+    elif scope_type in (PlanRun.ScopeType.ABM, PlanRun.ScopeType.RBM, PlanRun.ScopeType.BLOCK, PlanRun.ScopeType.DISTRICT):
         geo_mapping = _resolve_geo_mapping(client, geo_mapping_cache)
         # Geo_Mapping_1c is returned with its raw SQL column aliases (lowercase) -- it is
         # NEVER passed through a normalize_* step in the agent (see SQL_GEO_MAPPING_1C /
         # run_pipeline's tables dict), unlike every other _Normalized table. Don't assume
         # Capitalized keys here.
-        field = {"ABM": "abm_e_code", "BLOCK": "block", "DISTRICT": "district"}[scope_type]
+        field = {"ABM": "abm_e_code", "RBM": "rbm_e_code", "BLOCK": "block", "DISTRICT": "district"}[scope_type]
         matching_dc_ids = {g["dc_id"] for g in geo_mapping if g.get(field) == scope_value}
         dcs = [d for d in dc_master if d.get("DC_ID") in matching_dc_ids]
     else:
         raise PlanningError(f"Unknown scope_type '{scope_type}' -- expected one of {[c.value for c in PlanRun.ScopeType]}")
 
     if not dcs:
-        raise PlanningError(f"No DCs found for {scope_type}='{scope_value}'. Check the value against DC_Master_Normalized.json (and Source 1c for ABM/BLOCK/DISTRICT).")
+        raise PlanningError(f"No DCs found for {scope_type}='{scope_value}'. Check the value against DC_Master_Normalized.json (and Source 1c for ABM/RBM/BLOCK/DISTRICT).")
     return dcs
 
 
@@ -578,6 +618,7 @@ def generate_plan_for_scope(
     geo_by_dc: Dict[str, tuple] = {}
     ytd_pl_by_dc: Dict[str, float] = {}
     punch_in_by_se: Dict[int, tuple] = {}
+    prev_punch_in_by_se: Dict[int, tuple] = {}  # Routing Agent R0.4 -- Origin_Point
     attendance_ok_by_se: Dict[int, bool] = {}
     dc_bo_scores: Dict[str, Dict[str, Any]] = {}
     meetings_held_by_se: Dict[str, int] = {}
@@ -696,7 +737,7 @@ def generate_plan_for_scope(
 
             pl_actual_30d_by_dc: Dict[str, float] = {}
             pl_sum_90d_by_dc: Dict[str, float] = {}
-            for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_pl_metrics(dc_ids, plan_date)):
+            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_pl_metrics(dc_ids, plan_date)):
                 dc_id = agent.normalize_id(row.get("dc_id"))
                 if not dc_id:
                     continue
@@ -718,7 +759,7 @@ def generate_plan_for_scope(
                     for dc in dc_master if dc["DC_ID"] in sibling_dc_ids
                 })
                 try:
-                    for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_pl_metrics(sibling_dc_ids, plan_date)):
+                    for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_pl_metrics(sibling_dc_ids, plan_date)):
                         sib_dc_id = agent.normalize_id(row.get("dc_id"))
                         pl_sum_90d = agent.parse_number(row.get("pl_sum_90d"))
                         if sib_dc_id and pl_sum_90d is not None:
@@ -727,7 +768,7 @@ def generate_plan_for_scope(
                     # Node-wide total falls back to the scope-limited one (old behavior,
                     # still correct for NODE/STATE) rather than losing the whole PL block.
                     run_exceptions.append({
-                        "source": "pathik_report", "reason_code": "AOP_Node_Total_Sibling_Pull_Failed",
+                        "source": "sale_orderrequestline", "reason_code": "AOP_Node_Total_Sibling_Pull_Failed",
                         "detail": f"{type(e).__name__}: {e} -- AOP-allocated leg falls back to scope-limited (not node-wide) trailing-PL total",
                     })
 
@@ -786,7 +827,7 @@ def generate_plan_for_scope(
                         ),
                     })
         except Exception as e:
-            run_exceptions.append({"source": "pathik_report", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+            run_exceptions.append({"source": "sale_orderrequestline", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
         # Real per-DC BO4 (Sales Momentum) scoring, wired 2026-08-06 -- see
         # _sql_bo4_momentum()/score_bo4_sales_momentum() docstrings. Deliberately NOT
@@ -915,12 +956,12 @@ def generate_plan_for_scope(
 
         try:
             fy_start = _fiscal_year_start(plan_date)
-            for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_ytd_pl(dc_ids, fy_start, plan_date)):
+            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_ytd_pl(dc_ids, fy_start, plan_date)):
                 dc_id = agent.normalize_id(row.get("dc_id"))
                 if dc_id:
                     ytd_pl_by_dc[dc_id] = agent.parse_number(row.get("ytd_pl"))
         except Exception as e:
-            run_exceptions.append({"source": "pathik_report", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+            run_exceptions.append({"source": "sale_orderrequestline", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
         try:
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_punch_in(uids, plan_date)):
@@ -935,6 +976,15 @@ def generate_plan_for_scope(
                     punch_in_by_se[uid] = (lat, lon)
         except Exception as e:
             run_exceptions.append({"source": "attendance_attendance", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+
+        try:
+            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_prev_punch_in(uids, plan_date)):
+                uid = row["se_user_id"]
+                lat, lon = agent.parse_number(row.get("lat")), agent.parse_number(row.get("lon"))
+                if lat is not None and lon is not None:
+                    prev_punch_in_by_se[uid] = (lat, lon)
+        except Exception as e:
+            run_exceptions.append({"source": "attendance_attendance", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e} -- Routing Agent Origin_Point (R0.4) falls back to today's punch-in or defers"})
     else:
         run_exceptions.append({
             "source": "Source1/3/4", "reason_code": "Metabase_Not_Configured",
@@ -1014,12 +1064,34 @@ def generate_plan_for_scope(
             "Long-Term": agent.score_bo5_long_term(meetings_held_by_se.get(email, 0), dcs_onboarded_by_se.get(email, 0), constants),
         }
         attendance_gate_ok = None if attendance_unknowable else attendance_ok_by_se.get(uid, False)
+
+        # Routing Agent hookup (R0.4 Origin_Point): prefer the previous working day's
+        # punch-in; fall back to plan_date's own punch-in (punch_in_coords, already
+        # fetched above) only if no prior-day one exists; defer entirely (None) if
+        # neither does, per R0.4's "waits for today's real punch-in instead of
+        # guessing" rule -- planning.routing.generate_route_plans_for_se() honors that
+        # by producing no RoutePlan/DailyTask rows for this SE this run.
+        def _route_selector(candidates, se_id_str, plan_date_, punch_in_coords, constants_, dc_by_id_, _uid=uid, _email=email):
+            prev = prev_punch_in_by_se.get(_uid)
+            if prev is not None:
+                origin, origin_basis = prev, "prev_day_punch_in"
+            elif punch_in_coords is not None:
+                origin, origin_basis = punch_in_coords, "today_punch_in"
+            else:
+                origin, origin_basis = None, "waiting_for_today"
+            result = routing.generate_route_plans_for_se(
+                plan_run, str(_uid), _email, plan_date_, candidates, origin, origin_basis, constants_,
+            )
+            run_exceptions.extend(result["exceptions"])
+            return result
+
         plan = agent.generate_se_daily_plan(
             str(uid), email, plan_date, in_scope, bo_scores, dynamic_params, constants,
             attendance_gate_ok=attendance_gate_ok, recent_attempts_by_dc=recent_attempts_by_se_dc.get(uid, {}),
             dc_financials=dc_financials, last_payment_by_dc=last_payment_by_dc, dc_club_by_id=dc_club_by_id,
             ytd_pl_by_dc=ytd_pl_by_dc, punch_in_coords=punch_in_by_se.get(uid), dc_bo_scores=dc_bo_scores,
             farmer_meeting_scheduled_today=farmer_meeting_confirmed_by_se.get(email, False),
+            route_selector=_route_selector,
         )
         tasks = plan.get("Tasks", [])
         if not tasks:
@@ -1155,3 +1227,95 @@ def generate_plan_for_scope(
 
     client.close()
     return plan_run
+
+
+def _output_dir() -> Path:
+    return Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output"
+
+
+def _todays_run_summary(output_dir: Path) -> Optional[Dict[str, Any]]:
+    """Returns the parsed Run_Summary.json if it exists and its Run_Timestamp falls on
+    today's UTC calendar date (Run_Timestamp is written via agent.utc_now_iso(), and
+    Django's TIME_ZONE is UTC -- same clock, no conversion needed). None otherwise, so
+    the caller always has an unambiguous run-or-skip decision instead of guessing from
+    file mtimes (mtime survives a copy/checkout and can lie; the timestamp inside the
+    file is the actual pipeline run time). Shared by activate_tuff (CLI) and the
+    /api/planning/normalize/ + /api/planning/tuff/ endpoints -- single source of truth
+    for the once-per-day dedup rule (see [[tuff-once-per-day-normalization]])."""
+    summary_path = output_dir / "Run_Summary.json"
+    if not summary_path.exists():
+        return None
+    try:
+        summary = json.loads(summary_path.read_text())
+        run_date = datetime.fromisoformat(summary["Run_Timestamp"]).date()
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return None
+    return summary if run_date == datetime.now(dt_timezone.utc).date() else None
+
+
+def run_normalization_step(date: Optional[str] = None, force: bool = False, skip: bool = False) -> Dict[str, Any]:
+    """Step 1 (Data Normalization Agent), run-or-reuse per the once-per-day rule. Returns
+    {"Reused": bool, "Skipped": bool, **run_summary_fields} -- Run_Timestamp/Row_Counts/
+    Check_Summary/Note come straight from se_daily_plan_agent.run_pipeline()'s own return
+    shape (fresh or reused). force and skip are mutually exclusive (raises PlanningError
+    if both set), same as activate_tuff's --force-normalization/--skip-normalization."""
+    if force and skip:
+        raise PlanningError("force and skip are mutually exclusive.")
+    output_dir = _output_dir()
+
+    if skip:
+        summary_path = output_dir / "Run_Summary.json"
+        if not summary_path.exists():
+            raise PlanningError("skip=true requested but output/Run_Summary.json doesn't exist -- nothing to reuse.")
+        summary = json.loads(summary_path.read_text())
+        return {"Reused": False, "Skipped": True, **summary}
+
+    reusable = None if force else _todays_run_summary(output_dir)
+    if reusable is not None:
+        return {"Reused": True, "Skipped": False, **reusable}
+
+    run_summary = agent.run_pipeline(output_dir, date)
+    return {"Reused": False, "Skipped": False, **run_summary}
+
+
+def _abort_if_empty_dc_master(scope_type: str, scope_value: str, row_counts: Dict[str, int]) -> None:
+    """Shared guard: scope resolution hard-depends on DC_Master_Normalized having real
+    rows. Must run on every path that lets Step 2 proceed against output/ -- a fresh
+    Step 1 run, an auto-reused same-day run, AND an explicit skip -- not just the
+    fresh-run path, or a corrupted/empty output/ from earlier in the day gets silently
+    reused by every later activation instead of failing loudly once."""
+    if row_counts.get("DC_Master_Normalized", 0) == 0:
+        send_alert(
+            f"TUFF {scope_type}={scope_value}: DC_Master_Normalized has 0 rows in "
+            "output/ -- aborted before Step 2.", severity="critical",
+        )
+        raise PlanningError(
+            "TUFF aborted: DC_Master_Normalized has 0 rows -- the SE Daily Task Agent "
+            "has nothing to resolve scope against. Not proceeding to Step 2 on "
+            "empty/failed normalization output (retry with force=true)."
+        )
+
+
+def activate_tuff_scope(
+    scope_type: str, scope_value: str, plan_date: Optional[str] = None,
+    force_normalization: bool = False, skip_normalization: bool = False,
+    farmer_meeting_asker: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
+    farmer_meeting_confirmed_emails: Optional[set] = None,
+) -> Tuple[PlanRun, Dict[str, Any]]:
+    """Agent TUFF's full two-step flow as a single reusable call -- Step 1 (Data
+    Normalization, once-per-day, see run_normalization_step) then Step 2
+    (generate_plan_for_scope, which auto-triggers Pitching + Routing). Shared by
+    `manage.py activate_tuff` and GET /api/planning/tuff/<scope_type>/<scope_value>/, so
+    the two can never drift on the once-per-day/abort-on-empty rules. Returns
+    (plan_run, normalization_info) -- normalization_info is run_normalization_step()'s
+    return value, for callers that want to report Step 1's own outcome alongside the
+    PlanRun."""
+    normalization_info = run_normalization_step(date=plan_date, force=force_normalization, skip=skip_normalization)
+    _abort_if_empty_dc_master(scope_type, scope_value, normalization_info.get("Row_Counts", {}))
+
+    plan_run = generate_plan_for_scope(
+        scope_type, scope_value, plan_date,
+        farmer_meeting_asker=farmer_meeting_asker,
+        farmer_meeting_confirmed_emails=farmer_meeting_confirmed_emails,
+    )
+    return plan_run, normalization_info

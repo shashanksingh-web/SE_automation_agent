@@ -9,6 +9,7 @@ class PlanRun(models.Model):
     class ScopeType(models.TextChoices):
         SE = "SE", "SE"
         ABM = "ABM", "ABM"
+        RBM = "RBM", "RBM"
         NODE = "NODE", "Node"
         BLOCK = "BLOCK", "Block"
         DISTRICT = "DISTRICT", "District"
@@ -239,3 +240,110 @@ class PitchScript(models.Model):
 
     def __str__(self):
         return f"Pitch for {self.daily_task_id} ({self.purpose_key})"
+
+
+class RoutePlan(models.Model):
+    """The Routing Agent's output -- one row per algorithm-generated route for one SE on
+    one plan_date (Routing_Agent_Configuration_Sheet_v5_FINAL, R5.1: minimum 3 per
+    SE/day, from Models 1-3). Sits between PlanRun's Ranked_Pool (built inside
+    se_daily_plan_agent.generate_se_daily_plan(), see planning.routing) and DailyTask --
+    exactly one RoutePlan per PlanRun/SE is_default_selected=True, and that plan's
+    RouteStop rows are what actually get synced into DailyTask, so Pitching Agent /
+    reporting / the API never need to know RoutePlan exists (per the Data Norm Agent
+    doc: "Pitching Agent and Routing Agent share no output tables at all")."""
+
+    class PlanType(models.TextChoices):
+        PRIORITY_MAX = "PRIORITY_MAX", "Priority-Max (Model 1)"
+        DISTANCE_MIN = "DISTANCE_MIN", "Distance-Min (Model 2)"
+        BALANCED = "BALANCED", "Balanced (Model 3)"
+        SE_OVERRIDE = "SE_OVERRIDE", "SE Self-Override (Model 4)"  # not generated yet, reserved
+
+    plan_run = models.ForeignKey(PlanRun, related_name="route_plans", on_delete=models.CASCADE)
+    se_id = models.CharField(max_length=64)
+    se_name = models.CharField(max_length=255, blank=True, null=True)
+    plan_date = models.DateField()
+
+    plan_type = models.CharField(max_length=16, choices=PlanType.choices)
+
+    origin_lat = models.FloatField(blank=True, null=True)
+    origin_lon = models.FloatField(blank=True, null=True)
+    # R0.4: previous working day's punch-in, confirmed -- if none exists yet, the agent
+    # waits for today's real punch-in rather than guessing a fallback (see planning.routing).
+    ORIGIN_BASIS_CHOICES = [
+        ("prev_day_punch_in", "Previous working day's punch-in"),
+        # R0.4's "waits for today's real punch-in instead of guessing" case where that
+        # punch-in has already actually happened by the time this ran (plan_date's own
+        # attendance record exists, even though no prior-day one does) -- a resolved
+        # origin, not a deferral, so it gets its own label rather than being folded into
+        # either of the other two.
+        ("today_punch_in", "No prior-day punch-in, but today's own punch-in already happened"),
+        ("waiting_for_today", "No prior punch-in at all yet -- deferred, no plan generated this run"),
+    ]
+    origin_basis = models.CharField(max_length=20, choices=ORIGIN_BASIS_CHOICES)
+
+    total_distance_km = models.FloatField(blank=True, null=True)  # informational only, R1.5/R1.6 -- never a gate
+    total_travel_minutes = models.FloatField(blank=True, null=True)
+    total_visit_minutes = models.FloatField(blank=True, null=True)
+    total_minutes = models.FloatField(blank=True, null=True)
+    priority_score_captured = models.FloatField(blank=True, null=True)
+
+    feasible = models.BooleanField(default=True)
+    # e.g. Travel_Floor_Not_Met when even the best model can't reach the 180-min
+    # travel floor (R1.2) with a non-trivial stop set (GR-R5, fail-safe not a hard reject).
+    infeasibility_reason = models.CharField(max_length=255, blank=True, default="")
+
+    # Model 1 (Priority-Max) is the default auto-selected plan -- matches today's
+    # automated/cron behavior (no SE app exists in this repo to make a real choice from
+    # yet). planning.management.commands.select_route_plan flips this to a different
+    # plan_type and re-syncs DailyTask accordingly (stands in for R5.3's "SE selects").
+    is_default_selected = models.BooleanField(default=False)
+    generated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["plan_run", "se_id", "plan_type"]
+        indexes = [
+            models.Index(fields=["plan_run", "se_id"]),
+        ]
+
+    def __str__(self):
+        return f"{self.se_id} {self.plan_type} @ {self.plan_date} (PlanRun #{self.plan_run_id})"
+
+
+class RouteStop(models.Model):
+    """One ordered stop within a RoutePlan (R6.1's Ordered_Stops). Distance/time are
+    per-leg (Distance_From_Prev/Travel_Time_From_Prev), not cumulative -- unlike the
+    older single-route DailyTask.distance_km, which stays cumulative-from-origin for
+    backward compatibility with existing reporting."""
+
+    route_plan = models.ForeignKey(RoutePlan, related_name="stops", on_delete=models.CASCADE)
+    dc_id = models.CharField(max_length=32)
+    sequence_no = models.IntegerField()
+    # Comma-joined, same convention DailyTask.objective already uses for bundled purposes.
+    purposes = models.CharField(max_length=255, blank=True, default="")
+    eta_minutes_from_origin = models.FloatField(blank=True, null=True)
+    distance_from_prev_km = models.FloatField(blank=True, null=True)
+    travel_time_from_prev_min = models.FloatField(blank=True, null=True)
+    visit_duration_min = models.FloatField(default=45.0)
+
+    class Meta:
+        ordering = ["route_plan", "sequence_no"]
+
+    def __str__(self):
+        return f"{self.route_plan_id} #{self.sequence_no} {self.dc_id}"
+
+
+class RouteDroppedDC(models.Model):
+    """A DC from the Ranked_Pool that didn't make it into a given RoutePlan (R6.1's
+    Dropped_DCs) -- e.g. Geo_Incomplete (GR-R1), Legal_Hold (GR-R2), or
+    Capacity_Exceeded (couldn't fit within the 420-min-total/5-task caps -- R1.2's
+    180-min figure is a travel FLOOR, not a capacity ceiling, so it never drops a DC by
+    itself; it shows up as a plan-level Travel_Floor_Not_Met instead, see RoutePlan).
+    Never a silent omission -- every candidate the Ranked_Pool offered either appears in
+    RouteStop or here, with why."""
+
+    route_plan = models.ForeignKey(RoutePlan, related_name="dropped_dcs", on_delete=models.CASCADE)
+    dc_id = models.CharField(max_length=32)
+    reason = models.CharField(max_length=255)
+
+    def __str__(self):
+        return f"{self.route_plan_id} dropped {self.dc_id}: {self.reason}"
