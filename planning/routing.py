@@ -245,9 +245,14 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             "total_distance_km": r.total_distance_km,
             "total_travel_minutes": r.total_travel_minutes,
             "total_visit_minutes": r.total_visit_minutes,
+            "total_minutes": r.total_minutes,
             "priority_score_captured": r.priority_score_captured,
             "feasible": r.feasible,
             "infeasibility_reason": r.infeasibility_reason or None,
+            # R0.4's Origin_Point -- where/why this route starts where it does. See
+            # RoutePlan.ORIGIN_BASIS_CHOICES for what each origin_basis value means.
+            "origin_lat": r.origin_lat, "origin_lon": r.origin_lon, "origin_basis": r.origin_basis,
+            "generated_at": r.generated_at,
             "stops": [
                 {
                     "sequence_no": s.sequence_no, "dc_id": s.dc_id, "purposes": s.purposes,
@@ -258,7 +263,8 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             ],
             "dropped_dcs": [{"dc_id": d.dc_id, "reason": d.reason} for d in r.dropped_dcs.all()],
         })
-    return {"plan_run_id": plan_run.id, "se_id": routes.first().se_id, "plan_date": plan_date, "plans": plans}
+    first = routes.first()
+    return {"plan_run_id": plan_run.id, "se_id": first.se_id, "se_name": first.se_name, "plan_date": plan_date, "plans": plans}
 
 
 def select_default_route_plan(se: str, plan_date: str, plan_type: str, plan_run_id: Optional[int] = None) -> Dict[str, Any]:

@@ -3,7 +3,7 @@ from django.views.decorators.http import require_GET
 
 from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
-from .models import DailyTask, PitchScript, PlanRun
+from .models import DailyTask, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, ScheduledScope
 from .routing import RoutingError, list_route_plans, select_default_route_plan
 from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
 from .services import _output_dir as _planning_output_dir
@@ -15,13 +15,21 @@ def _serialize_task(t: DailyTask) -> dict:
         "Recommended_Task_Type": t.recommended_task_type, "Purpose_Of_Visit": t.purpose_of_visit,
         "Reason_Of_Visit": t.reason_of_visit, "Last_Visit_Date": t.last_visit_date,
         "Days_Since_Last_Visit": t.days_since_last_visit, "Present_Outstanding": t.present_outstanding,
-        "Present_Overdue": t.present_overdue, "Last_Order_Date": t.last_order_date,
+        "Present_Overdue": t.present_overdue, "Overdue_Aging_Bucket": t.overdue_aging_bucket,
+        "Last_Order_Date": t.last_order_date,
         "Last_Order_Value": t.last_order_value, "Last_Payment_Date": t.last_payment_date,
         "Last_Payment_Join_Key_Unconfirmed": t.last_payment_join_key_unconfirmed,
         "YTD_Private_Label": t.ytd_private_label, "DC_Club_Participation": t.dc_club_participation,
         "Objective": t.objective, "No_New_Orders": t.no_new_orders, "Credit_On_Hold": t.credit_on_hold,
         "Credit_On_Hold_Reason": t.credit_on_hold_reason, "Estimated_Duration": t.estimated_duration,
         "Priority_Multiplier": t.priority_multiplier,
+        # Outcome-reconciliation block (Tier 1 feedback loop) -- populated by
+        # `manage.py reconcile_outcomes` once plan_date has passed; Outcome_Status stays
+        # UNKNOWN (never guessed) until that runs, same honest-degrade discipline as the
+        # rest of this codebase.
+        "Outcome_Status": t.outcome_status, "Actual_Visit_Date": t.actual_visit_date,
+        "Actual_Order_Value": t.actual_order_value, "Actual_Payment_Amount": t.actual_payment_amount,
+        "Reconciled_At": t.reconciled_at,
     }
 
 
@@ -42,9 +50,23 @@ def _serialize_plan_run(plan_run: PlanRun) -> dict:
         "Task_Count": plan_run.task_count,
         "Dynamic_Parameters_Resolved": plan_run.dynamic_parameters,
         "Note": plan_run.note,
+        "Skipped_SEs": plan_run.skipped_ses,
+        # Approval-workflow / lifecycle fields -- status is an audit trail, not a filter
+        # (see PlanRun's own model docstring): no reviewer workflow exists yet to
+        # guarantee every run gets reviewed, so every run still appears via GET
+        # regardless of status.
+        "Status": plan_run.status,
+        "Reviewed_By": plan_run.reviewed_by or None,
+        "Reviewed_At": plan_run.reviewed_at,
+        "Error_Message": plan_run.error_message or None,
+        "Started_At": plan_run.started_at,
+        "Finished_At": plan_run.finished_at,
         "Plans": list(tasks_by_se.values()),
         "Exceptions_Report": [
-            {"Source": e.source, "Reason_Code": e.reason_code, "Detail": e.detail, "Run_Timestamp": e.run_timestamp}
+            {
+                "Record_ID": e.record_id, "Source": e.source, "Reason_Code": e.reason_code,
+                "Detail": e.detail, "Run_Timestamp": e.run_timestamp,
+            }
             for e in plan_run.exceptions.all()
         ],
     }
@@ -310,6 +332,72 @@ def directory_dcs(request):
 
 
 @require_GET
+def visit_streaks(request):
+    """GET /api/planning/streaks/?se=&dc=&min_misses= -- DCVisitStreak: consecutive-miss
+    tracking per (SE, DC), independent of any single PlanRun. Feeds a priority_multiplier
+    escalation the next time a DC is scored (see reconcile_outcomes)."""
+    qs = DCVisitStreak.objects.all()
+    if request.GET.get("se"):
+        qs = qs.filter(se_id=request.GET["se"])
+    if request.GET.get("dc"):
+        qs = qs.filter(dc_id=request.GET["dc"])
+    if request.GET.get("min_misses"):
+        try:
+            qs = qs.filter(consecutive_misses__gte=int(request.GET["min_misses"]))
+        except ValueError:
+            return JsonResponse({"error": "min_misses must be an integer"}, status=400)
+    qs = qs.order_by("-consecutive_misses")[:500]
+    return JsonResponse([
+        {
+            "SE_ID": s.se_id, "DC_ID": s.dc_id, "Consecutive_Misses": s.consecutive_misses,
+            "Last_Outcome_Date": s.last_outcome_date, "Updated_At": s.updated_at,
+        }
+        for s in qs
+    ], safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def completion_stats(request):
+    """GET /api/planning/completion-stats/?se=&objective= -- ObjectiveCompletionStats:
+    trailing-30d completion rate per (SE, objective), rolled up by
+    `compute_completion_stats` and consumed as a bounded (0.7x-1.3x) weighting
+    multiplier in BO1/BO3 scoring (Tier 2 adaptive weighting)."""
+    qs = ObjectiveCompletionStats.objects.all()
+    if request.GET.get("se"):
+        qs = qs.filter(se_id=request.GET["se"])
+    if request.GET.get("objective"):
+        qs = qs.filter(objective=request.GET["objective"])
+    qs = qs.order_by("se_id", "objective")[:500]
+    return JsonResponse([
+        {
+            "SE_ID": s.se_id, "Objective": s.objective, "Completion_Rate_30d": s.completion_rate_30d,
+            "Sample_Size": s.sample_size, "Computed_At": s.computed_at,
+        }
+        for s in qs
+    ], safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def scheduled_scopes(request):
+    """GET /api/planning/scheduled-scopes/?active=true&scope_type= -- ScheduledScope:
+    the (scope_type, scope_value) pairs `run_scheduled_tuff` runs TUFF for once daily via
+    cron, independent of any ad-hoc activate_tuff/generate_se_plan call."""
+    qs = ScheduledScope.objects.all()
+    if request.GET.get("active") is not None:
+        qs = qs.filter(active=request.GET["active"].lower() in ("1", "true", "yes"))
+    if request.GET.get("scope_type"):
+        qs = qs.filter(scope_type=request.GET["scope_type"].upper())
+    qs = qs.order_by("scope_type", "scope_value")
+    return JsonResponse([
+        {
+            "Scope_Type": s.scope_type, "Scope_Value": s.scope_value, "Active": s.active,
+            "Last_Run_At": s.last_run_at, "Created_At": s.created_at,
+        }
+        for s in qs
+    ], safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
 def plan_run_detail(request, plan_run_id: int):
     """GET /api/planning/runs/<id>/ -- re-fetch a previously generated & persisted plan."""
     try:
@@ -321,18 +409,21 @@ def plan_run_detail(request, plan_run_id: int):
 
 @require_GET
 def plan_run_list(request):
-    """GET /api/planning/runs/?scope_type=NODE&scope_value=Jaipur -- list past runs, newest first."""
+    """GET /api/planning/runs/?scope_type=NODE&scope_value=Jaipur&status=PENDING_REVIEW -- list past runs, newest first."""
     qs = PlanRun.objects.all()
     if request.GET.get("scope_type"):
         qs = qs.filter(scope_type=request.GET["scope_type"].upper())
     if request.GET.get("scope_value"):
         qs = qs.filter(scope_value=request.GET["scope_value"])
+    if request.GET.get("status"):
+        qs = qs.filter(status=request.GET["status"].upper())
     qs = qs[:50]
     return JsonResponse([
         {
             "PlanRun_ID": r.id, "Scope_Type": r.scope_type, "Scope_Value": r.scope_value,
             "Plan_Date": r.plan_date, "Run_Timestamp": r.run_timestamp,
             "SE_Count": r.se_count, "DC_Count": r.dc_count, "Task_Count": r.task_count,
+            "Status": r.status,
         }
         for r in qs
     ], safe=False, json_dumps_params={"default": str})

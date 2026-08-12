@@ -27,6 +27,9 @@ urlpatterns = [
     path("directory/abms/", views.directory_abms, name="directory_abms"),
     path("directory/ses/", views.directory_ses, name="directory_ses"),
     path("directory/dcs/", views.directory_dcs, name="directory_dcs"),
+    path("streaks/", views.visit_streaks, name="visit_streaks"),
+    path("completion-stats/", views.completion_stats, name="completion_stats"),
+    path("scheduled-scopes/", views.scheduled_scopes, name="scheduled_scopes"),
     path("runs/", views.plan_run_list, name="plan_run_list"),
     path("runs/<int:plan_run_id>/", views.plan_run_detail, name="plan_run_detail"),
 ]
