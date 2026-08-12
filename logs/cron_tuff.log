@@ -1,2 +1,6 @@
 shell-init: error retrieving current directory: getcwd: cannot access parent directories: Operation not permitted
 /bin/bash: /Users/dehaat/Desktop/SE_automation_server/scripts/launchd_tuff.sh: Operation not permitted
+shell-init: error retrieving current directory: getcwd: cannot access parent directories: Operation not permitted
+/bin/bash: /Users/dehaat/Desktop/SE_automation_server/scripts/launchd_tuff.sh: Operation not permitted
+shell-init: error retrieving current directory: getcwd: cannot access parent directories: Operation not permitted
+/bin/bash: /Users/dehaat/Desktop/SE_automation_server/scripts/launchd_tuff.sh: Operation not permitted

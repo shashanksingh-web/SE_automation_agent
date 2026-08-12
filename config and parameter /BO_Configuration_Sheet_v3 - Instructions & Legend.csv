@@ -1,0 +1,32 @@
+,
+,Sales Automation Project — Business Objective Configuration
+,Source: BO Business Questionnaire (business sign-off)
+,
+,"This workbook converts every question in the Business Decisions Questionnaire into a parameter, and every business answer into a configuration value for the Business Objective (BO) scoring engine. Each row on the 'All Parameters' sheet is one setting, with a worked calculation formula/logic showing exactly how the engine should compute it."
+,
+,Column Guide
+,"•  System Default (★) — what the system uses today, shown for reference only."
+,"•  Configured Value — the business's decision, written as the actual setting to load into config."
+,"•  Calculation Formula / Logic — the concrete formula or rule the engine should evaluate, written in plain pseudo-formula notation (variable names, not live Excel cell references, since this workbook has no underlying transaction data). Where the business's answer left a number unspecified, the formula shows the structure with a [TBD] placeholder."
+,•  Status — how the configured value relates to the default (see color legend below).
+,"•  Locked / Adjustable — whether the business can change this later, or it is fixed in code (🔒)."
+,"•  Follow-up Needed — for static gaps, what to close with the business; for agent-determined rows, the runtime guidance that tells the Data Agent / SE Daily Planner Agent how to resolve it live."
+,
+,Design note: agentic resolution of custom rules
+,"Every parameter that the business left as 'custom' / unspecified (11 items, formerly 'Needs Clarification') is now marked Agent-Determined (Dynamic): instead of blocking on a fixed number, the Data Agent and SE Daily Planner Agent resolve it live from real data at query time, per the guidance in the Follow-up column. One exception carries over regardless of this change: safety rules marked 🔒 (e.g. 3.7's order-block) stay hard-coded and are never left to agent judgment."
+,
+,Color Legend
+,   Confirmed Default — business kept the system's current (★) behavior
+,   Overridden — business chose a different value than the system default
+,   Needs Clarification — answer/formula is incomplete or ambiguous in the source document
+,"   Safety Rule — 🔒 fixed in code; shown for confirmation only, not adjustable"
+,"   Agent-Determined (Dynamic) — resolved live by the Data Agent / SE Daily Planner Agent at query time, not a fixed config value"
+,   Expanded (Multi-Metric) — business asked to track more than one measure in parallel for this parameter
+,"   New Parameter — added after the original sign-off, no prior system default to compare against"
+,   Policy Reference (Fixed) — sourced directly from a signed company policy document (e.g. the Variable Incentive Policy)
+,
+,Sheets in this workbook
+,"•  All Parameters — every Section 0-8 decision as one master configuration table, including the calculation formula/logic for each."
+,"•  Open Questions (Sec 9) — free-text strategic answers, kept separate from the fixed parameters."
+,"•  Agent-Determined Parameters (Dynamic) — the 11 previously-open items, now specified as runtime logic for the Data Agent / SE Daily Planner Agent to resolve at query time."
+,"•  SE Incentive Policy (FY26-27) — the SE-applicable Variable Incentive Policy, structured as parameters with formulas and cross-referenced to the matching BO objective."

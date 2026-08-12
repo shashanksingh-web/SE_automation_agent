@@ -1,0 +1,18 @@
+Routing Agent — Guardrails (v5 FINAL),,,,
+GR#,Guardrail Rule,Applies To,Enforcement Point,Failure Behavior
+A — Data Integrity,,,,
+GR-R1,Never route a DC with null/invalid geo-coordinates (Geo_Complete≠TRUE),R0.3,Pre-generation filter,DC excluded from all plans; logged in Dropped_DCs as Geo_Incomplete
+GR-R2,Never include a Legal_Hold DC in any plan — mirrors this workbook's GR-14,"R0.7, R2.1",Pre- and post-generation,DC removed even if it slipped through the Ranked_Pool
+B — Capacity (time & task-count only — distance is advisory),,,,
+GR-R3,Never exceed Field_Minutes_Available (420 min) — HARD cap,R1.1,Post-generation validation,"Plan rejected/re-solved, marked Infeasible"
+GR-R4,Never exceed 5 tasks/day — HARD cap,R1.7,Post-generation validation,Plan rejected/re-solved if it selects more than 5 stops
+GR-R5,"CORRECTED: if a route would exceed the 180-min travel-time ceiling given the pool's geography, trim the farthest/lowest-priority stop rather than force a plan that blows the cap — this was previously written as a floor-shortfall guardrail, which was backwards",R1.2,At computation time,"Flag Travel_Ceiling_Exceeded; drop stops by ascending Priority_Score until the route fits under 180 min, note which stops were dropped and why"
+C — Distance Estimation (monitoring only),,,,
+GR-R11,"Every plan's Haversine Total_Distance_KM is reconciled against that day's actual google_distance once logged — monitoring/QA only, never a build gate","R0.5, R6.1",Post-day reconciliation,"If gap exceeds a threshold [FILL IN, e.g. 20%], flag Distance_Estimate_Mismatch for periodic ops review — purely diagnostic"
+D — Multi-Plan,,,,
+GR-R6,Never generate fewer than 3 feasible plans without flagging why,R5.1,Post-generation check,Flag Insufficient_Candidates_For_3_Plans; show however many are genuinely distinct
+GR-R7,Never alter Priority_Score or Matched_Purposes computed upstream by this workbook's BO Scoring Engine,R2.2,Architectural / code review,"Treated as a bug, mirrors this workbook's determinism philosophy"
+GR-R8,"Only the SE may finalize plan selection, and only AFTER that SE's punch-in for the day",R5.3,At selection time,Non-SE or pre-punch-in selection attempts rejected/held
+E — Determinism & Auditability,,,,
+GR-R9,"For a fixed candidate pool and date snapshot, Models 1-3 must always produce the same 3 plans — same standard as this workbook's GR-16",R5.5,Architectural,Non-reproducible output treated as a bug
+GR-R10,"Every plan-generation run must be logged: which model, what inputs, what output, which plan the user selected — mirrors this workbook's GR-17",All,At computation time,Missing log entry blocks that day's plan from being finalized

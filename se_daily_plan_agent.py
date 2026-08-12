@@ -91,20 +91,25 @@ CONFIG_SE_INCENTIVE_CSV = Path(
 CONFIG_OPEN_QUESTIONS_CSV = Path(
     os.environ.get("SE_AGENT_OPEN_QUESTIONS_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Open Questions (Sec 9).csv")
 )
+# These 5 constants are defined but never read by load_config() (see below) or anything
+# else in this file -- CONFIG_ALL_PARAMS_CSV/CONFIG_SE_INCENTIVE_CSV are the only two
+# actually loaded. Kept in sync with the current pitch_config-style re-export anyway
+# (bumped (1)->(2) 2026-08-12, same day and same reason as CONFIG_ALL_PARAMS_CSV's
+# (2)->(3) bump above) so they don't point at a guaranteed-404 path if ever wired up.
 CONFIG_AGENT_DETERMINED_CSV = Path(
-    os.environ.get("SE_AGENT_AGENT_DETERMINED_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Agent-Determined Parameters (1).csv")
+    os.environ.get("SE_AGENT_AGENT_DETERMINED_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Agent-Determined Parameters (2).csv")
 )
 CONFIG_TASK_FORMULA_CSV = Path(
-    os.environ.get("SE_AGENT_TASK_FORMULA_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Daily Task Assignment Formula (1).csv")
+    os.environ.get("SE_AGENT_TASK_FORMULA_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Daily Task Assignment Formula (2).csv")
 )
 CONFIG_GUARDRAILS_CSV = Path(
-    os.environ.get("SE_AGENT_GUARDRAILS_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Guardrails (1).csv")
+    os.environ.get("SE_AGENT_GUARDRAILS_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Guardrails (2).csv")
 )
 CONFIG_VISIT_PURPOSE_MAPPING_CSV = Path(
-    os.environ.get("SE_AGENT_VISIT_PURPOSE_MAPPING_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Visit Type & Purpose Mapping (1).csv")
+    os.environ.get("SE_AGENT_VISIT_PURPOSE_MAPPING_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Visit Type & Purpose Mapping (2).csv")
 )
 CONFIG_VISIT_PURPOSE_SYSTEM_CSV = Path(
-    os.environ.get("SE_AGENT_VISIT_PURPOSE_SYSTEM_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Visit Type to Purpose (System) (1).csv")
+    os.environ.get("SE_AGENT_VISIT_PURPOSE_SYSTEM_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Visit Type to Purpose (System) (2).csv")
 )
 AOP_CSV = Path(
     os.environ.get("SE_AGENT_AOP_CSV", BASE_DIR / "Niyojan Q2-FY_26_27 Dashboard - Planning.csv")

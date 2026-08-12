@@ -1,0 +1,188 @@
+2026-08-12 06:15:14,776 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-12 06:15:14,777 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-12 06:15:14,877 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-12 06:15:15,238 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-12 06:15:15,238 INFO se_daily_plan_agent:   4/6 querying SE_Visit_Log_1a...
+2026-08-12 06:16:26,886 INFO se_daily_plan_agent:   4/6 SE_Visit_Log_1a: 2071733 rows in 71.6s
+2026-08-12 06:16:26,887 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-12 06:16:37,284 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 109770 rows in 10.4s
+2026-08-12 06:16:37,286 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-12 06:16:41,775 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12884 rows in 4.5s
+2026-08-12 06:16:41,775 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-12 06:16:45,371 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31887 rows in 3.6s
+2026-08-12 06:16:45,372 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-12 06:17:31,614 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 110194 rows in 46.2s
+2026-08-12 06:17:31,615 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-12 06:17:41,647 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 81251 rows in 10.0s
+2026-08-12 06:17:41,648 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-12 06:17:41,692 WARNING se_daily_plan_agent:   4/6 Outstanding_3d FAILED after 0.0s: InsufficientPrivilege: permission denied for relation dc_datamart
+
+2026-08-12 06:17:41,692 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-12 06:17:48,256 INFO se_daily_plan_agent:   4/6 Orders_3d: 43792 rows in 6.6s
+2026-08-12 06:17:48,256 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-12 06:17:48,288 WARNING se_daily_plan_agent:   4/6 Liquidation_3d FAILED after 0.0s: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+
+2026-08-12 06:17:48,288 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-12 06:17:53,958 INFO se_daily_plan_agent:   4/6 Payments_3f: 48722 rows in 5.7s
+2026-08-12 06:17:53,958 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-12 06:17:53,993 WARNING se_daily_plan_agent:   4/6 DC_Club_Mapping_3g FAILED after 0.0s: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+
+2026-08-12 06:17:53,993 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-12 06:17:54,024 WARNING se_daily_plan_agent:   4/6 DC_Club_Slabs_3g FAILED after 0.0s: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+
+2026-08-12 06:17:54,025 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-12 06:17:54,166 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-12 06:17:56,393 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-12 06:18:12,624 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-12 06:18:27,577 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #321 (NODE=Aligarh @ 2026-08-12): 15 exceptions across 128 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:18:33,105 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #323 (NODE=Alwar @ 2026-08-12): 9 exceptions across 70 DCs (13%) -- exceeds 10% threshold.
+2026-08-12 06:18:36,429 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #324 (NODE=Ambikapur @ 2026-08-12): 11 exceptions across 99 DCs (11%) -- exceeds 10% threshold.
+2026-08-12 06:18:44,618 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #327 (NODE=Arariya @ 2026-08-12): 18 exceptions across 133 DCs (14%) -- exceeds 10% threshold.
+  NODE=Arrah: 33 DC(s) found for NODE='Arrah', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:18:44,682 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Arrah failed: 33 DC(s) found for NODE='Arrah', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:18:47,182 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #328 (NODE=Bahraich @ 2026-08-12): 13 exceptions across 87 DCs (15%) -- exceeds 10% threshold.
+2026-08-12 06:18:50,253 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #329 (NODE=Ballia @ 2026-08-12): 15 exceptions across 107 DCs (14%) -- exceeds 10% threshold.
+2026-08-12 06:18:56,588 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #331 (NODE=Bareilly @ 2026-08-12): 13 exceptions across 110 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:19:05,160 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #334 (NODE=Bhagalpur @ 2026-08-12): 14 exceptions across 79 DCs (18%) -- exceeds 10% threshold.
+2026-08-12 06:19:08,076 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #335 (NODE=Bhawanipatna @ 2026-08-12): 8 exceptions across 62 DCs (13%) -- exceeds 10% threshold.
+2026-08-12 06:19:13,549 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #337 (NODE=Bihar Sharif @ 2026-08-12): 15 exceptions across 110 DCs (14%) -- exceeds 10% threshold.
+2026-08-12 06:19:16,145 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #338 (NODE=Bilaspur @ 2026-08-12): 18 exceptions across 75 DCs (24%) -- exceeds 10% threshold.
+2026-08-12 06:19:18,648 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #339 (NODE=Bulandshahr @ 2026-08-12): 8 exceptions across 68 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:19:21,402 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #340 (NODE=Burdwan @ 2026-08-12): 11 exceptions across 46 DCs (24%) -- exceeds 10% threshold.
+2026-08-12 06:19:23,929 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #341 (NODE=Buxar @ 2026-08-12): 9 exceptions across 68 DCs (13%) -- exceeds 10% threshold.
+2026-08-12 06:19:26,614 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #342 (NODE=CHHATRAPATI SAMBHAJINAGAR @ 2026-08-12): 16 exceptions across 144 DCs (11%) -- exceeds 10% threshold.
+2026-08-12 06:19:35,703 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #345 (NODE=Darbhanga @ 2026-08-12): 12 exceptions across 108 DCs (11%) -- exceeds 10% threshold.
+  NODE=Dhar: 35 DC(s) found for NODE='Dhar', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:19:35,762 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Dhar failed: 35 DC(s) found for NODE='Dhar', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:19:41,565 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #347 (NODE=Farrukhabad @ 2026-08-12): 16 exceptions across 149 DCs (11%) -- exceeds 10% threshold.
+2026-08-12 06:19:44,390 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #348 (NODE=Ghazipur @ 2026-08-12): 13 exceptions across 122 DCs (11%) -- exceeds 10% threshold.
+2026-08-12 06:19:46,852 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #349 (NODE=Giridih @ 2026-08-12): 9 exceptions across 78 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:19:53,005 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #351 (NODE=Gwalior @ 2026-08-12): 14 exceptions across 91 DCs (15%) -- exceeds 10% threshold.
+2026-08-12 06:19:55,629 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #352 (NODE=Hapur @ 2026-08-12): 8 exceptions across 77 DCs (10%) -- exceeds 10% threshold.
+2026-08-12 06:20:01,650 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #354 (NODE=Hazaribagh @ 2026-08-12): 15 exceptions across 122 DCs (12%) -- exceeds 10% threshold.
+  NODE=Hooghly: 29 DC(s) found for NODE='Hooghly', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:20:08,060 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Hooghly failed: 29 DC(s) found for NODE='Hooghly', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+  NODE=Jaipur_Kota: 31 DC(s) found for NODE='Jaipur_Kota', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:20:16,985 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Jaipur_Kota failed: 31 DC(s) found for NODE='Jaipur_Kota', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:20:22,236 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #361 (NODE=Jalna @ 2026-08-12): 15 exceptions across 106 DCs (14%) -- exceeds 10% threshold.
+2026-08-12 06:20:25,019 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #362 (NODE=Jaunpur @ 2026-08-12): 11 exceptions across 94 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:20:27,327 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #363 (NODE=Jodhpur @ 2026-08-12): 6 exceptions across 46 DCs (13%) -- exceeds 10% threshold.
+2026-08-12 06:20:30,306 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #364 (NODE=Kasganj @ 2026-08-12): 12 exceptions across 81 DCs (15%) -- exceeds 10% threshold.
+2026-08-12 06:20:32,998 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #365 (NODE=Katihar @ 2026-08-12): 11 exceptions across 80 DCs (14%) -- exceeds 10% threshold.
+2026-08-12 06:20:35,637 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #366 (NODE=Khagaria @ 2026-08-12): 13 exceptions across 77 DCs (17%) -- exceeds 10% threshold.
+2026-08-12 06:20:41,056 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #368 (NODE=Khargone @ 2026-08-12): 18 exceptions across 158 DCs (11%) -- exceeds 10% threshold.
+2026-08-12 06:20:43,901 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #369 (NODE=Kheri @ 2026-08-12): 10 exceptions across 80 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:20:46,517 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #370 (NODE=Krishnanagar (HQ) @ 2026-08-12): 9 exceptions across 74 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:20:52,083 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #372 (NODE=Lakhisarai @ 2026-08-12): 9 exceptions across 76 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:20:55,065 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #373 (NODE=Madhepura @ 2026-08-12): 20 exceptions across 151 DCs (13%) -- exceeds 10% threshold.
+2026-08-12 06:20:57,853 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #374 (NODE=Malda @ 2026-08-12): 11 exceptions across 53 DCs (21%) -- exceeds 10% threshold.
+2026-08-12 06:21:00,667 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #375 (NODE=Mohania @ 2026-08-12): 8 exceptions across 50 DCs (16%) -- exceeds 10% threshold.
+2026-08-12 06:21:06,975 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #377 (NODE=Murshidabad @ 2026-08-12): 13 exceptions across 45 DCs (29%) -- exceeds 10% threshold.
+2026-08-12 06:21:14,088 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #379 (NODE=Nabarangpur @ 2026-08-12): 12 exceptions across 71 DCs (17%) -- exceeds 10% threshold.
+  NODE=North 24 Parganas: 82 DC(s) found for NODE='North 24 Parganas', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:21:20,778 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=North 24 Parganas failed: 82 DC(s) found for NODE='North 24 Parganas', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:21:29,132 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #384 (NODE=Raipur @ 2026-08-12): 15 exceptions across 139 DCs (11%) -- exceeds 10% threshold.
+  NODE=Ratlam: 59 DC(s) found for NODE='Ratlam', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:21:31,953 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Ratlam failed: 59 DC(s) found for NODE='Ratlam', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:21:50,148 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #391 (NODE=Shahjahanpur @ 2026-08-12): 11 exceptions across 59 DCs (19%) -- exceeds 10% threshold.
+2026-08-12 06:21:53,107 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #392 (NODE=Shajapur @ 2026-08-12): 10 exceptions across 88 DCs (11%) -- exceeds 10% threshold.
+  NODE=Siliguri: 28 DC(s) found for NODE='Siliguri', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:21:53,168 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Siliguri failed: 28 DC(s) found for NODE='Siliguri', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:21:59,084 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #394 (NODE=Sitapur @ 2026-08-12): 11 exceptions across 101 DCs (11%) -- exceeds 10% threshold.
+2026-08-12 06:22:07,787 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #397 (NODE=Sonbhadra @ 2026-08-12): 12 exceptions across 91 DCs (13%) -- exceeds 10% threshold.
+2026-08-12 06:22:10,042 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #398 (NODE=Sri Ganganagar @ 2026-08-12): 9 exceptions across 67 DCs (13%) -- exceeds 10% threshold.
+  NODE=Ujjain: 69 DC(s) found for NODE='Ujjain', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:22:10,109 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Ujjain failed: 69 DC(s) found for NODE='Ujjain', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-12 06:22:12,732 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #399 (NODE=Vaishali @ 2026-08-12): 13 exceptions across 110 DCs (12%) -- exceeds 10% threshold.
+2026-08-12 06:22:17,750 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #401 (NODE=Washim @ 2026-08-12): 11 exceptions across 89 DCs (12%) -- exceeds 10% threshold.
+=== run_scheduled_tuff Step 1: Data Normalization Agent ===
+  Row_Counts: {'DC_Master_Normalized': 10195, 'Config_Normalized': 62, 'AOP_Target_Normalized': 20553, 'Attendance_Normalized': 31887, 'Visits_Normalized': 110194, 'Sales_Transactions_Normalized': 81251, 'Payments_Normalized': 48711, 'DC_Club_Normalized': 0, 'Liquidation_Normalized': 0, 'Geo_Mapping_Normalized': 12884, 'Task_Nodes_Normalized': 109770, 'Exceptions_Report': 25677, 'SE_Daily_Plan': 514}
+
+=== run_scheduled_tuff Step 2: SE Daily Task Agent (93 scope(s)) ===
+  NODE=Kota: PlanRun #317, 4 tasks
+  NODE=Ahmedabad: PlanRun #318, 8 tasks
+  NODE=Ahmednagar: PlanRun #319, 0 tasks
+  NODE=Akola: PlanRun #320, 9 tasks
+  NODE=Aligarh: PlanRun #321, 8 tasks
+  NODE=Allahabad: PlanRun #322, 7 tasks
+  NODE=Alwar: PlanRun #323, 6 tasks
+  NODE=Ambikapur: PlanRun #324, 10 tasks
+  NODE=Amravati: PlanRun #325, 8 tasks
+  NODE=Amroha: PlanRun #326, 0 tasks
+  NODE=Arariya: PlanRun #327, 17 tasks
+  NODE=Bahraich: PlanRun #328, 12 tasks
+  NODE=Ballia: PlanRun #329, 9 tasks
+  NODE=Barabanki: PlanRun #330, 0 tasks
+  NODE=Bareilly: PlanRun #331, 9 tasks
+  NODE=Begusarai: PlanRun #332, 4 tasks
+  NODE=Bettiah: PlanRun #333, 6 tasks
+  NODE=Bhagalpur: PlanRun #334, 5 tasks
+  NODE=Bhawanipatna: PlanRun #335, 2 tasks
+  NODE=Bhopal: PlanRun #336, 8 tasks
+  NODE=Bihar Sharif: PlanRun #337, 16 tasks
+  NODE=Bilaspur: PlanRun #338, 3 tasks
+  NODE=Bulandshahr: PlanRun #339, 5 tasks
+  NODE=Burdwan: PlanRun #340, 4 tasks
+  NODE=Buxar: PlanRun #341, 7 tasks
+  NODE=CHHATRAPATI SAMBHAJINAGAR: PlanRun #342, 16 tasks
+  NODE=Chhindwara: PlanRun #343, 3 tasks
+  NODE=Cooch Behar: PlanRun #344, 10 tasks
+  NODE=Darbhanga: PlanRun #345, 6 tasks
+  NODE=Faizabad: PlanRun #346, 2 tasks
+  NODE=Farrukhabad: PlanRun #347, 13 tasks
+  NODE=Ghazipur: PlanRun #348, 7 tasks
+  NODE=Giridih: PlanRun #349, 4 tasks
+  NODE=Gorakhpur: PlanRun #350, 6 tasks
+  NODE=Gwalior: PlanRun #351, 4 tasks
+  NODE=Hapur: PlanRun #352, 4 tasks
+  NODE=Hardoi: PlanRun #353, 13 tasks
+  NODE=Hazaribagh: PlanRun #354, 7 tasks
+  NODE=Head Office: PlanRun #355, 8 tasks
+  NODE=Hisar: PlanRun #356, 10 tasks
+  NODE=Indore: PlanRun #357, 12 tasks
+  NODE=Jabalpur: PlanRun #358, 6 tasks
+  NODE=Jaipur: PlanRun #359, 15 tasks
+  NODE=Jalgaon: PlanRun #360, 5 tasks
+  NODE=Jalna: PlanRun #361, 6 tasks
+  NODE=Jaunpur: PlanRun #362, 5 tasks
+  NODE=Jodhpur: PlanRun #363, 0 tasks
+  NODE=Kasganj: PlanRun #364, 9 tasks
+  NODE=Katihar: PlanRun #365, 14 tasks
+  NODE=Khagaria: PlanRun #366, 14 tasks
+  NODE=Khandwa: PlanRun #367, 6 tasks
+  NODE=Khargone: PlanRun #368, 12 tasks
+  NODE=Kheri: PlanRun #369, 4 tasks
+  NODE=Krishnanagar (HQ): PlanRun #370, 4 tasks
+  NODE=Kushinagar: PlanRun #371, 4 tasks
+  NODE=Lakhisarai: PlanRun #372, 6 tasks
+  NODE=Madhepura: PlanRun #373, 13 tasks
+  NODE=Malda: PlanRun #374, 4 tasks
+  NODE=Mohania: PlanRun #375, 3 tasks
+  NODE=Motihari: PlanRun #376, 4 tasks
+  NODE=Murshidabad: PlanRun #377, 3 tasks
+  NODE=Muzaffarpur: PlanRun #378, 16 tasks
+  NODE=Nabarangpur: PlanRun #379, 9 tasks
+  NODE=Nashik: PlanRun #380, 5 tasks
+  NODE=Nawada: PlanRun #381, 12 tasks
+  NODE=Pune: PlanRun #382, 1 tasks
+  NODE=Purnea: PlanRun #383, 9 tasks
+  NODE=Raipur: PlanRun #384, 5 tasks
+  NODE=Ranchi: PlanRun #385, 9 tasks
+  NODE=Saharsa: PlanRun #386, 8 tasks
+  NODE=Samastipur: PlanRun #387, 7 tasks
+  NODE=Sangli: PlanRun #388, 5 tasks
+  NODE=Saran: PlanRun #389, 2 tasks
+  NODE=Sasaram: PlanRun #390, 4 tasks
+  NODE=Shahjahanpur: PlanRun #391, 7 tasks
+  NODE=Shajapur: PlanRun #392, 2 tasks
+  NODE=Sitamarhi: PlanRun #393, 3 tasks
+  NODE=Sitapur: PlanRun #394, 5 tasks
+  NODE=Siwan: PlanRun #395, 9 tasks
+  NODE=Solapur: PlanRun #396, 6 tasks
+  NODE=Sonbhadra: PlanRun #397, 5 tasks
+  NODE=Sri Ganganagar: PlanRun #398, 1 tasks
+  NODE=Vaishali: PlanRun #399, 10 tasks
+  NODE=Varanasi: PlanRun #400, 7 tasks
+  NODE=Washim: PlanRun #401, 6 tasks
+
+Done: 85 succeeded, 8 failed out of 93 scope(s).

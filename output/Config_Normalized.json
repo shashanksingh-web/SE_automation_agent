@@ -68,7 +68,7 @@
     "Param_Key": "1.4",
     "Parameter": "PL product definition",
     "Configured_Value": "Any product already tagged as Private Label (own product) in the system",
-    "Formula": "Include Order_Line WHERE Product.Tag = \"Private Label\" (system tag; no separate brand list or category filter needed)",
+    "Formula": "Include Order_Line WHERE Product.Tag = \"Private Label\" \u2014 CONFIRMED real field (Data Norm Agent, Source 3h, live query): products_template.business_segment_name = 'PRIVATE LABEL'. Live sample confirms it populates correctly (e.g. NUTRI ONE and GAPL-branded products both tagged PRIVATE LABEL).",
     "Status": "Confirmed Default"
   },
   {
@@ -86,7 +86,7 @@
     "Param_Key": "2.1",
     "Parameter": "Valid visit definition",
     "Configured_Value": "A visit must include: staying at the DC for at least 10 minutes AND logging a photograph",
-    "Formula": "Valid_Visit = (Visit_Duration_Minutes \u2265 10) AND (Photo_Logged = TRUE)",
+    "Formula": "Valid_Visit = (Visit_Duration_Minutes \u2265 10) AND (Photo_Logged = TRUE). RESOLVED (Data Norm Agent, business decision): no per-visit check-out timestamp exists in the data (task_management_taskdetails has ~1 row per task, one timestamp, no check-out) \u2014 so Visit_Duration_Minutes is now a flat, confirmed 45 minutes for every visit, used for both planning and grading. Photo_Logged must be derived from a JSON image array on that same table (at least one entry), never read as a boolean column.",
     "Status": "Overridden"
   },
   {
@@ -338,7 +338,7 @@
     "Param_Key": "6.4",
     "Parameter": "Full block conditions",
     "Configured_Value": "For an overdue (OD) DC, the SE should still visit (not fully blocked); only a legal/compliance hold removes the DC from all lists entirely",
-    "Formula": "Full_Block = (DC.Legal_Hold = TRUE); Credit_Blocked/Blacklisted DCs evaluated live, not auto-blocked",
+    "Formula": "Full_Block = (DC.Legal_Hold = TRUE); Credit_Blocked/Blacklisted DCs evaluated live via CONFIRMED field (Data Norm Agent, Source 3d, live query): sale_orderrequest.credit_on_hold (boolean) / credit_on_hold_reason \u2014 not auto-blocked, evaluated case by case",
     "Status": "Agent-Determined (Dynamic)"
   },
   {
@@ -454,17 +454,17 @@
     "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
     "Param_Key": "8.9",
     "Parameter": "Monthly travel distance cap",
-    "Configured_Value": "1,600 km per SE per month",
-    "Formula": "Total_Monthly_Travel_KM \u2264 1600; route planner rejects/re-sequences any day's visit plan that would push the SE's cumulative monthly distance past this cap",
-    "Status": "New Parameter"
+    "Configured_Value": "1,600 km per SE per month \u2014 CORRECTED: ADVISORY / INFORMATIONAL ONLY, not a hard cap. The real hard constraint governing travel is time-based: max 3 hours (180 min) of travel time in the field per day (see Routing Agent R1.2), not a distance figure.",
+    "Formula": "Total_Monthly_Travel_KM = SUM(google_distance) \u2014 tracked and shown, never blocks route generation or rejects a plan. Distance is advisory throughout; only Field_Minutes_Available (420 min) and the 180-min travel-time ceiling are hard caps.",
+    "Status": "Overridden"
   },
   {
     "Kind": "all_parameters",
     "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
     "Param_Key": "8.10",
     "Parameter": "Maximum daily tasks",
-    "Configured_Value": "5 tasks maximum per day",
-    "Formula": "COUNT(Daily_Task_List) \u2264 5 \u2014 see the \"Daily Task Assignment Formula\" sheet for the full layered logic that populates this list",
+    "Configured_Value": "5 tasks maximum per day \u2014 CLARIFIED: this is a CEILING, not a guaranteed flat count. It's achievable only in the best case, when travel time between that day's actual stops stays well under the 180-min ceiling (R1.2). As travel time grows toward that ceiling, fewer visit-slots fit in the remaining budget and the effective number of tasks goes down \u2014 see Routing Agent R1.4 for the live formula.",
+    "Formula": "COUNT(Daily_Task_List) \u2264 5 at the BO Scoring Engine stage (visit-duration-only math, no travel time yet). The Routing Agent re-checks this against REAL travel time between the specific candidate stops (Haversine-based) and may trim it further \u2014 see R1.4, GR-R5. 5 is a nominal upper bound handed downstream, not the guaranteed daily count.",
     "Status": "New Parameter"
   },
   {

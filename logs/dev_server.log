@@ -17,3 +17,842 @@ WARNING: This is a development server. Do not use it in a production setting. Us
 For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
 Watching for file changes with StatReloader
 2026-08-10 07:43:29,441 INFO django.utils.autoreload: Watching for file changes with StatReloader
+Not Found: /favicon.ico
+2026-08-11 04:54:10,736 WARNING django.request: Not Found: /favicon.ico
+[11/Aug/2026 04:54:10] "GET /favicon.ico HTTP/1.1" 404 2364
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:22:47,291 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 10, 2026 - 07:43:29
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:22:47,818 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:23:16,380 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:22:48
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:23:16,781 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:24:44,069 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:23:16
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:24:44,496 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:24:52,767 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:24:44
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:24:53,089 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:25:04,402 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:24:53
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:25:04,719 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:25:07,918 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:25:04
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:25:08,231 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:25:15,490 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:25:08
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:25:15,809 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:25:33,187 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:25:15
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:25:33,606 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:25:38,847 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:25:33
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:25:39,231 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:25:48,516 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:25:39
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:25:48,881 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-12 04:27:42,638 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:25:49
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:27:43,082 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:29:13,849 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:27:43
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:29:14,254 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:29:22,587 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:29:14
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:29:22,905 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:29:30,179 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:29:23
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:29:30,515 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:30:08,356 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:29:30
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:30:08,904 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:30:24,280 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:30:09
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:30:24,669 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:33:03,939 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:30:24
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:33:04,363 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:34:20,514 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:33:04
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:34:20,967 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 04:34:57,610 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:34:21
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:34:58,032 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-12 04:36:17,506 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:34:58
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:36:17,896 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:38:59,807 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:36:18
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:39:00,216 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:39:13,598 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:39:00
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:39:14,002 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:39:25,349 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:39:14
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:39:25,674 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:39:54,331 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:39:25
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:39:54,665 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 04:40:06,026 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:39:54
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 04:40:06,356 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:09:59,722 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 04:40:06
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:10:00,274 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:10:10,598 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:10:00
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:10:11,006 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:10:34,507 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:10:11
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:10:34,905 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:10:42,191 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:10:35
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:10:42,577 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:10:55,945 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:10:42
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:10:56,337 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:11:22,867 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:10:56
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:11:23,266 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:11:50,768 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:11:23
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:11:51,155 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:12:18,686 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:11:51
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:12:19,080 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:12:36,484 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:12:19
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:12:36,914 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 06:12:44,213 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:12:37
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:12:44,532 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-12 06:13:05,965 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:12:44
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:13:06,346 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-12 06:13:20,724 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:13:06
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:13:21,144 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-12 06:13:32,501 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:13:21
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 06:13:32,896 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 07:25:31,389 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 06:13:33
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 07:25:31,840 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 07:25:47,236 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 07:25:32
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 07:25:47,645 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 07:26:05,056 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 07:25:47
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 07:26:05,453 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-12 08:45:28,596 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 07:26:05
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 08:45:29,036 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-12 09:31:35,942 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 08:45:29
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 09:31:36,399 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 09:31:43,694 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 09:31:36
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 09:31:44,017 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 09:31:50,281 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 09:31:44
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 09:31:50,635 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-12 09:31:56,903 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 09:31:50
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 09:31:57,279 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/urls.py changed, reloading.
+2026-08-12 09:32:00,519 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/urls.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 09:31:57
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 09:32:00,855 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 09:32:22,326 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 09:32:00
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 09:32:22,657 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 09:32:25,883 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 09:32:22
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 09:32:26,212 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 11:05:53,226 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 09:32:26
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:05:53,660 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 11:06:11,055 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:05:53
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:06:11,486 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-12 11:06:37,077 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:06:11
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:06:37,504 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-12 11:06:53,952 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:06:37
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:06:54,368 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-12 11:07:21,006 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:06:54
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:07:21,400 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 11:07:30,735 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:07:21
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:07:31,068 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-12 11:07:40,391 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:07:31
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:07:40,719 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-12 11:07:43,939 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:07:40
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:07:44,247 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-12 11:08:05,787 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:07:44
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:08:06,101 INFO django.utils.autoreload: Watching for file changes with StatReloader
+/Users/dehaat/Desktop/SE_automation_server/planning/urls.py changed, reloading.
+2026-08-12 11:08:11,340 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/urls.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:08:06
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/
+Watching for file changes with StatReloader
+2026-08-12 11:08:11,672 INFO django.utils.autoreload: Watching for file changes with StatReloader
+Performing system checks...
+
+System check identified no issues (0 silenced).
+August 12, 2026 - 11:08:11
+Django version 6.0.7, using settings 'config.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/6.0/howto/deployment/

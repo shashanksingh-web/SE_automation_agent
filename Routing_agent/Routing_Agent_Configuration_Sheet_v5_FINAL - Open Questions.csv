@@ -1,0 +1,3 @@
+Routing Agent — Open Questions — v5,,
+Q#,Status,Detail
+ALL RESOLVED,No open questions remain that block a v1 build.,"OQ-1 through OQ-18 were resolved through direct business decisions (see Decision Log). OQ-19 (google_distance live-query verification) and OQ-20 (Model 3 alpha direction/bounds) have been self-resolved as design decisions with documented rationale in the Decision Log, rather than referred back for further business input. Two items remain as NON-BLOCKING recommendations, not gates: (1) run a live query on google_distance's grain as a post-launch monitoring step (see GR-R11), and (2) define Avg_Speed_Kmph for R3.2's travel-time formula, which was never addressed by any of OQ-1 through OQ-20 and is worth a quick ops call before build."

@@ -1,0 +1,15 @@
+BO Objective ↔ Real System Visit Type / Purpose — Bridge Table,,,,
+"This replaces the earlier inferred visit-type labels with the actual system taxonomy from the ""Visit Type to Purpose (System)"" sheet, and maps each real Purpose back to the BO objective it feeds. DC Visit and Farmer Meeting are mutually exclusive per day (8.11) — within whichever one is scheduled, multiple Purposes can still be bundled together in one meeting (8.12).",,,,
+Visit Type (System),Visit Purpose (System),BO Objective Linked,Exclusivity / Bundling,Gap / Notes
+DC Visit,Promise To Bill (P2B),BO3 (Outstanding Payments),Bundlable with other DC Visit purposes below; DC Visit itself excludes Farmer Meeting that day (8.11),Billing commitment follow-up; closely related to Promise To Pay / Collection below
+DC Visit,Promise To Pay / Collection,BO3 (Outstanding Payments),Bundlable,Primary purpose behind BO3's 'payment received' win definition (8.6)
+DC Visit,Query Resolution,Not BO-linked,Bundlable,Operational/support purpose — not currently scored against any objective
+DC Visit,Sale,BO1 (Private Label) + BO4 (Overall Sales),Bundlable,"PL vs. non-PL split is determined by product tag on the order line, not by this Purpose alone"
+DC Visit,Stock at DC,Not BO-linked,Bundlable,Operational inventory check — not currently scored against any objective
+DC Visit,"(the visit itself, any Purpose)",BO2 (Coverage / Effort),Base — every DC Visit counts toward Coverage/Effort regardless of which Purposes above are also present,"This is why BO2 doesn't need its own row in the Purpose list — it's driven by the visit occurring, not by a specific Purpose"
+Farmer Meeting,"Farmer App, Farmer Credit, Hyperlocal Input, Hyperlocal Service, Insurance, Other Input Product Promotion, Sampoorna",BO5 (Long-Term Growth),Bundlable within the meeting; Farmer Meeting excludes DC Visit that day (8.11),5.1's meeting-held win condition doesn't yet differentiate by which of these Purposes were actually covered
+Farmer Meeting,Private Label Product Promotion,BO5 primary; indirect signal for BO1,Bundlable within the meeting,"Farmer-level PL awareness, distinct from the DC-level PL order booking under DC Visit's 'Sale' purpose"
+Demo Visit,(no purpose configured),Unclear — possibly a BO5 product-demo variant,—,Gap: needs a real Purpose configured before it can be BO-tagged or scored
+External Meeting,(no purpose configured),Not BO-linked,—,Gap: no apparent BO tie today
+Lead Generation,(no purpose configured),Likely BO5 new-DC onboarding (5.2–5.4),—,"Gap: this looks like the natural home for onboarding a new DC/lead, but has no Purpose yet to confirm it"
+Node/Warehouse Visit,(no purpose configured),Not BO-linked,—,"Gap: likely inventory/logistics, not an SE-facing scored activity"

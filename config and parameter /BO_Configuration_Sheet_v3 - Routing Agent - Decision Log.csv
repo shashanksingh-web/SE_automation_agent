@@ -1,0 +1,13 @@
+"Routing Agent — Decision Log (OQ-1 through OQ-20, ALL CLOSED)",,
+Q#,Decision Made,Residual Follow-up
+OQ-1,"CORRECTED this round: '3 hours travelling time' is a MAXIMUM ceiling (Max_Travel_Minutes=180), not a minimum floor as originally documented — distance figures (80km/day, 1,600km/month) are confirmed advisory-only, and this time-based ceiling is the actual hard travel constraint","Previously documented backwards as a floor — now corrected across R1.2, R1.3, R4.1, GR-R5, and this workbook's own 8.9/GR-13"
+OQ-2/11,"Origin_Point = previous working day's punch-in lat/long; if none, wait for today's real punch-in (R0.4)",None
+OQ-3/17/19 (SELF-RESOLVED),"google_distance is a whole-shift total, not per-leg — Haversine×1.4 is final primary distance method; google_distance is a QA signal only (GR-R11). Rationale: no per-leg boundary exists anywhere in the data model (task_management_taskdetails has one timestamp per visit, no check-out)","Live query recommended as POST-LAUNCH monitoring, not a pre-build gate"
+OQ-4/13,"No hard cap on 80km/day or 1,600km/month — both advisory/informational only (R1.5, R1.6)",Flag cost/reimbursement implications to the SE Incentive Policy owner
+OQ-5/14/18/20 (SELF-RESOLVED),Model 3's alpha is derived per-node from average historical travel time — higher travel → lower alpha (leans efficiency). Bounds Alpha_Min=0.4/Alpha_Max=0.8 keep Model 3 distinct from Models 1 and 2 at every node,Revisit after a few weeks of live data if real-world behavior doesn't match expectations — does not block build
+OQ-6,At least 3 algorithm-generated plans (Models 1-3) shown together; selected plan syncs downstream (R5.1),None
+OQ-7,"The SE selects the final plan, not the ABM (R5.3, GR-R8)",None
+OQ-8,Routes are closed — return to starting point (R3.3),None
+OQ-9,Model 4 (Self-Override) is in scope for v1 (R4.4),None
+OQ-10/16,"Cumulative monthly KM read from attendance_attendance.google_distance, summed monthly per SE — good fit for its shift-total grain",None
+OQ-15,"No selection cutoff — SE selects whenever ready, but only after punching in (R5.3/R5.4)",UX nicety: consider an in-app reminder if unselected late in the day

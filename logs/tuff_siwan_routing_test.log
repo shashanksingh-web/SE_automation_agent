@@ -1,0 +1,71 @@
+2026-08-12 04:41:23,560 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-12 04:41:23,561 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-12 04:41:23,662 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-12 04:41:24,131 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-12 04:41:24,131 INFO se_daily_plan_agent:   4/6 querying SE_Visit_Log_1a...
+2026-08-12 04:42:34,652 INFO se_daily_plan_agent:   4/6 SE_Visit_Log_1a: 2071730 rows in 70.5s
+2026-08-12 04:42:34,652 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-12 04:42:46,097 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 109463 rows in 11.4s
+2026-08-12 04:42:46,098 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-12 04:42:50,824 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12884 rows in 4.7s
+2026-08-12 04:42:50,825 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-12 04:42:54,318 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31828 rows in 3.5s
+2026-08-12 04:42:54,319 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-12 04:43:42,687 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 109887 rows in 48.4s
+2026-08-12 04:43:42,688 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-12 04:43:50,424 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 81119 rows in 7.7s
+2026-08-12 04:43:50,425 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-12 04:43:50,473 WARNING se_daily_plan_agent:   4/6 Outstanding_3d FAILED after 0.0s: InsufficientPrivilege: permission denied for relation dc_datamart
+
+2026-08-12 04:43:50,474 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-12 04:43:59,173 INFO se_daily_plan_agent:   4/6 Orders_3d: 43744 rows in 8.7s
+2026-08-12 04:43:59,174 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-12 04:43:59,205 WARNING se_daily_plan_agent:   4/6 Liquidation_3d FAILED after 0.0s: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+
+2026-08-12 04:43:59,205 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-12 04:44:04,747 INFO se_daily_plan_agent:   4/6 Payments_3f: 48663 rows in 5.5s
+2026-08-12 04:44:04,747 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-12 04:44:04,779 WARNING se_daily_plan_agent:   4/6 DC_Club_Mapping_3g FAILED after 0.0s: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+
+2026-08-12 04:44:04,779 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-12 04:44:04,813 WARNING se_daily_plan_agent:   4/6 DC_Club_Slabs_3g FAILED after 0.0s: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+
+2026-08-12 04:44:04,813 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-12 04:44:04,848 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-12 04:44:07,298 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-12 04:44:16,631 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+=== TUFF Step 1: Data Normalization Agent ===
+  All 6 sources pulled this run.
+  Row_Counts: {'DC_Master_Normalized': 10195, 'Config_Normalized': 62, 'AOP_Target_Normalized': 20553, 'Attendance_Normalized': 31828, 'Visits_Normalized': 109887, 'Sales_Transactions_Normalized': 81119, 'Payments_Normalized': 48652, 'DC_Club_Normalized': 0, 'Liquidation_Normalized': 0, 'Geo_Mapping_Normalized': 12884, 'Task_Nodes_Normalized': 109463, 'Exceptions_Report': 25610, 'SE_Daily_Plan': 514}
+  Exceptions (fail counts): {'Unassigned_DC': {'pass': 0, 'fail': 2325}, 'AOP_Freshness_Unknown': {'pass': 0, 'fail': 1}, 'Live_Pull_Failed': {'pass': 0, 'fail': 4}, 'DC_Live_Supplement_Failed': {'pass': 0, 'fail': 1}, 'Attendance_Out_Before_In': {'pass': 0, 'fail': 2}, 'Duplicate_Visit': {'pass': 99206, 'fail': 10681}, 'Null_Partner_Anomaly': {'pass': 0, 'fail': 9}, 'Referential_Integrity': {'pass': 0, 'fail': 12587}}
+
+=== TUFF Step 2: SE Daily Task Agent ===
+PlanRun #230: NODE='Siwan' on 2026-08-13
+  Metabase_Configured: True
+  SEs: 2   DCs: 121   Tasks: 10
+  Note: Attendance gating IS wired (as of 2026-08-06): for a forward-dated plan_date, attendance_gate_ok stays None (Provisional -- can't be known yet); for today or earlier, an SE with no attendance_attendance check-in on plan_date gets an empty Tasks list with Skipped_Reason, per Section 3a's design -- this is expected behavior for an SE who hasn't punched in yet, not a bug. Punch-in-based route sequencing and YTD Private Label are wired: distance sequences from the SE's actual first check-in of plan_date when available, else falls back to starting from the first DC; YTD PL sums pathik_report.pl_billed_amount from fiscal-year start to plan_date, per DC. Task generation uses the Daily Task Assignment Formula (8.9-8.12): max 5 bundled Visit tasks/day, DC-level Priority_Score ranking. Real per-DC BO3 (Outstanding) scoring is wired (score_bo3_outstanding_live_proxy) -- a live-data substitute for the literal 3.1-3.6 formula (no historical Expected_Outstanding source exists). Real per-DC BO1 (PL) and BO4 (Sales Momentum) scoring are also wired -- PL_Expected blends a 90-day trailing average with an AOP-target leg (as of 2026-08-09): the AOP source has no DC/SE dimension, only Node x Material x Month, so that leg is each DC's Node-level PL AOP target allocated by its trailing-PL sales share within the Node -- an estimate, flagged on every DC's Reason_Of_Visit that gets it, not a confirmed per-DC figure. Sales Momentum is scored but deliberately excluded from DC Visit candidate selection per 8.12/GR-25. Long-Term (BO5) is correctly SE-level, not a gap -- it's not a DC-scoped objective and routes through the separate FM_Urgency gate, not dc_bo_scores.
+  Exceptions: 10
+    - [dc_datamart] Live_Pull_Failed: InsufficientPrivilege: permission denied for relation dc_datamart
+    - [invoice_liquidation_with_pog] Live_Pull_Failed: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+    - [farmer_in_meeting_vw] Live_Pull_Failed: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+    - [farmer_in_meeting_vw] Live_Pull_Failed: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+    - [dc_mapping_club_scheme] Live_Pull_Failed: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+    - [PitchingAgent] Live_Pull_Failed: InFailedSqlTransaction: current transaction is aborted, commands ignored until end of transaction block
+    - [AOP_Target_Normalized] SE_AOP_PL_Target_Estimate: navneet.pandey2@agrevolution.in: allocated PL AOP target ~Rs.182,743 across 27 assigned DC(s) this month (estimate: sum of each DC's Node-share allocation, not a confirmed per-SE AOP figure)
+    - [AOP_Target_Normalized] SE_AOP_PL_Target_Estimate: amit.kumar15@agrevolution.in: allocated PL AOP target ~Rs.421,269 across 19 assigned DC(s) this month (estimate: sum of each DC's Node-share allocation, not a confirmed per-SE AOP figure)
+    - [RoutingAgent] Travel_Ceiling_Note: navneet.pandey2@agrevolution.in @ 2026-08-13 (DISTANCE_MIN): Travel_Ceiling_Note: even the single highest-priority candidate exceeds the 180-min ceiling or 420-min total -- shown as best available (GR-R5)
+    - [RoutingAgent] Travel_Ceiling_Note: navneet.pandey2@agrevolution.in @ 2026-08-13 (BALANCED): Travel_Ceiling_Note: no candidate set stays under the 180-min ceiling or 420-min total -- shown as best available (GR-R5)
+
+=== TUFF Outcome ===
+SE               Sr  DC Name                     Km    Task Type  Purpose  Reason                                         Last Visit        Outstanding  Overdue (Aging)  Last Order  Order Value  Last Payment  YTD PL 
+---------------  --  --------------------------  ----  ---------  -------  ---------------------------------------------  ----------------  -----------  ---------------  ----------  -----------  ------------  -------
+navneet.pandey2  1   M/s Kushwaha Khad Beej Bha  5.6   DC Visit   Sale     Matched PL -- Growth cohort, rank 1513.0 -- P  2026-08-03 (10d)  N/A          N/A              2026-07-11  54,600       2026-08-03    111,590
+navneet.pandey2  2   KUSHAWAHA KHAD BEEJ BHANDA  18.4  DC Visit   Sale     Matched PL -- Opportunity cohort, rank 3945.0  2026-08-05 (8d)   N/A          N/A              2026-08-05  33,294       2026-08-05    142,328
+navneet.pandey2  3   ARYA BEEJ BHANDAR           31.3  DC Visit   Sale     Matched PL -- Growth cohort, rank 1263.0 -- P  2026-08-04 (9d)   N/A          N/A              2026-08-05  45,360       2026-08-04    644,895
+navneet.pandey2  4   MOURYA TRADERS              49.8  DC Visit   Sale     Matched PL, Visits -- Opportunity cohort, ran  2026-07-24 (20d)  N/A          N/A              2026-06-14  2,304        2026-07-31    86,321 
+navneet.pandey2  5   M/s Laxmi Khad Beej Bhanda  53.6  DC Visit   Sale     Matched PL, Visits -- Long Tail cohort, rank   2026-05-20 (85d)  N/A          N/A              2026-05-23  11,850       2026-05-20    29,300 
+amit.kumar15     1   M/S SATYAM KHAD BEEJ BHAND  14.8  DC Visit   Sale     Matched PL -- Growth cohort, rank 1849.0 -- P  2026-08-05 (8d)   N/A          N/A              2026-08-10  67,000       2026-08-11    294,090
+amit.kumar15     2   BALAJI FERTILISER           29.6  DC Visit   Sale     Matched PL -- Opportunity cohort, rank 5532.0  2026-08-05 (8d)   N/A          N/A              None        N/A          2026-02-17    74,022 
+amit.kumar15     3   M/s Akash Traders           30.3  DC Visit   Sale     Matched PL -- Growth cohort, rank 2051.0 -- P  2026-08-05 (8d)   N/A          N/A              2026-07-30  30,240       2026-07-31    212,216
+amit.kumar15     4   M/s Gupta khad Beej Bhanda  45.6  DC Visit   Sale     Matched Visits -- Opportunity cohort, rank 40  2026-07-27 (17d)  N/A          N/A              2026-07-14  11,780       2026-05-22    101,558
+amit.kumar15     5   M/s SINGH TRADERS           49.7  DC Visit   Sale     Matched Visits -- Long Tail cohort, rank Long  2026-07-24 (20d)  N/A          N/A              2026-07-07  156,000      2026-07-07    103,140

@@ -1,0 +1,20 @@
+Visit Type → Purpose — Actual System Configuration (source: screenshot),,
+"This is the live task-management module configuration, not an inferred mapping — use this over the earlier ""Visit Type & Purpose Mapping"" sheet wherever the two differ, since that one was built from the BO questionnaire rather than the actual system. Four visit types have zero purposes configured (flagged below), meaning they can't yet be tagged to a BO objective for scoring.",,
+Visit Type,Visit Purpose,Notes
+DC Visit,Promise To Bill (P2B),5 purposes configured
+,Promise To Pay / Collection,
+,Query Resolution,
+,Sale,
+,Stock at DC,
+Demo Visit,(no purpose configured),0 purposes configured — gap
+External Meeting,(no purpose configured),0 purposes configured — gap
+Farmer Meeting,Farmer App,8 purposes configured
+,Farmer Credit,
+,Hyperlocal Input,
+,Hyperlocal Service,
+,Insurance,
+,Other Input Product Promotion,
+,Private Label Product Promotion,
+,Sampoorna,
+Lead Generation,(no purpose configured),0 purposes configured — gap
+Node/Warehouse Visit,(no purpose configured),0 purposes configured — gap
