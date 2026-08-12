@@ -1052,6 +1052,12 @@ def generate_plan_for_scope(
 
     total_tasks = 0
     skipped_ses: List[Dict[str, Any]] = []
+    # Collected across every SE and bulk_create()'d once after the loop, instead of one
+    # DailyTask.objects.create() per task (up to 5/SE, capped by the Daily Task
+    # Assignment Formula) -- a STATE-scoped run over 100+ SEs previously issued a
+    # separate INSERT round-trip per task (370 for a real Bihar run) inside the same
+    # atomic transaction anyway, all avoidable ORM/query-building overhead.
+    pending_tasks: List[DailyTask] = []
     for email in se_emails:
         uid = se_user_ids.get(email, email)
         se_dcs = [dc for dc in scoped_dcs if dc.get("Assigned_SE_Email") == email]
@@ -1101,7 +1107,7 @@ def generate_plan_for_scope(
                 "reason": plan.get("Skipped_Reason") or "No in-scope DC qualified for any objective this run",
             })
         for t in tasks:
-            DailyTask.objects.create(
+            pending_tasks.append(DailyTask(
                 plan_run=plan_run, se_id=str(uid), se_name=email, plan_date=plan_date,
                 sr_no=t["Sr_No"], dc_name=t["DC_Name"], dc_id=t["DC_ID"], distance_km=t["Distance_Km"],
                 recommended_task_type=t["Recommended_Task_Type"], purpose_of_visit=t["Purpose_Of_Visit"],
@@ -1114,8 +1120,10 @@ def generate_plan_for_scope(
                 objective=t["Objective"], no_new_orders=t["No_New_Orders"], credit_on_hold=t["Credit_On_Hold"],
                 credit_on_hold_reason=t["Credit_On_Hold_Reason"], estimated_duration=t["Estimated_Duration"],
                 priority_multiplier=t["Priority_Multiplier"],
-            )
-            total_tasks += 1
+            ))
+
+    DailyTask.objects.bulk_create(pending_tasks)
+    total_tasks = len(pending_tasks)
 
     plan_run.task_count = total_tasks
     plan_run.finished_at = timezone.now()
