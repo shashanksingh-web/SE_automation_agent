@@ -1,16 +1,17 @@
-"DC Visit — Strategic Preface Mapping (curated, not exhaustive)",,,,,,,,,,
-"Per the field notes: too many data points confuse the pitch. Each Visit Purpose below pulls only the sources that serve its Win Condition — the minimum set that finds the win, not everything available.",,,,,,,,,,
+"DC Visit — Strategic Preface Mapping (curated, not exhaustive)",,,,,,,,,,,
+"Per the field notes: too many data points confuse the pitch. Each Visit Purpose below pulls only the sources that serve its Win Condition — the minimum set that finds the win, not everything available.",,,,,,,,,,,
 Visit Purpose,Win Condition,"S1
-Block","S2
-Discount","S3
+Block+Category","S2a
+Last Disc.","S2b
+Suggested Disc.","S3
 Historical","S4
 Inventory","S5
 Outstanding","S6
 Last Yr","S7
 YTD Purch","S8
 YTD PL",Rationale (why this subset)
-Promise To Bill (P2B),Outstanding Clear,,,,,✓,✓,✓,,"Show what's due + trend (YTD, last year) to justify urgency. Discount/peer data would dilute a billing ask."
-Promise To Pay / Collection,Overdue Resolve,,,✓,,✓,✓,,,Payment recovery needs the overdue figure + this DC's own payment behavior pattern for leverage — not sales levers.
-Query Resolution,Operational close,,,,✓,✓,,,,Only what's needed to answer the specific complaint — inventory or billing status.
-Sale,Private Label Sales + Overall Volume,✓,✓,✓,✓,,✓,✓,✓,"The one purpose where the full commercial toolkit applies: peer proof, discount to close, stock need, and both YTD trackers to actively steer the DC toward the PL win."
-Stock at DC,Operational (inventory accuracy),,,✓,✓,,✓,,,Seasonal calibration and reorder logic only — no sales or payment levers needed.
+Promise To Bill (P2B),Outstanding Clear,,,,,,✓,✓,✓,,"Show what's due + trend (YTD, last year) to justify urgency. Discount/peer data would dilute a billing ask."
+Promise To Pay / Collection,Overdue Resolve,,,,✓,,✓,✓,,,Payment recovery needs the overdue figure + this DC's own payment behavior pattern for leverage — not sales levers.
+Query Resolution,Operational close,,,,,✓,✓,,,,Only what's needed to answer the specific complaint — inventory or billing status.
+Sale,Private Label Sales + Overall Volume,✓,✓,✓,✓,✓,,✓,✓,✓,"The one purpose where the full commercial toolkit applies: peer proof (with product+category), both discount figures to close, stock need, and both YTD trackers to actively steer the DC toward the PL win."
+Stock at DC,Operational (inventory accuracy),,,,✓,✓,,✓,,,Seasonal calibration and reorder logic only — no sales or payment levers needed.

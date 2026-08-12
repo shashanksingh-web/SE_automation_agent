@@ -13,11 +13,17 @@ extended, but only ~3 combinations are live-testable today.
 
 Missing-data handling: a talking point is included ONLY if its underlying data is both
 (a) applicable per pitch_config's Applicable-Sources list for that Purpose, AND (b)
-actually present in this run's pulled data. S4 (Current Inventory) and Suggested
-Discount are never included -- not a per-run skip, structurally absent, since neither
-has any real data source anywhere in this system (confirmed exhaustively by the
-normalization doc itself). This is the same honest-degrade discipline as everywhere
-else in this codebase -- never fabricate a number to fill a talking point.
+actually present in this run's pulled data. S4 (Current Inventory) is never included --
+not a per-run skip, structurally absent, confirmed exhaustively by the normalization
+doc that no DC-level data source exists for it anywhere in this system. S2b (Suggested
+Discount) is DIFFERENT as of the 2026-08-12 pitch_config re-export: that sheet now
+gives a confirmed computation methodology (this DC's own discount history blended with
+the S1 Same-Block Purchase pattern) -- a real data source, just not yet wired into a
+_TALKING_POINTS builder here, so it's honestly reported as "confirmed, not yet wired"
+rather than folded into S4's "no data source exists" claim. This is the same
+honest-degrade discipline as everywhere else in this codebase -- never fabricate a
+number to fill a talking point, and never claim something is impossible once it stops
+being true.
 
 Sale + Promise To Pay / Collection combo, built directly off the DC Visit Pitch
 (Multi-Purpose) sheet's own worked example (that sheet's "Promise To Pay / Collection
@@ -111,10 +117,13 @@ def _tp_historical_purchase(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 
 def _tp_last_discount(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """S2a as of the 2026-08-12 pitch_config re-export (was bare "S2" before that split
+    -- see pitch_config_loader's module docstring). S2b (Suggested Discount) has a
+    confirmed methodology now but no builder here yet -- see _compose()'s skip message."""
     discount = ctx.get("last_discount")
     if discount is None:
         return None
-    return f"पिछली बार आपको {discount:.0f}% का डिस्काउंट मिला था।", "S2"
+    return f"पिछली बार आपको {discount:.0f}% का डिस्काउंट मिला था।", "S2a"
 
 
 def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
@@ -133,7 +142,7 @@ def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 # purpose-specific sequencing rule applies (see _order_for_purposes()).
 _TALKING_POINTS = {
     "S1": _tp_block_comparison,
-    "S2": _tp_last_discount,
+    "S2a": _tp_last_discount,
     "S3": _tp_historical_purchase,
     "S5": _tp_outstanding,
     "S6": _tp_historical_purchase,
@@ -150,11 +159,11 @@ def _order_for_purposes(purposes: List[str], ctx: Dict[str, Any]) -> List[str]:
     the visit doesn't read as payment-avoidant), otherwise lead with the Sale/PL push.
     For every other Purpose/combo (not reachable today), falls back to the fixed order
     S5, S8, S1, S2, S3 -- a reasonable default, not a specifically confirmed sequence."""
-    default_order = ["S5", "S8", "S1", "S2", "S3"]
+    default_order = ["S5", "S8", "S1", "S2a", "S3"]
     if "Promise To Pay / Collection" in purposes and "Sale" in purposes:
         if ctx.get("present_overdue"):
-            return ["S5", "S1", "S2", "S3", "S8"]
-        return ["S8", "S1", "S2", "S3", "S5"]
+            return ["S5", "S1", "S2a", "S3", "S8"]
+        return ["S8", "S1", "S2a", "S3", "S5"]
     return default_order
 
 
@@ -221,7 +230,7 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
     sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S3", "S8")) if s]
 
     skipped.append("S4 Current Inventory (no DC-level data source exists anywhere in this system)")
-    skipped.append("Suggested Discount (no formula exists anywhere in this system)")
+    skipped.append("S2b Suggested Discount (methodology confirmed by Normalization Agent 2026-08-12, not yet wired into pitch generation)")
 
     lines: List[str] = []
     if overdue > 0:
@@ -284,6 +293,11 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
         builder = _TALKING_POINTS.get(code)
         label = cfg.data_source_labels.get(code, code)
         if not builder:
+            # An applicable code pitch_config lists but this module has no builder for
+            # yet (e.g. S2b Suggested Discount as of the 2026-08-12 re-export) --
+            # recorded as skipped, not silently dropped, so a future pitch_config
+            # addition can never vanish from the trace without a visible trace of why.
+            skipped.append(f"{code} {label} (confirmed data source, no _TALKING_POINTS builder wired yet)")
             continue
         result = builder(ctx)
         if result is None:
@@ -296,11 +310,13 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
         tell_sentences.append(sentence)
         used.append(f"{code} {label}")
 
-    # S4 and Suggested Discount are structurally absent, never a per-run decision --
-    # confirmed exhaustively by the normalization doc that no real data source exists
-    # for either anywhere in this system.
-    skipped.append("S4 Current Inventory (no DC-level data source exists anywhere in this system)")
-    skipped.append("Suggested Discount (no formula exists anywhere in this system)")
+    # S4 (Current Inventory) and S2b (Suggested Discount) no longer get a hardcoded
+    # unconditional skip line here -- both are now correctly reported (or not) by the
+    # ordered_codes loop above, driven by each Purpose's real Applicable Sources
+    # (matches Query Resolution/Stock at DC actually listing S4, while P2B/Promise To
+    # Pay don't -- the old unconditional message claimed S4 was missing even on pitches
+    # where it was never relevant, and duplicated the loop's own message on ones where
+    # it was).
 
     dc_name = (task.dc_name or "").strip() or "जी"
     ask_texts = [_ASK_HINDI[p] for p in purposes if p in _ASK_HINDI]

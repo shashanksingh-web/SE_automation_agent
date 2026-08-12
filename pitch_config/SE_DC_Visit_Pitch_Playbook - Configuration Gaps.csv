@@ -1,0 +1,7 @@
+Visit Types With No Configured Purpose — Cannot Yet Be Scripted,,,
+"These 4 Visit Types have zero Purposes configured in the live system, so no pitch script or preface mapping can be built until Purposes are added. Shown for reference alongside the DC Visit scripts.",,,
+Visit Type,System Status,Likely BO Tie,Gap / Notes
+Demo Visit,0 purposes configured,Unclear — possibly a BO5 product-demo variant,"Needs a real Purpose configured before it can be BO-tagged, scored, or given a pitch script."
+External Meeting,0 purposes configured,Not BO-linked,No apparent BO tie today.
+Lead Generation,0 purposes configured,Likely BO5 new-DC onboarding,"Natural home for onboarding a new DC/lead, but has no Purpose yet to confirm it."
+Node/Warehouse Visit,0 purposes configured,Not BO-linked,"Likely inventory/logistics, not an SE-facing scored activity."

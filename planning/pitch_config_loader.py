@@ -10,11 +10,20 @@ Promise To Pay / Collection, Query Resolution, Sale, Stock at DC) and 7 combo ro
 Purpose x S1-S8 applicability matrix, redundant with (confirms) each single-Purpose
 row's own "Applicable Sources" column, so only one of the two is treated as authoritative
 here (the Scripts file) to avoid maintaining two sources of truth for the same fact.
-"""
+
+Re-exported 2026-08-12 with a real content change, not just a re-download: Required
+Data Sources.csv splits S2 into S2a (Last Discount) and S2b (Suggested Discount, now
+with a confirmed computation methodology -- see planning/pitching.py's module docstring
+for what's actually wired vs. still config-only) and adds S1b (Product & Business
+Category enrichment, informational -- never appears in any Applicable Sources column,
+so it needs no builder). Scripts/Multi-Purpose CSVs updated to match, referencing
+specific recommended products instead of a bare peer-purchase amount. The old bare "S2"
+code no longer appears anywhere in these files."""
 
 from __future__ import annotations
 
 import csv
+import re
 from pathlib import Path
 from typing import Any, Dict, FrozenSet
 
@@ -40,12 +49,19 @@ def _read_data_rows(path: Path) -> list:
     return header, rows[3:]
 
 
+_SOURCE_ID_RE = re.compile(r"^S\d+[a-z]?$")  # S1..S8, plus 2026-08-12's split/enrichment sub-IDs (S1b, S2a, S2b)
+
+
 def load_data_source_labels() -> Dict[str, str]:
     """{'S1': 'Same-Block Purchase (Product-wise)', ...} from Required Data Sources.csv.
-    Only real S<N> rows -- the file has a trailing footnote row (a "User model" note in
-    column 1, no real ID) that isn't a 9th data source."""
+    Only real S<N>[letter] rows -- the file has a trailing footnote row (a "User model"
+    note in column 1, no real ID) that isn't a data source. Matches S1b/S2a/S2b (the
+    2026-08-12 re-export's split of S2 into Last/Suggested Discount and new S1b
+    Product/Category enrichment row), not just bare S<N> -- a plain r[0][1:].isdigit()
+    check would silently exclude all three from data_source_labels, degrading their
+    display label to the raw code with no crash to notice by."""
     _, rows = _read_data_rows(_SOURCES_CSV)
-    return {r[0]: r[1] for r in rows if r and r[0].startswith("S") and r[0][1:].isdigit()}
+    return {r[0]: r[1] for r in rows if r and _SOURCE_ID_RE.match(r[0])}
 
 
 def _parse_sources_cell(cell: str) -> FrozenSet[str]:

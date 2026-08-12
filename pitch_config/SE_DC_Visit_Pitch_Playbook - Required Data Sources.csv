@@ -1,13 +1,15 @@
-Required Data Sources — SE Field Notes (refined),,
-"Source: handwritten field notes. Replaces the earlier 7-item preface list with the 8 sources actually named on-ground. Note per notes: too many data points confuse the pitch — the point is to pull the RIGHT subset per visit purpose, strategically, to find the win — not to surface all 8 every time.",,
-ID,Data Source,What it is / why it matters
-S1,Same-Block Purchase (Product-wise),"Table of what fellow retailers in the same block bought, broken out by product — the peer-proof lever for a Sale pitch."
-S2,Last Discount & Suggested Discount,"What discount the DC got last time, plus the system-suggested discount for this visit — the close lever."
-S3,Historical Purchase & Sale by DC,"This DC's own buying/selling pattern over time — used to spot preference, cycle, and payment behavior."
-S4,Current Inventory,What's physically/system-recorded as in stock at the DC right now.
-S5,Outstanding,The DC's current due amount and aging — the core lever for P2B and Collection.
-S6,Last Year DC Purchase,What this DC bought in the same period last year — seasonal benchmark.
-S7,YTD of DC Purchase,This DC's total purchase so far this year — tracks progress against expectation.
-S8,YTD of Private Label Sale,This DC's Private Label sale so far this year — the specific lever for the PL push (BO1).
-,,
-"User model (from notes): User = SE (Sales Executive). DC Partner = the retailer who sells on to farmers. SE already understands English and has the judgement to know what to say — the gap is data discipline, not language. One visit happens per DC, and a single visit can carry multiple tasks/purposes.",,
+Required Data Sources — SE Field Notes (refined + normalization-agent confirmed),,,
+"Source: handwritten field notes + SE_DC_Data_Normalization_Agent_Prompt (Section 10, Pitch Playbook Data Point Readiness). S2 is now split into Last Discount and Suggested Discount since they come from different logic (raw last-invoice value vs. a computed recommendation), and S1b (Product & Business Category) is broken out as its own row since it enriches every other product-bearing source, not just S1. Too many data points still confuse the pitch — pull only the RIGHT subset per visit purpose.",,,
+ID,Data Source,What it is / why it matters,Status (per Normalization Agent)
+S1,"Same-Block Purchase (Product-wise, with Category & Segment)","What fellow retailers in the same block bought this month, broken out by specific product — not just an amount. Each product carries its Category (e.g. Crop Protection), Business Segment (e.g. PRIVATE LABEL), Business Category, and Brand — confirmed schema: coupon_analysis / sale_orderrequestline joined to products_template. This is what tells the SE WHICH exact product to recommend, not just a generic peer-benchmark number.",✅ Ready — join chain confirmed
+S1b,Product & Business Category (enrichment),"Category_Name, Sub_Category_Name, Business_Segment_Name (= 'PRIVATE LABEL' for PL), Business_Category, Product_Brand — attached to every product mentioned anywhere in a pitch (S1, S2, S3, S8), so the SE never names a bare product without its category/segment context.",✅ Ready — products_template / products_category
+S2a,Last Discount,"This DC's own discount on its last invoice for a specific product — sale_orderrequestline.discount_price_unit. Confirmed: null means no discount was given, never treat as ₹0.",✅ Ready
+S2b,Suggested Discount,"The recommended discount for this visit, computed by combining this DC's own discount history (coupon_analysis) with the Same Block Purchase pattern (S1) — i.e. what discount is working for comparable DCs in the same block, on the same product. Confirmed methodology, not a flat system default.",✅ Ready — methodology confirmed
+S3,Historical Purchase & Sale by DC,"This DC's own buying/selling pattern over time — used to spot preference, cycle, and payment behavior.",🟡 Purchase half ready; Sale half (DC→farmer) still open
+S4,Current Inventory,What's physically/system-recorded as in stock at the DC right now.,⏸ Descoped — DC-level stock intentionally out of scope
+S5,Outstanding,The DC's current due amount and aging — the core lever for P2B and Collection.,✅ Ready
+S6,Last Year DC Purchase,What this DC bought in the same period last year — seasonal benchmark.,✅ Ready — query confirmed
+S7,YTD of DC Purchase,This DC's total purchase so far this year — tracks progress against expectation.,✅ Ready — query confirmed
+S8,YTD of Private Label Sale,This DC's Private Label sale so far this year — the specific lever for the PL push (BO1).,✅ Ready
+,,,
+"User model (from notes): User = SE (Sales Executive). DC Partner = the retailer who sells on to farmers. SE already understands English and has the judgement to know what to say — the gap is data discipline, not language. One visit happens per DC, and a single visit can carry multiple tasks/purposes.",,,
