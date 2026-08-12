@@ -1,6 +1,7 @@
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 
+from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
 from .models import DailyTask, PitchScript, PlanRun
 from .routing import RoutingError, list_route_plans, select_default_route_plan
@@ -213,6 +214,99 @@ def headcount_bifurcation(request):
             "by_state": {k: len(v) for k, v in result["by_state"].items()},
         }
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def directory_states(request):
+    """GET /api/planning/directory/states/ -- every State with a real DC, plus node/SE/DC
+    counts. Populates a top-level dropdown; every other directory endpoint can be scoped
+    with ?state=<value> from here."""
+    try:
+        return JsonResponse(list_states(_planning_output_dir()), safe=False)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+
+
+@require_GET
+def directory_nodes(request):
+    """GET /api/planning/directory/nodes/?state= -- every Node, optionally scoped to a State."""
+    try:
+        return JsonResponse(list_nodes(_planning_output_dir(), request.GET.get("state")), safe=False)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+
+
+@require_GET
+def directory_districts(request):
+    """GET /api/planning/directory/districts/?state= -- live-only (Geo_Mapping/Source 1c)."""
+    try:
+        return JsonResponse(list_districts(_planning_output_dir(), request.GET.get("state")), safe=False)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+
+
+@require_GET
+def directory_blocks(request):
+    """GET /api/planning/directory/blocks/?state=&district= -- live-only (Geo_Mapping/Source 1c)."""
+    try:
+        return JsonResponse(list_blocks(_planning_output_dir(), request.GET.get("state"), request.GET.get("district")), safe=False)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+
+
+@require_GET
+def directory_zbms(request):
+    """GET /api/planning/directory/zbms/ -- "State Head" = ZBM, the closest real role to
+    that term in this data model (no dedicated State-Head field exists anywhere)."""
+    try:
+        return JsonResponse(list_zbms(_planning_output_dir()), safe=False)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+
+
+@require_GET
+def directory_rbms(request):
+    """GET /api/planning/directory/rbms/"""
+    try:
+        return JsonResponse(list_rbms(_planning_output_dir()), safe=False)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+
+
+@require_GET
+def directory_abms(request):
+    """GET /api/planning/directory/abms/"""
+    try:
+        return JsonResponse(list_abms(_planning_output_dir()), safe=False)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+
+
+@require_GET
+def directory_ses(request):
+    """GET /api/planning/directory/ses/?state=&node= -- SEs with at least one assigned
+    DC (resolve_scope_dcs' own definition of an SE), not planning.headcount's broader
+    "active in the last 90 days" definition."""
+    try:
+        return JsonResponse(list_ses(_planning_output_dir(), request.GET.get("state"), request.GET.get("node")), safe=False)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+
+
+@require_GET
+def directory_dcs(request):
+    """GET /api/planning/directory/dcs/?state=&node=&se=&limit=200&offset=0 -- paginated,
+    limit capped at 1000 (DC_Master has 19k+ rows network-wide)."""
+    try:
+        limit = int(request.GET.get("limit", 200))
+        offset = int(request.GET.get("offset", 0))
+    except ValueError:
+        return JsonResponse({"error": "limit/offset must be integers"}, status=400)
+    try:
+        result = list_dcs(_planning_output_dir(), request.GET.get("state"), request.GET.get("node"), request.GET.get("se"), limit, offset)
+    except FileNotFoundError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    return JsonResponse(result, safe=False)
 
 
 @require_GET
