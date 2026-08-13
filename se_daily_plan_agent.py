@@ -506,6 +506,19 @@ class BusinessConstants:
     # Section 6 -- DC exclusion (6.2, 6.3, 6.4 confirmed defaults)
     min_days_since_last_visit: int = 5
     seasonal_skip_enabled: bool = False
+    # User-confirmed 2026-08-13: a DC must have a real numeric DC_RAnk.csv Rank <=6000
+    # to be eligible for any agent's DC selection (SE Daily Task -> cascades to Routing
+    # + Pitching, which only ever see DCs that already passed this gate). In practice
+    # this is a no-op against numeric ranks alone -- no DC_RAnk.csv row exceeds 5545,
+    # the top of the Opportunity cohort band (COHORT_BANDS) -- but it DOES exclude, by
+    # explicit user decision, both "Long Tail" cohort DCs (rank stored as a text
+    # placeholder, never a number, so it can never satisfy <=6000) and DCs with no rank
+    # at all (Cohort/Rank both None -- the live-supplemented DCs from
+    # supplement_dc_master_from_live(), since DC_RAnk.csv is the only source for
+    # Rank/Cohort and a supplemented DC never has one). That second group is ~47% of
+    # DC_Master network-wide as of 2026-08-13 -- a real, large, deliberately-confirmed
+    # exclusion, not an accidental side effect.
+    max_eligible_rank: float = 6000.0
     # Section 7 -- daily ranking weights (top-3 objectives)
     rank1_weight: float = 0.40
     rank2_weight: float = 0.35
@@ -745,7 +758,11 @@ def apply_dc_exclusion_rules(
     """Section 6: rules that remove a DC from consideration entirely.
     6.4 (Agent-Determined): always block Legal_Hold; Credit_Blocked/Blacklisted are
     evaluated live elsewhere (see resolve_full_block), not auto-blocked here.
-    6.2 (confirmed default): exclude a DC from lists if visited within the last 5 days."""
+    6.2 (confirmed default): exclude a DC from lists if visited within the last 5 days.
+    Rank eligibility (user-confirmed 2026-08-13, see BusinessConstants.max_eligible_rank):
+    exclude a DC unless it has a real numeric Rank <=6000 -- a Long Tail-cohort DC (text
+    placeholder Rank) or an unscored DC (Rank/Cohort both None, e.g. live-supplemented)
+    fails this by construction, same as a Rank genuinely above the cutoff would."""
     today_dt = datetime.fromisoformat(today)
     for dc in dc_master:
         legal_hold = dc.get("DC_Status") == "Legal_Hold"
@@ -754,7 +771,17 @@ def apply_dc_exclusion_rules(
         if last_visit:
             days_since_visit = (today_dt - datetime.fromisoformat(last_visit)).days
         too_recent = days_since_visit is not None and days_since_visit < constants.min_days_since_last_visit
-        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent
+        rank = dc.get("Rank")
+        rank_eligible = isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank
+        if not rank_eligible:
+            exc.flag(
+                dc["DC_ID"], "Source2", "DC_Rank_Ineligible",
+                f"Rank {rank!r} -- not a real numeric rank <= {constants.max_eligible_rank:.0f} "
+                "(Long Tail cohort or unscored DC), excluded from all agents' DC selection",
+            )
+        else:
+            exc.ok("DC_Rank_Ineligible")
+        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and rank_eligible
         dc["In_Scope_Flag"] = in_scope
         dc["Days_Since_Last_Visit"] = days_since_visit
         dc["Last_Visit_Date"] = last_visit
