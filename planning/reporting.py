@@ -33,14 +33,17 @@ def summary_lines(plan_run: PlanRun) -> List[str]:
 
 
 def table_lines(plan_run: PlanRun) -> List[str]:
-    """13 of the doc's Section 10 columns (Sr, DC Name, Distance, Task Type, Purpose,
+    """14 of the doc's Section 10 columns (Sr, DC Name, Distance, Task Type, Purpose,
     Reason, Last Visit+days, Outstanding, Overdue, Last Order date+value, Last Payment,
-    YTD PL), plus a leading SE column since one PlanRun spans multiple SEs. DC ID (doc
-    column 3) and Club Participation (doc column 15) are both deliberately omitted per
-    explicit request -- DC ID dropped 2026-08-07 to narrow the table, still stored on
-    DailyTask.dc_id, just not shown here. This is the single source of truth for the
-    outcome table -- generate_se_plan --table and activate_tuff both render through
-    this function.
+    YTD PL, Club Participation), plus a leading SE column since one PlanRun spans
+    multiple SEs. DC ID (doc column 3) is deliberately omitted per explicit request,
+    dropped 2026-08-07 to narrow the table -- still stored on DailyTask.dc_id, just not
+    shown here. Club Participation was ALSO dropped 2026-08-07 (same narrowing request)
+    but re-added 2026-08-13 once normalize_dc_club() started computing a real Club_Tier/
+    Zone/TOD_Percent instead of just an enrollment-proxy string -- worth a column now
+    that it's not just "Presence_In_Mapping_Table_Unconfirmed" on every row. This is the
+    single source of truth for the outcome table -- generate_se_plan --table and
+    activate_tuff both render through this function.
 
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
@@ -72,11 +75,12 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             f"{t.last_order_value:,.0f}" if t.last_order_value is not None else "N/A",
             str(t.last_payment_date) if t.last_payment_date else "N/A",
             f"{t.ytd_private_label:,.0f}" if t.ytd_private_label is not None else "N/A",
+            t.dc_club_participation or "N/A",
         ])
     headers = [
         "SE", "Sr", "DC Name", "Km", "Task Type", "Purpose", "Reason",
         "Last Visit", "Outstanding", "Overdue (Aging)", "Last Order", "Order Value",
-        "Last Payment", "YTD PL",
+        "Last Payment", "YTD PL", "Club",
     ]
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
 

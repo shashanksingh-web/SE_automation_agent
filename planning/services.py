@@ -183,6 +183,27 @@ def _sql_club_mapping(dc_ids: List[str]) -> str:
     """
 
 
+def _sql_club_qualifying_turnover(dc_ids: List[str]) -> str:
+    """Scoped counterpart of se_daily_plan_agent.SQL_DC_CLUB_QUALIFYING_TURNOVER_3G --
+    same confirmed filter (status='confirmed', 2026 calendar-year window, the 3
+    reliably-identifiable T&C exclusions), just WHERE-restricted to this request's
+    dc_ids instead of a full-network GROUP BY. See that query's own docstring for the
+    honest-partial-exclusion caveat -- unchanged here, still applies."""
+    return f"""
+    SELECT partner_id AS dc_id, SUM(order_value) AS qualifying_turnover
+    FROM coupon_analysis
+    WHERE status = 'confirmed'
+      AND created_at >= '2026-01-01' AND created_at < '2027-01-01'
+      AND partner_id::text IN ({_sql_list(dc_ids)})
+      AND NOT (
+            (product_category = 'Crop Nutrition' AND product_sub_category = 'WSF')
+         OR (product_category = 'Tools & Machinery')
+         OR (product_sub_category = 'Cattle Feed' AND (product_name ILIKE '%khurak%' OR product_name ILIKE '%chokar%'))
+      )
+    GROUP BY partner_id
+    """
+
+
 def _sql_users(emails: List[str]) -> str:
     return f"SELECT id AS user_id, email FROM users_user WHERE email IN ({_sql_list(emails)})"
 
@@ -949,7 +970,8 @@ def generate_plan_for_scope(
         club_exc = agent.Exceptions(agent.utc_now_iso())
         try:
             club_raw = client.execute_sql(agent.REDSHIFT_DB_ID, _sql_club_mapping(dc_ids))
-            club_rows = agent.normalize_dc_club(club_raw, [], club_exc)
+            turnover_raw = client.execute_sql(agent.REDSHIFT_DB_ID, _sql_club_qualifying_turnover(dc_ids))
+            club_rows = agent.normalize_dc_club(club_raw, [], turnover_raw, dc_financials, club_exc)
             dc_club_by_id = {row["DC_ID"]: row for row in club_rows}
         except Exception as e:
             run_exceptions.append({"source": "dc_mapping_club_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})

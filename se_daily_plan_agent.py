@@ -679,6 +679,71 @@ COHORT_BANDS = {
     "Opportunity": (3001, 5545),
 }
 
+# Source 3g -- DeHaat Club Scheme 2026-27, confirmed 2026-08-13 from the signed business
+# policy (Dehaat Club /*.csv, 3 documents + a State->Zone mapping, signed by Kamlesh
+# Sharma, President - Agri Input, DeHaat). Supersedes the generic dc_club_slabs schema
+# alone per the source doc's own instruction -- this table is the authoritative tier
+# structure, not the live Redshift table (still pulled, for cross-validation only, see
+# normalize_dc_club()). Ordered highest-to-lowest so club_tier_for_turnover() can walk
+# it top-down and stop at the first threshold met.
+DC_CLUB_TIER_TABLE = [
+    # (tier, min_qualifying_turnover, tod_percent, tour_reward_west, tour_reward_east)
+    ("Director's", 10_000_001, None, "Mahindra Thar (Ex-Showroom - Base Model)", "Mahindra Thar (Ex-Showroom - Base Model)"),
+    ("Diamond", 6_000_000, 2.25, "Budapest + Vienna Single (4N5D) or Phuket + Krabi Couple (3N4D)", "Budapest + Vienna Single (4N5D) or Phuket + Krabi Couple (3N4D)"),
+    ("Platinum", 3_500_000, 2.00, "Hong Kong + Macau Single (3N4D) or Sri Lanka Couple (3N4D)", "Hong Kong + Macau Single (3N4D) or Sri Lanka Couple (3N4D)"),
+    ("Gold", 2_400_000, 1.75, "Dubai + Abu Dhabi Single (3N4D)", "Dubai + Abu Dhabi Single (3N4D)"),
+    ("Silver", 1_600_000, 1.25, "Phuket + Krabi Single (3N4D)", "Phuket + Krabi Single (3N4D)"),
+    ("Bronze", 900_000, 1.00, "Kerala Single (2N3D)", "Sikkim Single (2N3D)"),
+    ("Copper", 400_000, 0.50, "Gold Voucher (₹16K)", "Gold Voucher (₹16K)"),
+]
+
+# State->Zone, confirmed (Dehaat Club /Zone definition - Sheet1.csv) -- covers all 11
+# states DC_Master/Geo_Mapping currently carry. Affects which zone's tour reward a DC's
+# club tier maps to, not the turnover threshold itself (thresholds are zone-independent).
+STATE_TO_ZONE = {
+    "Bihar": "East", "Chhattisgarh": "East", "Jharkhand": "East", "Orissa": "East",
+    "Uttar Pradesh": "East", "West Bengal": "East",
+    "Gujarat": "West", "Haryana": "West", "Madhya Pradesh": "West",
+    "Maharashtra": "West", "Rajasthan": "West",
+}
+
+
+def club_tier_for_turnover(qualifying_turnover: Optional[float]) -> Optional[Tuple[str, Optional[float]]]:
+    """Returns (tier_name, tod_percent) for the highest tier whose threshold is met, or
+    None if turnover is unknown or below every tier's entry point (Copper's 400,000)."""
+    if qualifying_turnover is None:
+        return None
+    for tier, threshold, tod_percent, _, _ in DC_CLUB_TIER_TABLE:
+        if qualifying_turnover >= threshold:
+            return tier, tod_percent
+    return None
+
+
+def dc_club_participation_text(club: Optional[Dict[str, Any]]) -> str:
+    """DailyTaskRow.DC_Club_Participation -- was just the enrollment-proxy string
+    (Enrollment_Basis) before 2026-08-13, which never actually showed the real
+    Club_Tier/Zone/TOD_Percent normalize_dc_club() now computes even though those
+    fields existed in DC_Club_Normalized.json (a real gap: rich normalization output
+    that never made it to the one field DailyTask/the API actually expose). Doesn't
+    repeat "unconfirmed proxy" per row -- that caveat is already recorded once per run
+    via the Club_Enrollment_Flag_Unconfirmed exception, same convention as every other
+    run-level (not per-DC) caveat in this pipeline."""
+    if not club or not club.get("Is_Club_Enrolled"):
+        return "Not enrolled"
+    tier = club.get("Club_Tier")
+    if tier:
+        bits = [tier]
+        if club.get("Zone"):
+            bits.append(f"{club['Zone']} zone")
+        if club.get("TOD_Percent") is not None:
+            bits.append(f"{club['TOD_Percent']:.2f}% TOD")
+        return "Enrolled -- " + ", ".join(bits)
+    if club.get("Outstanding_Cleared") is False:
+        return "Enrolled -- no tier yet (outstanding not cleared)"
+    if club.get("Qualifying_Turnover") is None:
+        return "Enrolled -- no tier yet (no qualifying turnover this scheme year)"
+    return "Enrolled -- no tier yet (below Copper's entry threshold)"
+
 
 def load_dc_master(path: Path = DC_MASTER_CSV) -> Tuple[Table, Exceptions]:
     exc = Exceptions(utc_now_iso())
@@ -1169,6 +1234,48 @@ SELECT club, turnover_ll, turnover_ul, tour, tod_percent, score
 FROM dc_club_slabs
 """
 
+# Qualifying_Turnover, confirmed 2026-08-13 (see DC_CLUB_TIER_TABLE) -- the scheme's own
+# definition: Gross Business/Sales (order_value) within the scheme's calendar-year
+# validity (2026-01-01 to 2026-12-31, confirmed in Terms & Conditions item 1), status=
+# 'confirmed' only -- checked coupon_analysis's real distinct status values live rather
+# than reusing SQL_ORDERS_3D's status='processed' rule (a DIFFERENT table's convention,
+# confirmed live to not even exist as a value here): coupon_analysis's own statuses are
+# cancelled/failed/draft/confirmed, so 'confirmed' is this table's real-order filter.
+# coupon_analysis's coupon_applied_flag is separately confirmed unusable for anything --
+# always 'true' regardless of whether a coupon actually applied.
+#
+# HONEST PARTIAL EXCLUSION, not the full T&C list -- checked the real product_category/
+# product_sub_category/product_name values live before writing this filter (never guess
+# spelling from prose): only 3 of the T&C's 5 excluded categories are reliably
+# identifiable in this schema:
+#   - Crop Nutrition -> WSF sub-category: exact category+sub_category match, confident.
+#   - Tools & Machinery: exact category match (both its sub-categories), confident.
+#   - Cattle Feed Khurak/Chokar: Dairy Input/Cattle Feed sub-category has no finer-grained
+#     category field, but product_name values are a consistent, matchable pattern
+#     ("DeHaat Khurak ...", "Dehaat chokar ...") -- confident via ILIKE.
+# NOT excluded, and NOT reliably computable from this schema: "OP/Certified" field-crop
+# varieties (Paddy/Wheat/Soybean/Pulses/Groundnut/Forages) -- product names carry no
+# consistent OP-vs-Hybrid marker ("Hy Paddy", "Res Paddy", "Certified Wheat" all appear
+# for what should be different varieties, live-checked, not distinguishable by a safe
+# pattern without risking both false inclusions and false exclusions); and "Open
+# Marketing Liquidation/Clearance Sales" -- no category, sub-category, or coupon field in
+# the confirmed schema corresponds to this at all. Qualifying_Turnover below is therefore
+# an honest OVER-estimate against the full T&C definition, flagged as such in
+# normalize_dc_club() (Club_Turnover_Partial_Exclusion), not silently treated as exact --
+# per GR-24 (a confirmed, DC-joinable source is not a confirmed formula).
+SQL_DC_CLUB_QUALIFYING_TURNOVER_3G = """
+SELECT partner_id AS dc_id, SUM(order_value) AS qualifying_turnover
+FROM coupon_analysis
+WHERE status = 'confirmed'
+  AND created_at >= '2026-01-01' AND created_at < '2027-01-01'
+  AND NOT (
+        (product_category = 'Crop Nutrition' AND product_sub_category = 'WSF')
+     OR (product_category = 'Tools & Machinery')
+     OR (product_sub_category = 'Cattle Feed' AND (product_name ILIKE '%khurak%' OR product_name ILIKE '%chokar%'))
+  )
+GROUP BY partner_id
+"""
+
 
 def load_live_sources(client: MetabaseClient) -> Tuple[Dict[str, Table], Exceptions]:
     """Sources 1, 3, 4. Returns empty tables (with an Exceptions_Report entry) per query
@@ -1193,6 +1300,7 @@ def load_live_sources(client: MetabaseClient) -> Tuple[Dict[str, Table], Excepti
         ("Payments_3f", INPUT_BACKEND_DB_ID, SQL_PAYMENTS_3F),
         ("DC_Club_Mapping_3g", REDSHIFT_DB_ID, SQL_DC_CLUB_MAPPING_3G),
         ("DC_Club_Slabs_3g", REDSHIFT_DB_ID, SQL_DC_CLUB_SLABS_3G),
+        ("DC_Club_Qualifying_Turnover_3g", REDSHIFT_DB_ID, SQL_DC_CLUB_QUALIFYING_TURNOVER_3G),
     ]
     if not client.configured:
         exc.flag(
@@ -1405,29 +1513,86 @@ def normalize_payments(payments_raw: Table, exc: Exceptions) -> Tuple[Table, Dic
     return out, last_payment_by_dc
 
 
-def normalize_dc_club(club_mapping_raw: Table, club_slabs_raw: Table, exc: Exceptions) -> Table:
-    """DC_Club_Normalized (Source 3g, new). Presence in dc_mapping_club_scheme by
-    partner_id is a PLAUSIBLE, not confirmed, proxy for enrollment (no explicit
-    is_member/status flag exists). Club_Tier is left null here -- computing it requires
-    comparing the DC's turnover (Source 3d) against dc_club_slabs, which belongs to the
-    scoring/planning layer, not this normalization step (per the doc's own guidance)."""
+def normalize_dc_club(
+    club_mapping_raw: Table, club_slabs_raw: Table, qualifying_turnover_raw: Table,
+    dc_financials: Dict[str, Dict[str, Any]], exc: Exceptions,
+) -> Table:
+    """DC_Club_Normalized (Source 3g). Presence in dc_mapping_club_scheme by partner_id
+    is a PLAUSIBLE, not confirmed, proxy for enrollment (no explicit is_member/status
+    flag exists) -- unchanged from before.
+
+    Club_Tier IS now computed here (confirmed 2026-08-13, reversing the earlier "belongs
+    to the scoring/planning layer" deferral -- the signed business policy makes this a
+    normalization-time fact, not a per-request one): DC_CLUB_TIER_TABLE (the confirmed
+    7-tier structure, superseding dc_club_slabs' generic schema) matched against
+    Qualifying_Turnover (SQL_DC_CLUB_QUALIFYING_TURNOVER_3G, an honest PARTIAL exclusion
+    -- see that query's own docstring for exactly which T&C exclusion categories are and
+    aren't reliably computable), gated by Outstanding_Cleared (dc_financials'
+    Current_Outstanding <=0 -- per the confirmed rule "a DC hitting its turnover
+    threshold is still ineligible if outstanding isn't cleared"). Zone comes from
+    STATE_TO_ZONE against this row's own State (affects which zone's tour reward
+    applies, not the threshold).
+
+    Slab_Advance_Bonus_Eligible is deliberately left None/unconfirmed -- computing it
+    needs a FY25-26 baseline Qualifying_Turnover, and the source documents themselves
+    disagree on what "FY25-26"/"FY26-27" even mean here (the Club Slabs sheet states a
+    calendar-year validity, 1-Jan-2026 to 31-Dec-2026, while the FY25-26/FY26-27 naming
+    implies an April-March Indian fiscal year) -- a genuine ambiguity in the source
+    paperwork itself, flagged rather than silently resolved, per the doc's own explicit
+    instruction to do exactly that when the paperwork contradicts itself."""
+    turnover_by_dc = {normalize_id(r.get("dc_id")): parse_number(r.get("qualifying_turnover")) for r in qualifying_turnover_raw}
+
     out: Table = []
+    partial_exclusion_flagged = False
     for row in club_mapping_raw:
         dc_id = normalize_id(row.get("dc_id"))
         if not dc_id:
             continue
+        state = row.get("state")
+        zone = STATE_TO_ZONE.get(state) if state else None
+
+        qualifying_turnover = turnover_by_dc.get(dc_id)
+        current_outstanding = dc_financials.get(dc_id, {}).get("Current_Outstanding")
+        outstanding_cleared = None if current_outstanding is None else current_outstanding <= 0
+
+        club_tier = tod_percent = None
+        if outstanding_cleared:
+            tier_match = club_tier_for_turnover(qualifying_turnover)
+            if tier_match:
+                club_tier, tod_percent = tier_match
+        # outstanding_cleared is False or None (unconfirmed) -> Club_Tier stays None,
+        # even if turnover alone would qualify -- the confirmed rule is a hard AND, not
+        # "turnover, with outstanding as a tiebreak."
+
+        if qualifying_turnover is not None:
+            partial_exclusion_flagged = True
+
         out.append(
             {
                 "DC_ID": dc_id,
                 "Is_Club_Enrolled": True,  # presence-based, unconfirmed interpretation -- see docstring
                 "Enrollment_Basis": "Presence_In_Mapping_Table_Unconfirmed",
-                "Club_Tier": None,  # computed downstream against dc_club_slabs
+                "Qualifying_Turnover": qualifying_turnover,
+                "Outstanding_Cleared": outstanding_cleared,
+                "Club_Tier": club_tier,
+                "Zone": zone,
+                "TOD_Percent": tod_percent,
+                "Slab_Advance_Bonus_Eligible": None,  # see docstring -- genuine source-doc date ambiguity, not computed
                 "Node": row.get("node"),
-                "State": row.get("state"),
+                "State": state,
             }
         )
     if club_mapping_raw:
         exc.flag("ALL", "Source3g", "Club_Enrollment_Flag_Unconfirmed", "presence-in-table used as enrollment proxy; no explicit is_member/status column exists")
+    if partial_exclusion_flagged:
+        exc.flag(
+            "ALL", "Source3g", "Club_Turnover_Partial_Exclusion",
+            "Qualifying_Turnover excludes only Crop Nutrition/WSF, Tools & Machinery, and Cattle Feed "
+            "Khurak/Chokar (confirmed reliably matchable in coupon_analysis) -- OP/Certified field-crop "
+            "varieties and Open Marketing Liquidation/Clearance sales are NOT excluded (no reliable "
+            "product-level signal exists for either in the confirmed schema), so this figure honestly "
+            "over-estimates the T&C's full definition, not an exact match",
+        )
     return out
 
 
@@ -2647,7 +2812,7 @@ def generate_se_daily_plan(
             Present_Outstanding=fin.get("Current_Outstanding"), Present_Overdue=fin.get("Current_Overdue"),
             Last_Order_Date=fin.get("Last_Order_Date"), Last_Order_Value=fin.get("Last_Order_Value"),
             Last_Payment_Date=last_payment_by_dc.get(dc_id), YTD_Private_Label=ytd_pl_by_dc.get(dc_id),
-            DC_Club_Participation=(club.get("Enrollment_Basis") if club and club.get("Is_Club_Enrolled") else "Not enrolled") if dc_club_by_id else "Config_Ambiguous -- DC club data not supplied",
+            DC_Club_Participation=dc_club_participation_text(club) if dc_club_by_id else "Config_Ambiguous -- DC club data not supplied",
             Objective=",".join(matched), No_New_Orders=_no_new_orders(dc_id),
             Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
             Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,
@@ -2806,7 +2971,10 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
     payments, last_payment_by_dc = normalize_payments(live["Payments_3f"], payments_exc)
     merge(payments_exc)
     club_exc = Exceptions(run_ts)
-    dc_club = normalize_dc_club(live["DC_Club_Mapping_3g"], live["DC_Club_Slabs_3g"], club_exc)
+    dc_club = normalize_dc_club(
+        live["DC_Club_Mapping_3g"], live["DC_Club_Slabs_3g"], live["DC_Club_Qualifying_Turnover_3g"],
+        dc_financials, club_exc,
+    )
     merge(club_exc)
     dc_club_by_id = {row["DC_ID"]: row for row in dc_club}
 
