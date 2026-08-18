@@ -39,8 +39,8 @@ from django.utils import timezone
 sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
-from . import data_cache, routing
-from .models import DailyTask, ExceptionRecord, ObjectiveCompletionStats, PlanRun
+from . import data_cache, product_cohort, routing
+from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, ObjectiveCompletionStats, PlanRun
 from .notify import send_alert
 
 
@@ -76,6 +76,18 @@ def load_aop_targets() -> agent.Table:
     leg only, same honest-degrade pattern as everywhere else, rather than raising."""
     try:
         return data_cache.load_output_json(_output_dir(), "AOP_Target_Normalized.json")
+    except FileNotFoundError:
+        return []
+
+
+def load_config_rows() -> agent.Table:
+    """Config_Normalized.json is Step 1's already-parsed Source 5 output (same cache as
+    load_dc_master()) -- lets generate_plan_for_scope cross-check BusinessConstants
+    against the live sheet (agent.check_business_constants_against_config) without
+    re-parsing the raw CSV on every scope. Missing output degrades to no drift-checking
+    for this run rather than raising -- same honest-degrade pattern as load_aop_targets."""
+    try:
+        return data_cache.load_output_json(_output_dir(), "Config_Normalized.json")
     except FileNotFoundError:
         return []
 
@@ -440,6 +452,239 @@ def _sql_block_category_purchase(dc_ids: List[str], plan_date: str) -> str:
     """
 
 
+def _sql_block_product_purchase(dc_ids: List[str], plan_date: str) -> str:
+    # DC Card "Recommended Product & Brief" + Pitching Agent S1 -- product-NAME
+    # granularity, wired 2026-08-14 to fill the gap _sql_block_category_purchase's own
+    # docstring flags ("category granularity, not per-SKU"). Same join chain, same
+    # trailing-30d window, one GROUP BY level finer (tmpl.name alongside cat.name) --
+    # lets the caller find not just "which category is trending in this block" but
+    # "which SPECIFIC product," matching the Required Data Sources CSV's own S1
+    # description ("broken out by specific product... this is what tells the SE WHICH
+    # exact product to recommend"). Confirmed live 2026-08-14 against real Kota-node data.
+    #
+    # S1b enrichment columns added 2026-08-15 (sub_category_name, product_brand,
+    # business_segment_name) -- the Required Data Sources CSV's own S1b row
+    # ("Category_Name, Sub_Category_Name, Business_Segment_Name, Business_Category,
+    # Product_Brand -- attached to every product mentioned anywhere in a pitch"), never
+    # wired before now. business_segment_name is a direct column on products_template
+    # (confirmed live values: 'BRANDED'/'PRIVATE LABEL', occasionally null/empty --
+    # left as-is, never coerced). product_brand via products_brand/brand_id, sub_category
+    # via products_subcategory/sub_category_id (same table _sql_business_area_strength
+    # already joins). No separate "Business_Category" column exists anywhere in this
+    # schema distinct from category_name -- the CSV's own two labels ("Category_Name" /
+    # "Business_Category") appear to refer to the same confirmed field, not two.
+    d = datetime.fromisoformat(plan_date).date()
+    month_start = (d - timedelta(days=30)).isoformat()
+    return f"""
+    SELECT cc.partner_id AS dc_id, cat.name AS category_name, sub.name AS sub_category_name,
+           tmpl.name AS product_name, brand.name AS product_brand,
+           tmpl.business_segment_name AS business_segment_name,
+           SUM(sol.price_unit * sol.quantity) AS purchase_30d
+    FROM sale_orderrequest o
+    JOIN customer_management_customer cc ON cc.id = o.partner_id
+    JOIN sale_orderrequestline sol ON sol.order_request_id = o.id
+    JOIN products_product prod ON prod.id = sol.product_id
+    JOIN products_template tmpl ON tmpl.id = prod.template_id
+    LEFT JOIN products_category cat ON cat.id = tmpl.category_id
+    LEFT JOIN products_subcategory sub ON sub.id = tmpl.sub_category_id
+    LEFT JOIN products_brand brand ON brand.id = tmpl.brand_id
+    WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND o.status = 'processed'
+      AND o.created_at >= '{month_start}'
+    GROUP BY cc.partner_id, cat.name, sub.name, tmpl.name, brand.name, tmpl.business_segment_name
+    """
+
+
+BUSINESS_AREA_STRENGTH_TOP_N = 5  # DC Card Who section -- top-N sub-categories by 12-month value, not just 1
+
+
+def _sql_business_area_strength(dc_ids: List[str], plan_date: str) -> str:
+    # DC Card / "Dehaat Center Ko Jaano" Section 1 "कौन" (Who) -- Business Area Strength
+    # (Source 3h), wired 2026-08-14, widened 2026-08-18 from the single top sub-category
+    # to the top BUSINESS_AREA_STRENGTH_TOP_N (5) -- each DC's top sub-categories by
+    # 12-month net purchase value (price_unit * quantity, same value convention as every
+    # other purchase query in this file), tie-broken by sub_category_name for
+    # determinism. Same join chain as _sql_block_category_purchase (that one stops at
+    # products_category/category_id; this one goes one level finer,
+    # products_subcategory/sub_category_id, per the DC Card CSV's own "sub-category"
+    # wording -- e.g. Herbicide/Fungicide/Cereal Seeds, not the coarser Crop Protection/
+    # Crop Nutrition category). A DC with zero purchases in the window gets no rows here
+    # (confirmed live -- not every DC has one), and a DC with fewer than 5 distinct
+    # sub-categories purchased simply gets fewer rows -- callers must treat a missing
+    # dc_id as a genuine gap, not coerce to a default.
+    d = datetime.fromisoformat(plan_date).date()
+    window_start = (d - timedelta(days=365)).isoformat()
+    return f"""
+    SELECT dc_id, sub_category_name, net_value FROM (
+        SELECT cc.partner_id AS dc_id, sub.name AS sub_category_name,
+               SUM(sol.price_unit * sol.quantity) AS net_value,
+               ROW_NUMBER() OVER (
+                   PARTITION BY cc.partner_id
+                   ORDER BY SUM(sol.price_unit * sol.quantity) DESC, sub.name ASC
+               ) AS rn
+        FROM sale_orderrequest o
+        JOIN customer_management_customer cc ON cc.id = o.partner_id
+        JOIN sale_orderrequestline sol ON sol.order_request_id = o.id
+        JOIN products_product prod ON prod.id = sol.product_id
+        JOIN products_template tmpl ON tmpl.id = prod.template_id
+        LEFT JOIN products_subcategory sub ON sub.id = tmpl.sub_category_id
+        WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND o.status = 'processed'
+          AND o.created_at >= '{window_start}'
+        GROUP BY cc.partner_id, sub.name
+    ) ranked
+    WHERE rn <= {BUSINESS_AREA_STRENGTH_TOP_N}
+    """
+
+
+# DC Card PL recommendation geo fallback (confirmed 2026-08-18): own purchases -> block
+# peers -> node peers can all come up empty for a DC with no purchase history in the
+# normal peer-comparison scopes. Rather than give up, widen the search geographically:
+# first every OTHER DC within NEARBY_PL_RADIUS_KM (straight-line, via
+# se_daily_plan_agent.haversine_km -- same distance function the Routing Agent uses),
+# then, only if that radius search itself has zero purchase data among any candidate, the
+# nearest NEARBY_PL_NODE_FALLBACK_COUNT Nodes by centroid distance. Both tiers' candidate
+# DC_IDs are queried in ONE combined live pull, not one query per failing DC.
+NEARBY_PL_RADIUS_KM = 200.0
+NEARBY_PL_NODE_FALLBACK_COUNT = 10
+NEARBY_PL_PRODUCT_COUNT = 5
+
+# S1/PL_Recommendation top-N within a DC's own dominant_category (block-then-node peer
+# pool) -- widened 2026-08-18 from a single top product per direct instruction. Kept as
+# a separate constant from NEARBY_PL_PRODUCT_COUNT even though both are 5 today -- the
+# two tiers (category-scoped vs geographic) are independent decisions that happen to
+# agree on count right now, not the same knob.
+RECOMMENDED_PRODUCT_COUNT = 5
+
+
+def _node_centroids(dc_master: "agent.Table") -> Dict[str, Tuple[float, float]]:
+    """Average Latitude/Longitude per Node, over DCs with real coordinates only --
+    used only by the geo-fallback's second tier (nearby Nodes), when even a
+    NEARBY_PL_RADIUS_KM-radius DC search finds no purchase data at all."""
+    sums: Dict[str, List[float]] = {}
+    counts: Dict[str, int] = {}
+    for dc in dc_master:
+        node = dc.get("Node")
+        lat, lon = dc.get("Latitude"), dc.get("Longitude")
+        if not node or lat is None or lon is None:
+            continue
+        s = sums.setdefault(node, [0.0, 0.0])
+        s[0] += lat
+        s[1] += lon
+        counts[node] = counts.get(node, 0) + 1
+    return {node: (s[0] / counts[node], s[1] / counts[node]) for node, s in sums.items()}
+
+
+def _attach_nearby_product_recommendations(
+    client: "agent.MetabaseClient", dc_master: "agent.Table", needs_geo_fallback: List[str],
+    extra_data_by_dc: Dict[str, Dict[str, Any]], plan_date: str,
+) -> None:
+    """Mutates extra_data_by_dc in place, adding to recommended_products (a list of up
+    to NEARBY_PL_PRODUCT_COUNT {name, value, category, sub_category, brand,
+    business_segment, scope} dicts, highest value first, scope "nearby_radius" or
+    "nearby_node") for every dc_id in needs_geo_fallback that a real candidate search
+    actually found something for -- same unified key/shape pitching.py and dc_card.py
+    both already read from the category-scoped (block/node) tier, so callers never need
+    to know which tier a DC's recommendation actually came from. Leaves the key entirely
+    absent for a DC where not even the Node-level fallback found any purchase data
+    anywhere nearby -- pitching._tp_block_comparison/dc_card._pl_recommendation treat
+    that the same as every other "no data" case, not a fabricated empty recommendation."""
+    dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
+
+    def _own_coords(dc_id: str) -> Optional[Tuple[float, float]]:
+        dc = dc_by_id.get(dc_id)
+        if not dc or dc.get("Latitude") is None or dc.get("Longitude") is None:
+            return None
+        return dc["Latitude"], dc["Longitude"]
+
+    # Tier 1 candidates: every other DC within the radius, per needing DC.
+    radius_candidates: Dict[str, List[str]] = {}
+    for dc_id in needs_geo_fallback:
+        origin = _own_coords(dc_id)
+        if origin is None:
+            continue
+        nearby = []
+        for other in dc_master:
+            other_id = other.get("DC_ID")
+            if not other_id or other_id == dc_id or other.get("Latitude") is None or other.get("Longitude") is None:
+                continue
+            dist = agent.haversine_km(origin[0], origin[1], other["Latitude"], other["Longitude"])
+            if dist is not None and dist <= NEARBY_PL_RADIUS_KM:
+                nearby.append(other_id)
+        radius_candidates[dc_id] = nearby
+
+    # Tier 2 candidates (nearest Nodes by centroid), computed for every needing DC up
+    # front too -- avoids a second live query later if tier 1 turns out empty for some
+    # of them once real purchase data is checked.
+    centroids = _node_centroids(dc_master)
+    node_candidates: Dict[str, List[str]] = {}
+    for dc_id in needs_geo_fallback:
+        origin = _own_coords(dc_id)
+        own_node = (dc_by_id.get(dc_id) or {}).get("Node")
+        if origin is None or not centroids:
+            continue
+        ranked_nodes = sorted(
+            (n for n in centroids if n != own_node),
+            key=lambda n: agent.haversine_km(origin[0], origin[1], centroids[n][0], centroids[n][1]) or float("inf"),
+        )[:NEARBY_PL_NODE_FALLBACK_COUNT]
+        node_candidates[dc_id] = [
+            other["DC_ID"] for other in dc_master
+            if other.get("Node") in ranked_nodes and other.get("DC_ID")
+        ]
+
+    combined_ids = sorted({i for ids in radius_candidates.values() for i in ids} | {i for ids in node_candidates.values() for i in ids})
+    if not combined_ids:
+        return
+
+    purchases_by_dc: Dict[str, List[Dict[str, Any]]] = {}
+    for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_product_purchase(combined_ids, plan_date)):
+        dc_id = agent.normalize_id(row.get("dc_id"))
+        if dc_id:
+            purchases_by_dc.setdefault(dc_id, []).append(row)
+
+    def _top_products(candidate_ids: List[str], category: Optional[str]) -> List[Dict[str, Any]]:
+        totals: Dict[str, float] = {}
+        attrs: Dict[str, Dict[str, Any]] = {}
+        for cid in candidate_ids:
+            for row in purchases_by_dc.get(cid, []):
+                if category and row.get("category_name") != category:
+                    continue
+                product = row.get("product_name")
+                value = agent.parse_number(row.get("purchase_30d")) or 0.0
+                if not product or value <= 0:
+                    continue
+                totals[product] = totals.get(product, 0.0) + value
+                attrs[product] = row
+        ranked = sorted(totals.items(), key=lambda kv: -kv[1])[:NEARBY_PL_PRODUCT_COUNT]
+        return [
+            {
+                "name": product, "value": value,
+                "category": attrs[product].get("category_name"),
+                "sub_category": attrs[product].get("sub_category_name"),
+                "brand": attrs[product].get("product_brand"),
+                "business_segment": attrs[product].get("business_segment_name") or None,
+            }
+            for product, value in ranked
+        ]
+
+    for dc_id in needs_geo_fallback:
+        category = extra_data_by_dc.get(dc_id, {}).get("dominant_category")
+        products = _top_products(radius_candidates.get(dc_id, []), category)
+        is_radius = True
+        if not products:
+            products = _top_products(node_candidates.get(dc_id, []), category)
+            is_radius = False
+        # A DC with a real dominant_category but zero matching products nearby either
+        # way falls back to an unrestricted (any-category) search once, rather than
+        # reporting "nothing nearby" when nearby DCs simply don't sell the SAME
+        # category this one happens to favor.
+        if not products and category:
+            radius_any = _top_products(radius_candidates.get(dc_id, []), None)
+            products, is_radius = (radius_any, True) if radius_any else (_top_products(node_candidates.get(dc_id, []), None), False)
+        if products:
+            scope = "nearby_radius" if is_radius else "nearby_node"
+            entry = extra_data_by_dc.setdefault(dc_id, {})
+            entry["recommended_products"] = [{**p, "scope": scope} for p in products]
+
+
 def _sql_punch_in(se_user_ids: List[int], plan_date: str) -> str:
     # Earliest check-in of the plan date per SE, from attendance_attendance
     # (input-backend) -- the actual punch-in point sequence_with_distance() needs to
@@ -580,6 +825,12 @@ def generate_plan_for_scope(
     scope_type: str, scope_value: str, plan_date: Optional[str] = None,
     farmer_meeting_asker: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
     farmer_meeting_confirmed_emails: Optional[set] = None,
+    focus_product_material_id: Optional[str] = None,
+    focus_product_node_id: Optional[str] = None,
+    focus_product_years: int = 4,
+    focus_product_season_weeks: Optional[Dict[str, int]] = None,
+    focus_product_crop_districts: Optional[List[str]] = None,
+    focus_product_related_products: Optional[List[str]] = None,
 ) -> PlanRun:
     """The single entry point every endpoint calls. Resolves scope -> DCs -> SEs, pulls
     live Sources 1/3/4 data scoped to just those DCs/SEs (not a full pipeline run), calls
@@ -596,7 +847,16 @@ def generate_plan_for_scope(
     SE's Farmer Meeting without needing a live interactive terminal (e.g. instructing the
     agent to run it on their behalf). Takes priority over farmer_meeting_asker and applies
     even to an SE that isn't FM_Urgency-flagged -- an explicit human instruction is a
-    stronger signal than the pacing algorithm's opinion."""
+    stronger signal than the pacing algorithm's opinion.
+
+    focus_product_*: optional, wires the Focus Product Campaign Targeting agent
+    (planning.product_cohort, Product _cohort/) into this same run -- product-first, not
+    DC-first, so it's opt-in per call rather than automatic like Routing/Pitching (see
+    FocusProductTargetRun's docstring on why no default Focus Product selection exists).
+    focus_product_material_id is the only required one to trigger it at all;
+    focus_product_node_id defaults to scope_value when scope_type == NODE (the natural
+    case), and is otherwise required explicitly -- there's no confirmed mapping from the
+    other scope types (SE/ABM/RBM/BLOCK/DISTRICT/STATE) to a single Product Cohort node."""
     started_at = timezone.now()
     plan_date = plan_date or timezone.now().date().isoformat()
     constants = agent.BusinessConstants()
@@ -609,6 +869,10 @@ def generate_plan_for_scope(
     se_emails = sorted({d["Assigned_SE_Email"] for d in scoped_dcs if d.get("Assigned_SE_Email")})
 
     run_exceptions: List[Dict[str, Any]] = []
+
+    config_drift_exc = agent.Exceptions(agent.utc_now_iso())
+    agent.check_business_constants_against_config(constants, load_config_rows(), config_drift_exc)
+    run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in config_drift_exc.rows)
 
     if not se_emails:
         client.close()
@@ -1072,6 +1336,16 @@ def generate_plan_for_scope(
              "DC-scoped objective and routes through the separate FM_Urgency gate, not dc_bo_scores.",
     )
 
+    # Confirmed 2026-08-18 -- DCVisitStreak.consecutive_misses (only ever written by
+    # `manage.py reconcile_outcomes`, on PAST plan_dates) drives generate_se_daily_plan's
+    # Critical flag for chronic non-execution. One query for every (SE, DC) pair in this
+    # scope, not one per SE -- same batching reasoning as everywhere else in this file.
+    all_se_uids = sorted({str(se_user_ids.get(e, e)) for e in se_emails})
+    consecutive_misses_by_se_dc: Dict[Tuple[str, str], int] = {
+        (s.se_id, s.dc_id): s.consecutive_misses
+        for s in DCVisitStreak.objects.filter(se_id__in=all_se_uids, dc_id__in=dc_ids)
+    }
+
     total_tasks = 0
     skipped_ses: List[Dict[str, Any]] = []
     # Collected across every SE and bulk_create()'d once after the loop, instead of one
@@ -1114,19 +1388,52 @@ def generate_plan_for_scope(
             run_exceptions.extend(result["exceptions"])
             return result
 
+        consecutive_misses_by_dc = {
+            dc_id: misses for (se_uid, dc_id), misses in consecutive_misses_by_se_dc.items() if se_uid == str(uid)
+        }
         plan = agent.generate_se_daily_plan(
             str(uid), email, plan_date, in_scope, bo_scores, dynamic_params, constants,
             attendance_gate_ok=attendance_gate_ok, recent_attempts_by_dc=recent_attempts_by_se_dc.get(uid, {}),
             dc_financials=dc_financials, last_payment_by_dc=last_payment_by_dc, dc_club_by_id=dc_club_by_id,
             ytd_pl_by_dc=ytd_pl_by_dc, punch_in_coords=punch_in_by_se.get(uid), dc_bo_scores=dc_bo_scores,
             farmer_meeting_scheduled_today=farmer_meeting_confirmed_by_se.get(email, False),
-            route_selector=_route_selector,
+            route_selector=_route_selector, consecutive_misses_by_dc=consecutive_misses_by_dc,
         )
         tasks = plan.get("Tasks", [])
         if not tasks:
+            # Full root-cause breakdown, not just the generic reason string --
+            # not_in_scope covers DCs excluded before ever reaching generate_se_daily_
+            # plan() at all (Section 6: Legal_Hold/recency/Rank<=6000, computed here
+            # since only services.py has se_dcs, the pre-scope-filter full assigned
+            # list); in_scope_no_objective_match is generate_se_daily_plan()'s own
+            # Skipped_Qualification_Detail for DCs that passed scope but failed every
+            # Visits/Outstanding/PL qualifier. Together these are the exact two tiers a
+            # manual investigation would otherwise have to reconstruct by hand.
+            not_in_scope_detail = []
+            for dc in se_dcs:
+                if dc.get("In_Scope_Flag"):
+                    continue
+                reasons = []
+                if dc.get("DC_Status") == "Legal_Hold":
+                    reasons.append("Legal_Hold")
+                days = dc.get("Days_Since_Last_Visit")
+                if days is not None and days < constants.min_days_since_last_visit:
+                    reasons.append(f"Visited_Too_Recently ({days}d < {constants.min_days_since_last_visit}d)")
+                rank = dc.get("Rank")
+                if not (isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank):
+                    reasons.append(f"DC_Rank_Ineligible (Rank={rank!r})")
+                not_in_scope_detail.append({
+                    "DC_ID": dc["DC_ID"], "DC_Name": dc.get("DC_Name"),
+                    "Reason": "; ".join(reasons) if reasons else "unknown",
+                })
             skipped_ses.append({
                 "se_id": str(uid), "se_email": email,
                 "reason": plan.get("Skipped_Reason") or "No in-scope DC qualified for any objective this run",
+                "dc_breakdown": {
+                    "total_assigned_dcs": len(se_dcs),
+                    "not_in_scope": not_in_scope_detail,
+                    "in_scope_no_objective_match": plan.get("Skipped_Qualification_Detail") or [],
+                },
             })
         for t in tasks:
             pending_tasks.append(DailyTask(
@@ -1135,13 +1442,15 @@ def generate_plan_for_scope(
                 recommended_task_type=t["Recommended_Task_Type"], purpose_of_visit=t["Purpose_Of_Visit"],
                 reason_of_visit=t["Reason_Of_Visit"], last_visit_date=t["Last_Visit_Date"],
                 days_since_last_visit=t["Days_Since_Last_Visit"], present_outstanding=t["Present_Outstanding"],
-                present_overdue=t["Present_Overdue"], overdue_aging_bucket=t.get("Overdue_Aging_Bucket"), last_order_date=t["Last_Order_Date"],
+                present_overdue=t["Present_Overdue"], overdue_aging_bucket=t.get("Overdue_Aging_Bucket"),
+                avg_repayment_days=t.get("Avg_Repayment_Days"), last_order_date=t["Last_Order_Date"],
                 last_order_value=t["Last_Order_Value"], last_payment_date=t["Last_Payment_Date"],
                 last_payment_join_key_unconfirmed=t["Last_Payment_Join_Key_Unconfirmed"],
                 ytd_private_label=t["YTD_Private_Label"], dc_club_participation=t["DC_Club_Participation"],
                 objective=t["Objective"], no_new_orders=t["No_New_Orders"], credit_on_hold=t["Credit_On_Hold"],
                 credit_on_hold_reason=t["Credit_On_Hold_Reason"], estimated_duration=t["Estimated_Duration"],
                 priority_multiplier=t["Priority_Multiplier"],
+                critical=t.get("Critical", False), critical_reasons=t.get("Critical_Reasons", ""),
             ))
 
     DailyTask.objects.bulk_create(pending_tasks)
@@ -1175,7 +1484,26 @@ def generate_plan_for_scope(
                 block_by_dc = {row["dc_id"]: row["block"] for row in geo_mapping if row.get("block")}
                 task_blocks = {block_by_dc[d] for d in task_dc_ids if d in block_by_dc}
                 peer_dc_ids = sorted({row["dc_id"] for row in geo_mapping if row.get("block") in task_blocks}) if task_blocks else []
-                pull_dc_ids = sorted(set(task_dc_ids) | set(peer_dc_ids)) if peer_dc_ids else task_dc_ids
+                # Node-level peer pool, pulled alongside the block-level one -- fallback
+                # for S1/PL_Recommendation when a DC's own block has too few peers (or
+                # none) with trailing-30d purchase data to rank anything from (a real,
+                # common gap for small/single-DC blocks, not an edge case). See the
+                # per-DC entry-building loop below for where block is tried first and
+                # node is only used if block yields nothing -- never the reverse, since
+                # block is the more locally-relevant comparison when it has data.
+                # dc_id-gated (not just node-gated) -- confirmed live 2026-08-17: unlike
+                # block, some geo_mapping rows carry a real node value with no dc_id at
+                # all (a node-level rollup row, not tied to one DC), which crashed
+                # sorted() below on None-vs-str comparison the first time this ran
+                # against Bihar's full geo_mapping. Filtered out here rather than loosened
+                # into the block line above, which has no such rows in practice.
+                node_by_dc = {row["dc_id"]: row["node"] for row in geo_mapping if row.get("node") and row.get("dc_id")}
+                task_nodes = {node_by_dc[d] for d in task_dc_ids if d in node_by_dc}
+                node_peer_dc_ids = (
+                    sorted({row["dc_id"] for row in geo_mapping if row.get("dc_id") and row.get("node") in task_nodes})
+                    if task_nodes else []
+                )
+                pull_dc_ids = sorted(set(task_dc_ids) | set(peer_dc_ids) | set(node_peer_dc_ids))
 
                 purchase_by_dc: Dict[str, Dict[str, Any]] = {}
                 for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_dc_purchase_summary(pull_dc_ids, plan_date)):
@@ -1204,7 +1532,45 @@ def generate_plan_for_scope(
                     if dc_id and cat:
                         per_dc_category.setdefault(dc_id, {})[cat] = agent.parse_number(row.get("purchase_30d")) or 0.0
 
+                # DC Card "Recommended Product & Brief" + Pitching Agent S1 -- product-
+                # name granularity (_sql_block_product_purchase), wired 2026-08-14,
+                # S1b enrichment (sub-category/brand/business segment) added 2026-08-15.
+                # dc_id -> category -> product -> {value, sub_category, brand,
+                # business_segment}, so the caller can find the single top-selling
+                # PRODUCT (not just category) among a DC's block peers, with its full
+                # S1b context attached. Attributes are template-level, not per-order, so
+                # last-row-wins on duplicates is fine -- they don't vary within a product.
+                per_dc_category_product: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_product_purchase(pull_dc_ids, plan_date)):
+                    dc_id, cat, product = agent.normalize_id(row.get("dc_id")), row.get("category_name"), row.get("product_name")
+                    if dc_id and cat and product:
+                        per_dc_category_product.setdefault(dc_id, {}).setdefault(cat, {})[product] = {
+                            "value": agent.parse_number(row.get("purchase_30d")) or 0.0,
+                            "sub_category": row.get("sub_category_name"),
+                            "brand": row.get("product_brand"),
+                            "business_segment": row.get("business_segment_name") or None,
+                        }
+
+                # DC Card / "Dehaat Center Ko Jaano" Section 1 "कौन" -- Business Area
+                # Strength (Source 3h), wired 2026-08-14 alongside the DC Card feature,
+                # widened 2026-08-18 to the top BUSINESS_AREA_STRENGTH_TOP_N (5)
+                # sub-categories per DC instead of just 1 -- business_area_by_dc[dc_id]
+                # is now a LIST, ranked highest-value first (the SQL's own ROW_NUMBER
+                # ordering), not a single dict. Only task_dc_ids, not the wider
+                # pull_dc_ids -- unlike S1's block comparison, this is never compared
+                # against peers, so there's no reason to pull it for DCs never actually
+                # on a task this run.
+                business_area_by_dc: Dict[str, List[Dict[str, Any]]] = {}
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength(task_dc_ids, plan_date)):
+                    dc_id = agent.normalize_id(row.get("dc_id"))
+                    if dc_id:
+                        business_area_by_dc.setdefault(dc_id, []).append({
+                            "sub_category": row.get("sub_category_name"),
+                            "net_value": agent.parse_number(row.get("net_value")),
+                        })
+
                 extra_data_by_dc: Dict[str, Dict[str, Any]] = {}
+                needs_geo_fallback: List[str] = []
                 for dc_id in task_dc_ids:
                     entry = dict(purchase_by_dc.get(dc_id, {}))
                     entry["last_discount"] = discount_by_dc.get(dc_id)
@@ -1221,19 +1587,137 @@ def generate_plan_for_scope(
                     dominant_category = max(cats, key=cats.get) if cats else None
                     entry["dominant_category"] = dominant_category
                     entry["dc_category_purchase"] = cats.get(dominant_category) if dominant_category else None
-                    block = block_by_dc.get(dc_id)
-                    if dominant_category and block:
-                        peer_amounts = [
-                            per_dc_category.get(peer_id, {}).get(dominant_category, 0.0)
-                            for peer_id in peer_dc_ids if block_by_dc.get(peer_id) == block
+                    block, node = block_by_dc.get(dc_id), node_by_dc.get(dc_id)
+
+                    def _peer_stats(candidate_ids: List[str]) -> Optional[Dict[str, Any]]:
+                        """Category-average purchase + up to RECOMMENDED_PRODUCT_COUNT
+                        (5) top-selling PRODUCTS (not just 1) among candidate_ids, within
+                        dominant_category, ranked by peer-summed value, each with S1b
+                        enrichment (sub-category/brand/business segment) attached --
+                        widened 2026-08-18 from a single top product per direct
+                        instruction. Value summed across peers first (a product 3 peers
+                        each bought a little of should still outrank one only 1 peer
+                        bought a lot of -- "peer trend," not "single biggest peer").
+                        None if candidate_ids is empty; avg is None if none of them have
+                        any purchase in dominant_category at all (vs. a real ₹0 average,
+                        which the Hindi builders already treat the same as None -- see
+                        their own `if not block_avg` gate). top_products is never padded
+                        -- a DC with only 2 real peer products in this category just gets
+                        2, not 5."""
+                        if not candidate_ids:
+                            return None
+                        amounts = [per_dc_category.get(p, {}).get(dominant_category, 0.0) for p in candidate_ids]
+                        totals: Dict[str, float] = {}
+                        attrs: Dict[str, Dict[str, Any]] = {}
+                        for p in candidate_ids:
+                            for product, info in per_dc_category_product.get(p, {}).get(dominant_category, {}).items():
+                                totals[product] = totals.get(product, 0.0) + info["value"]
+                                attrs[product] = info
+                        ranked = sorted(totals.items(), key=lambda kv: -kv[1])[:RECOMMENDED_PRODUCT_COUNT]
+                        top_products = [
+                            {
+                                "name": name, "value": value, "category": dominant_category,
+                                "sub_category": attrs[name].get("sub_category"),
+                                "brand": attrs[name].get("brand"),
+                                "business_segment": attrs[name].get("business_segment"),
+                            }
+                            for name, value in ranked
                         ]
-                        entry["block_category_avg"] = (sum(peer_amounts) / len(peer_amounts)) if peer_amounts else None
+                        return {
+                            "avg": (sum(amounts) / len(amounts)) if amounts else None,
+                            "top_products": top_products,
+                        }
+
+                    if dominant_category:
+                        stats, scope = _peer_stats([p for p in peer_dc_ids if block and block_by_dc.get(p) == block]), "block"
+                        # Block yielded nothing usable (no peers, or peers with zero
+                        # purchase in this category) -- widen to node-level peers. Only
+                        # this direction: block is the more locally-relevant comparison
+                        # when it has real data, so it's never overridden by node.
+                        if not stats or not stats["avg"]:
+                            node_stats = _peer_stats([p for p in node_peer_dc_ids if node and node_by_dc.get(p) == node])
+                            if node_stats and node_stats["avg"]:
+                                stats, scope = node_stats, "node"
+                        if stats and stats["avg"]:
+                            entry["block_category_avg"] = stats["avg"]
+                            entry["peer_comparison_scope"] = scope
+                            if stats["top_products"]:
+                                entry["recommended_products"] = [{**p, "scope": scope} for p in stats["top_products"]]
+                    # DC Card-only additions -- read by planning/dc_card.py, ignored by
+                    # planning/pitching.py's builders (they only ever ctx.get() the keys
+                    # they know about).
+                    entry["business_area_strength"] = business_area_by_dc.get(dc_id)
+                    entry["club"] = dc_club_by_id.get(dc_id)
                     extra_data_by_dc[dc_id] = entry
+                    # Own purchases + block peers + node peers all came up empty (no
+                    # recommended_products set -- either no dominant_category at all, or
+                    # peers had a category average but no product-level breakdown) --
+                    # flagged for the geographic fallback below (confirmed 2026-08-18:
+                    # 200km radius first, then nearest Nodes by centroid distance if
+                    # even that finds nothing).
+                    if not entry.get("recommended_products"):
+                        needs_geo_fallback.append(dc_id)
+
+                if needs_geo_fallback:
+                    _attach_nearby_product_recommendations(client, dc_master, needs_geo_fallback, extra_data_by_dc, plan_date)
 
                 from .pitching import generate_pitches_for_plan_run
-                generate_pitches_for_plan_run(plan_run, extra_data_by_dc)
+                _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc)
+                run_exceptions.extend({
+                    "source": "PitchingAgent", "reason_code": "Pitch_Generation_Failed",
+                    "detail": f"DC {f['dc_id']}: {f['detail']}",
+                } for f in pitch_failures)
+
+                # DC Card (Preface) / "Dehaat Center Ko Jaano", wired 2026-08-14 --
+                # separate try/except (own exception source) so a DC Card-specific
+                # failure is never mislabeled as PitchingAgent, and vice versa; reuses
+                # the exact same extra_data_by_dc Pitching just used, no re-fetch.
+                try:
+                    from .dc_card import generate_dc_cards_for_plan_run
+                    _, card_failures = generate_dc_cards_for_plan_run(plan_run, extra_data_by_dc)
+                    run_exceptions.extend({
+                        "source": "DCCardAgent", "reason_code": "DC_Card_Generation_Failed",
+                        "detail": f"DC {f['dc_id']}: {f['detail']}",
+                    } for f in card_failures)
+                except Exception as e:
+                    run_exceptions.append({"source": "DCCardAgent", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
         except Exception as e:
             run_exceptions.append({"source": "PitchingAgent", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+
+    if focus_product_material_id:
+        node_id = focus_product_node_id or (scope_value if scope_type == PlanRun.ScopeType.NODE else None)
+        if node_id is None:
+            run_exceptions.append({
+                "source": "ProductCohort", "reason_code": "Focus_Product_Node_Not_Resolved",
+                "detail": f"focus_product_material_id={focus_product_material_id!r} given but no focus_product_node_id, and scope_type={scope_type!r} isn't NODE -- no confirmed mapping from this scope type to a single Product Cohort node, so Focus Product Targeting was skipped this run",
+            })
+        else:
+            fp_result = product_cohort.get_focus_product_campaign_targets(
+                material_id=focus_product_material_id, node_id=node_id, years=focus_product_years,
+                season_weeks=focus_product_season_weeks, crop_districts=focus_product_crop_districts,
+                related_product_names=focus_product_related_products,
+            )
+            step_3 = fp_result["Step_3"]
+            if step_3 and isinstance(step_3.get("results"), dict) and isinstance(step_3["results"].get("dcs"), list):
+                # Section 6's Rank<=6000 eligibility gate (confirmed 2026-08-13) applies
+                # network-wide to every agent's DC selection, but the live Product Cohort
+                # API has no awareness of it -- its raw cohort can include ineligible
+                # DCs. dc_card._build_focus_product_match_index only ever cross-
+                # references this against plan_run.tasks (already eligibility-filtered),
+                # so nothing ineligible is surfaced today -- but the persisted record
+                # itself wasn't tagged, a latent gap for any future direct consumer.
+                # Additive only: the raw API response is annotated, never filtered/mutated.
+                eligible_dc_ids = {
+                    dc["DC_ID"] for dc in dc_master
+                    if isinstance(dc.get("Rank"), (int, float)) and dc["Rank"] <= constants.max_eligible_rank
+                }
+                for dc_entry in step_3["results"]["dcs"]:
+                    dc_entry["rank_eligible"] = str(dc_entry.get("partnerId") or "") in eligible_dc_ids
+            FocusProductTargetRun.objects.create(
+                plan_run=plan_run, material_id=focus_product_material_id, node_id=node_id,
+                step_2a=fp_result["Step_2A"], step_2b=fp_result["Step_2B"], step_3=step_3,
+            )
+            run_exceptions.extend(fp_result["exceptions"])
 
     run_ts = agent.utc_now_iso()
     ExceptionRecord.objects.bulk_create([
@@ -1332,12 +1816,19 @@ def activate_tuff_scope(
     force_normalization: bool = False, skip_normalization: bool = False,
     farmer_meeting_asker: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
     farmer_meeting_confirmed_emails: Optional[set] = None,
+    focus_product_material_id: Optional[str] = None,
+    focus_product_node_id: Optional[str] = None,
+    focus_product_years: int = 4,
+    focus_product_season_weeks: Optional[Dict[str, int]] = None,
+    focus_product_crop_districts: Optional[List[str]] = None,
+    focus_product_related_products: Optional[List[str]] = None,
 ) -> Tuple[PlanRun, Dict[str, Any]]:
     """Agent TUFF's full two-step flow as a single reusable call -- Step 1 (Data
     Normalization, once-per-day, see run_normalization_step) then Step 2
-    (generate_plan_for_scope, which auto-triggers Pitching + Routing). Shared by
-    `manage.py activate_tuff` and GET /api/planning/tuff/<scope_type>/<scope_value>/, so
-    the two can never drift on the once-per-day/abort-on-empty rules. Returns
+    (generate_plan_for_scope, which auto-triggers Pitching + Routing, and optionally
+    Focus Product Campaign Targeting -- see that function's focus_product_* docstring).
+    Shared by `manage.py activate_tuff` and GET /api/planning/tuff/<scope_type>/<scope_value>/,
+    so the two can never drift on the once-per-day/abort-on-empty rules. Returns
     (plan_run, normalization_info) -- normalization_info is run_normalization_step()'s
     return value, for callers that want to report Step 1's own outcome alongside the
     PlanRun."""
@@ -1348,5 +1839,8 @@ def activate_tuff_scope(
         scope_type, scope_value, plan_date,
         farmer_meeting_asker=farmer_meeting_asker,
         farmer_meeting_confirmed_emails=farmer_meeting_confirmed_emails,
+        focus_product_material_id=focus_product_material_id, focus_product_node_id=focus_product_node_id,
+        focus_product_years=focus_product_years, focus_product_season_weeks=focus_product_season_weeks,
+        focus_product_crop_districts=focus_product_crop_districts, focus_product_related_products=focus_product_related_products,
     )
     return plan_run, normalization_info

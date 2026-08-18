@@ -129,6 +129,13 @@ REDSHIFT_STATEMENT_TIMEOUT_MS = int(os.environ.get("SE_AGENT_REDSHIFT_STATEMENT_
 # that fails to connect in the first place, not a single unretried reconnect (see 2026-08-09 fix).
 REDSHIFT_RETRY_BACKOFF_SECONDS = [2, 6]
 
+# Mirrors planning.models.DCVisitStreak.ESCALATION_THRESHOLD -- duplicated, not
+# imported, because this file must stay usable standalone (bare `python
+# se_daily_plan_agent.py`, no Django) while DCVisitStreak is a Django model this file
+# can't import. Used only for generate_se_daily_plan()'s Critical flag (confirmed
+# 2026-08-18); keep the two values in sync if the threshold ever changes.
+DC_VISIT_ESCALATION_THRESHOLD = 3
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -305,6 +312,14 @@ class RedshiftDirectClient:
                 cur.execute(sql)
                 cols = [d[0] for d in cur.description]
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
+            except psycopg2.errors.QueryCanceled:
+                # QueryCanceled is a subclass of OperationalError, but it means the query
+                # hit REDSHIFT_STATEMENT_TIMEOUT_MS -- not a dead connection. Retrying just
+                # reruns the same slow query up to 3x, turning a 120s timeout into a ~6min
+                # stall and defeating the whole point of the 2026-08-09 fail-fast fix. Roll
+                # back (the transaction is aborted) and propagate immediately, unretried.
+                conn.rollback()
+                raise
             except psycopg2.OperationalError as e:
                 last_error = e
                 logger.warning("Redshift connection to %s died mid-run", dbname)
@@ -340,6 +355,170 @@ def get_client():
     if redshift_client.configured:
         return redshift_client
     return MetabaseClient()
+
+
+# =====================================================================================
+# 1b. PRODUCT COHORT CLIENT -- Focus Product Campaign Targeting (Product _cohort/,
+# Postman collection "Product Cohort -- -sps-v1-fp", saas-platform-service.api.dehat.net)
+# =====================================================================================
+# A DIFFERENT, real capability from the DC Card's "Crop Type/Style" gap (see the pitch_
+# config Focus Product Targeting CSV) -- product-first, not DC-first: given a Focus
+# Product (materialId) and a Node, produces (2A) its historical weekly sales pattern,
+# (2B) an LLM-read crop-seasonality (buildup/peak/closure weeks), and (3) a target DC
+# cohort to push that product to.
+#
+# Auth (Postman collection's own "01 . Auth" folder, PRODUCT_COHORT_AUTH.md): a Go Admin
+# sign-in (email + password) against {base_url}/admin/signin produces an X-FP-Session
+# value and a go_admin_session cookie, which every other call needs. This agent does NOT
+# perform that sign-in and never will, regardless of who supplies the credentials or how
+# the request is framed -- entering a password to authenticate on someone's behalf is
+# outside what this agent does, full stop (same boundary already documented in the pitch
+# config CSV's "Status" row for this feature). What this client DOES do: accept an
+# already-issued session/cookie pair via environment variables, so a human who ran the
+# Postman "Sign in" request themselves (or whatever internal login flow issues the same
+# X-FP-Session token) can hand this pipeline a working session without ever handing this
+# agent a password. Until PRODUCT_COHORT_SESSION/PRODUCT_COHORT_GO_ADMIN_SESSION are set,
+# every method below raises ProductCohortNotConfigured -- same fail-loud convention as
+# MetabaseNotConfigured, never a silent empty result.
+#
+# Response schemas for Step 2B and Step 3 were EMPTY in the saved Postman collection (no
+# example response was ever captured) -- this client still returns their raw parsed JSON
+# unmodified rather than reshaping it into a typed structure. Step 3's shape IS now
+# confirmed live (2026-08-14): {"status": "Success", "results": {"materialId", "nodeId",
+# "totalDCs", "dcs": [{"partnerId" (matches this codebase's DC_ID format), "name",
+# "state", "district", "phone", "reasons": [...], "relatedProductsBought": [...],
+# "relatedProductsBreakdown": [{"productName", "qty", "value"}, ...], "totalQty",
+# "totalValue"}, ...]}} -- see planning/dc_card.py's _build_focus_product_match_index()
+# for a real consumer. Step 2B's response is still genuinely unconfirmed -- callers
+# should treat only that one as opaque until a real response is seen.
+
+PRODUCT_COHORT_URL = os.environ.get("PRODUCT_COHORT_URL", "https://saas-platform-service.api.dehaat.net")
+
+
+class ProductCohortNotConfigured(RuntimeError):
+    """Raised when a Product Cohort API call is attempted but PRODUCT_COHORT_SESSION /
+    PRODUCT_COHORT_GO_ADMIN_SESSION are unset -- this agent never signs in on its own to
+    obtain them (see the section docstring above)."""
+
+
+class ProductCohortClient:
+    """Thin wrapper over the confirmed /sps/v1/fp/focus-product/* endpoints. Every method
+    maps 1:1 to one request in the Postman collection; none of them guess at a payload
+    shape beyond what that collection's saved sample bodies show."""
+
+    # Same backoff schedule as Redshift's retry (REDSHIFT_RETRY_BACKOFF_SECONDS) -- this
+    # is the newest live external dependency in the pipeline and, unlike every other live
+    # client here, previously had zero resilience to a transient network blip: one failed
+    # call meant the whole Step (2A/2B/3) failed for that run.
+    RETRY_BACKOFF_SECONDS = [2, 6]
+
+    def __init__(self, base_url: Optional[str] = None, session_token: Optional[str] = None, go_admin_session: Optional[str] = None):
+        self.base_url = (base_url or PRODUCT_COHORT_URL).rstrip("/")
+        self.session_token = session_token or os.environ.get("PRODUCT_COHORT_SESSION", "")
+        self.go_admin_session = go_admin_session or os.environ.get("PRODUCT_COHORT_GO_ADMIN_SESSION", "")
+        # Reused across every call this client instance makes (Steps 2A/2B/3 in one
+        # get_focus_product_campaign_targets() run) -- pools the TCP/TLS connection
+        # instead of paying full handshake cost on each of up to 4 sequential requests.
+        self._session = requests.Session() if requests is not None else None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.session_token and self.go_admin_session and requests is not None)
+
+    def _request(self, method: str, path: str, params: Optional[Dict[str, Any]] = None, json_body: Optional[Dict[str, Any]] = None) -> Any:
+        if not self.configured:
+            reason = "requests not installed" if requests is None else "PRODUCT_COHORT_SESSION/PRODUCT_COHORT_GO_ADMIN_SESSION not set"
+            raise ProductCohortNotConfigured(f"Product Cohort source unavailable ({reason}) -- see Product _cohort/PRODUCT_COHORT_AUTH.md for how to obtain a session yourself; this agent will not sign in on your behalf")
+        url = f"{self.base_url}{path}"
+        headers = {
+            "Content-Type": "application/json",
+            "X-FP-Session": self.session_token,
+            "Cookie": f"go_admin_session={self.go_admin_session}",
+        }
+        last_error: Optional[Exception] = None
+        for attempt, delay in enumerate([0] + self.RETRY_BACKOFF_SECONDS):
+            if delay:
+                logger.warning("Product Cohort request to %s failed (attempt %d), retrying in %ds: %s", path, attempt, delay, last_error)
+                time.sleep(delay)
+            try:
+                resp = self._session.request(method, url, headers=headers, params=params, json=json_body, timeout=60)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError as e:
+                # A 4xx (bad/expired session, bad request) will fail identically on
+                # retry -- only a 5xx (server-side, plausibly transient) is worth it.
+                if e.response is not None and e.response.status_code < 500:
+                    raise
+                last_error = e
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                last_error = e
+        raise last_error
+
+    # -- Step 1: filter options --------------------------------------------------------
+    def get_options(self) -> Any:
+        """States + categories (Postman: 'Options root')."""
+        return self._request("GET", "/sps/v1/fp/focus-product/options")
+
+    def get_nodes(self, state_id: str) -> Any:
+        return self._request("GET", "/sps/v1/fp/focus-product/options/nodes", params={"stateId": state_id})
+
+    def get_sub_categories(self, category_id: str) -> Any:
+        return self._request("GET", "/sps/v1/fp/focus-product/options/sub-categories", params={"categoryId": category_id})
+
+    def get_products(self, category_id: str, sub_category_id: Optional[str] = None, search: Optional[str] = None) -> Any:
+        params: Dict[str, Any] = {"categoryId": category_id}
+        if sub_category_id is not None:
+            params["subCategoryId"] = sub_category_id
+        if search is not None:
+            params["search"] = search
+        return self._request("GET", "/sps/v1/fp/focus-product/options/products", params=params)
+
+    def save_filter_selection(self, selection: Dict[str, Any]) -> Any:
+        """selection shape per the Postman sample: stateId, nodeId, categoryId,
+        categoryName, subCategoryId, subCategoryName, materialId, productName."""
+        return self._request("POST", "/sps/v1/fp/focus-product/filter-selections", json_body=selection)
+
+    def list_filter_selections(self) -> Any:
+        return self._request("GET", "/sps/v1/fp/focus-product/filter-selections")
+
+    # -- Step 2A: historical purchase pattern --------------------------------------------
+    def get_ib_weekly_sales(self, material_id: str, node_id: str, years: int = 4) -> Any:
+        return self._request("GET", "/sps/v1/fp/focus-product/analysis/ib-weekly-sales", params={"materialId": material_id, "nodeId": node_id, "years": years})
+
+    def get_ib_raw_records(self, material_id: str, node_id: str, years: int = 4) -> Any:
+        return self._request("GET", "/sps/v1/fp/focus-product/analysis/ib-raw-records", params={"materialId": material_id, "nodeId": node_id, "years": years})
+
+    # -- Step 2B: LLM-inferred crop-seasonality read -------------------------------------
+    def step2b_crop_seasonality(
+        self, node_id: str, material_id: str,
+        outer_from_week: int, outer_to_week: int,
+        buildup_from_week: int, buildup_to_week: int,
+        peak_week: int, closure_from_week: int, closure_to_week: int,
+    ) -> Any:
+        """Field names/ordering match the Postman sample body exactly. NOTE (genuinely
+        unconfirmed, flag rather than assume): the sample body has buildup/peak/closure
+        weeks as INPUT even though the collection describes Step 2B as producing an
+        'LLM-inferred' read of those same three windows -- whether they're a prior the
+        LLM refines, or the caller is expected to already know them, isn't answered
+        anywhere in the saved collection (response schema is empty). Callers should treat
+        whatever they pass here as a best-guess seed, not a confirmed methodology."""
+        body = {
+            "nodeId": node_id, "materialId": material_id,
+            "outerFromWeek": outer_from_week, "outerToWeek": outer_to_week,
+            "buildupFromWeek": buildup_from_week, "buildupToWeek": buildup_to_week,
+            "peakWeek": peak_week,
+            "closureFromWeek": closure_from_week, "closureToWeek": closure_to_week,
+        }
+        return self._request("POST", "/sps/v1/fp/focus-product/analysis/step2b", json_body=body)
+
+    # -- Step 3: target DC cohort --------------------------------------------------------
+    def step3_dc_cohort(self, material_id: str, node_id: str, crop_districts: List[str], related_product_names: List[str]) -> Any:
+        """crop_districts/related_product_names: same genuinely-unconfirmed situation as
+        Step 2B's seed weeks -- the Postman sample hardcodes them rather than showing
+        where they come from (Step 2A/2B output? a separate lookup?). Passed through
+        as-given, not derived here."""
+        body = {"materialId": material_id, "nodeId": node_id, "cropDistricts": crop_districts, "relatedProductNames": related_product_names}
+        return self._request("POST", "/sps/v1/fp/focus-product/analysis/step3-cohort", json_body=body)
 
 
 # =====================================================================================
@@ -616,6 +795,47 @@ class BusinessConstants:
     # 8.12 bundling weights reuse 7.2's rank1/2/3 weights (0.40/0.35/0.25) applied per-DC
     # instead of per-SE-objective, per Layer 3 of the new formula.
     fm_min_meetings_per_month: int = 2  # 5.3/8.11 -- no live Farmer_Meetings source yet
+
+
+# Param_Key -> (BusinessConstants attribute, regex to pull the expected number out of the
+# cell, caster). A deliberately small, hand-picked subset: only keys whose Configured_Value
+# cell contains exactly one number tied to that single constant, so a mismatch is a
+# trustworthy signal rather than parser noise. Most Source 5 cells are free-text/multi-value
+# formulas (8.5, 8.7, 4.4, ...) -- extracting those reliably would risk manufacturing false
+# "drift" flags, which is worse than the silent gap this replaces.
+CONFIG_DRIFT_CHECKS: List[Tuple[str, str, str, Any]] = [
+    ("6.2", "min_days_since_last_visit", r"(\d+)\s*days?", int),
+    ("8.9", "monthly_travel_cap_km", r"([\d,]+)\s*km", lambda s: float(s.replace(",", ""))),
+    ("8.10", "max_daily_tasks", r"(\d+)\s*tasks?", int),
+]
+
+
+def check_business_constants_against_config(constants: "BusinessConstants", config_rows: Table, exc: Exceptions) -> None:
+    """Cross-checks the CONFIG_DRIFT_CHECKS subset of BusinessConstants against the live
+    Source 5 CSV. BusinessConstants's own docstring claims it "mirrors" Source 5 and should
+    be "re-derived if the sheet changes" -- nothing previously verified that; a business
+    change in the sheet had no way to surface itself before a human happened to notice.
+    Flags Config_Drift when the sheet and the hardcoded value disagree."""
+    config_index = {r["Param_Key"]: r["Configured_Value"] for r in config_rows}
+    for param_key, attr, pattern, cast in CONFIG_DRIFT_CHECKS:
+        cell = config_index.get(param_key)
+        if not cell:
+            exc.flag(param_key, "Source5", "Config_Drift_Check_Unavailable", f"No Configured_Value found for {param_key} to check {attr} against")
+            continue
+        match = re.search(pattern, str(cell))
+        if not match:
+            exc.flag(param_key, "Source5", "Config_Drift_Check_Unparseable", f"Could not extract a number matching {pattern!r} from {attr}'s Configured_Value: {cell!r}")
+            continue
+        try:
+            sheet_value = cast(match.group(1))
+        except ValueError:
+            exc.flag(param_key, "Source5", "Config_Drift_Check_Unparseable", f"Extracted text {match.group(1)!r} for {attr} is not a valid number")
+            continue
+        code_value = getattr(constants, attr)
+        if sheet_value != code_value:
+            exc.flag(param_key, "Source5", "Config_Drift", f"{attr}={code_value!r} hardcoded in BusinessConstants but Source 5 now says {sheet_value!r} (cell: {cell!r})")
+        else:
+            exc.ok("Config_Drift")
 
 
 def load_config(
@@ -1130,6 +1350,23 @@ WHERE {_lookback_clause('check_in_time')}
 """
 
 SQL_ACTIVE_ROSTER_4 = f"""
+-- Dedup CTEs, confirmed necessary live 2026-08-14: both attendance_attendance (138 real
+-- (user_id, date) groups with >1 row in a 90-day window) and task_management_taskdetails
+-- (53 real task_id groups with >1 row) can have more than one row per join key, which
+-- silently fanned a single task_management_task row out into multiple output rows --
+-- ~580 of the ~10,675 Duplicate_Visit flags in a typical run were this artifact, not
+-- genuine duplicate visits (confirmed by sampling: same task_id, same visit_check_in_time,
+-- only punch_in_time differed -- i.e. the SAME task joined against two different
+-- attendance rows). ROW_NUMBER() picks a single deterministic row per key (earliest) so
+-- each task_management_task row can only ever produce exactly one output row here.
+WITH attendance_dedup AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY user_id, check_in_time::date ORDER BY check_in_time ASC) AS rn
+    FROM attendance_attendance
+),
+taskdetails_dedup AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at ASC) AS rn
+    FROM task_management_taskdetails
+)
 SELECT
     t.id AS task_id, p.user_id AS se_user_id, u.is_active AS se_is_active,
     cc.partner_id AS dc_id, cc.active AS dc_active,  -- cc.id is the internal PK, NOT sap_partner_id -- confirmed live 2026-08-04
@@ -1144,8 +1381,8 @@ FROM task_management_task t
 JOIN task_management_plan p ON p.id = t.plan_id
 JOIN users_user u ON u.id = p.user_id
 LEFT JOIN customer_management_customer cc ON cc.id = t.partner_id
-LEFT JOIN attendance_attendance a ON a.user_id = p.user_id AND a.check_in_time::date = p.plan_execution_date
-LEFT JOIN task_management_taskdetails td ON td.task_id = t.id
+LEFT JOIN attendance_dedup a ON a.user_id = p.user_id AND a.check_in_time::date = p.plan_execution_date AND a.rn = 1
+LEFT JOIN taskdetails_dedup td ON td.task_id = t.id AND td.rn = 1
 WHERE {_lookback_clause('p.plan_execution_date')}
 """
 
@@ -1263,11 +1500,19 @@ FROM dc_club_slabs
 # an honest OVER-estimate against the full T&C definition, flagged as such in
 # normalize_dc_club() (Club_Turnover_Partial_Exclusion), not silently treated as exact --
 # per GR-24 (a confirmed, DC-joinable source is not a confirmed formula).
-SQL_DC_CLUB_QUALIFYING_TURNOVER_3G = """
+# Scheme's own confirmed calendar-year validity (Terms & Conditions item 1). Named here,
+# not just inlined in the SQL below, so dc_club_scheme_window_expired() can't drift out of
+# sync with the query's WHERE clause -- once DC_CLUB_SCHEME_WINDOW_END passes, the query
+# below silently returns zero rows for every DC; that check makes the rollover visible via
+# the Exceptions system instead of every Qualifying_Turnover just quietly going to None.
+DC_CLUB_SCHEME_WINDOW_START = "2026-01-01"
+DC_CLUB_SCHEME_WINDOW_END = "2027-01-01"  # exclusive upper bound
+
+SQL_DC_CLUB_QUALIFYING_TURNOVER_3G = f"""
 SELECT partner_id AS dc_id, SUM(order_value) AS qualifying_turnover
 FROM coupon_analysis
 WHERE status = 'confirmed'
-  AND created_at >= '2026-01-01' AND created_at < '2027-01-01'
+  AND created_at >= '{DC_CLUB_SCHEME_WINDOW_START}' AND created_at < '{DC_CLUB_SCHEME_WINDOW_END}'
   AND NOT (
         (product_category = 'Crop Nutrition' AND product_sub_category = 'WSF')
      OR (product_category = 'Tools & Machinery')
@@ -1275,6 +1520,12 @@ WHERE status = 'confirmed'
   )
 GROUP BY partner_id
 """
+
+
+def dc_club_scheme_window_expired(as_of_date: str) -> bool:
+    """True once as_of_date has moved past the DC Club scheme's confirmed calendar-year
+    validity window -- see DC_CLUB_SCHEME_WINDOW_START/END above."""
+    return as_of_date >= DC_CLUB_SCHEME_WINDOW_END
 
 
 def load_live_sources(client: MetabaseClient) -> Tuple[Dict[str, Table], Exceptions]:
@@ -1370,14 +1621,24 @@ def normalize_visits(active_roster: Table, task_nodes: Table, config_index: Dict
         dc_id = normalize_id(row.get("dc_id"))
         if vtype == 1 and dc_id is None:
             exc.flag(row.get("task_id"), "Source3b", "Null_Partner_Anomaly", "DC Visit with null partner_id")
-        elif vtype in NO_PARTNER_TYPES and dc_id is not None:
-            exc.ok("Null_Partner_By_Visit_Type")
+        elif vtype in NO_PARTNER_TYPES:
+            if dc_id is not None:
+                exc.flag(row.get("task_id"), "Source3b", "Null_Partner_By_Visit_Type", "non-DC visit type carries a partner_id")
+            else:
+                exc.ok("Null_Partner_By_Visit_Type")
 
         check_in = row.get("visit_check_in_time")
         se_id = row.get("se_user_id")
         date = standardize_date(row.get("plan_execution_date"))
         key = (se_id, dc_id, date)
-        if key in seen_keys:
+        if dc_id is None:
+            # NO_PARTNER_TYPES (External Meeting/Node/Lead Gen) legitimately have no
+            # dc_id -- an SE can log several of these on the same day, so the
+            # (se_id, dc_id, date) key would collide on every one of them and flag
+            # correct, routine visits as duplicates. Only DC-tied visits can be real
+            # duplicates under this key.
+            exc.ok("Duplicate_Visit")
+        elif key in seen_keys:
             exc.flag(key, "Source3b", "Duplicate_Visit", "Repeated (SE_ID, DC_ID, Date) in Visits")
         else:
             seen_keys.add(key)
@@ -1877,11 +2138,20 @@ def resolve_dynamic_parameters(
     constants = constants or BusinessConstants()
     resolved: Dict[str, Any] = {}
 
-    # 1.3 PL growth requirement -- from live AOP growth assumption for the territory/quarter
+    # 1.3 PL growth requirement -- Source 5 (1.3): "not a fixed number -- require x%
+    # growth tied to the AOP target." AOP_Target_Normalized (Source 6) carries the AOP
+    # target side (GMV_AOP_Month_*/Q2 per node/material) but nothing in this pipeline
+    # carries the matching actual/current GMV needed to compute a real growth ratio
+    # against it, so x% cannot be derived here -- Config_Ambiguous (GR-20/GR-21: flag,
+    # don't guess), not silently dropped like a lookup that just found nothing.
     aop_growth = next((a for a in aop_targets if a.get("Metric")), None)
     resolved["1.3_pl_growth_requirement"] = {
         "value": None,
-        "basis": "AOP_Target_Normalized (Source 6, Provisional)" if aop_growth else "no AOP data available",
+        "basis": (
+            "Config_Ambiguous -- AOP_Target_Normalized (Source 6, Provisional) has AOP targets but no actual/current GMV to compute growth % against"
+            if aop_growth else
+            "Config_Ambiguous -- no AOP data available to compute growth %"
+        ),
     }
 
     # 2.3 Effort target -- multiplier from SE's trailing 3-month visit trend, once mapping is clean
@@ -1907,11 +2177,10 @@ def resolve_dynamic_parameters(
     # Candidate_DCs pool (8.12), per GR-25 -- scored and available, not selection-driving.
     resolved["4.5_bo4_grade_cutoffs"] = {"basis": "Confirmed Default -- reusing BO1's grade bands (Source 5 never enumerated real BO4 numbers)"}
 
-    # 6.1 Excluded DC statuses -- outlier supply-chain cost relative to route/cluster
-    scores_by_node = defaultdict(list)
-    for dc in dc_master:
-        if dc.get("NRV_FY2526"):
-            scores_by_node[dc.get("Node")].append(dc["NRV_FY2526"])
+    # 6.1 Excluded DC statuses -- outlier supply-chain cost relative to route/cluster.
+    # No live outlier-vs-median computation is wired to this rule yet -- stated as a
+    # policy description only (same treatment as the 2.4/6.4/8.8 rule-text entries
+    # below), not backed by a per-node NRV computation that nothing here consumes.
     resolved["6.1_excluded_dc_statuses"] = {"basis": "Inactive/closed status + supply-chain cost outlier vs route/cluster median"}
 
     # 6.4 Full block conditions -- Legal_Hold always blocks; Credit_Blocked/Blacklisted case-by-case
@@ -1993,9 +2262,11 @@ class DailyTaskRow:
     Last_Payment_Date: Optional[str]
     YTD_Private_Label: Optional[float]
     DC_Club_Participation: str
-    # Not printed columns, kept for traceability/safety -- Objective is which BO drove
-    # this DC's inclusion (a DC selected under multiple objectives appears once, tagged
-    # with the highest-ranked one, per the new one-row-per-DC shape).
+    # Not printed columns, kept for traceability/safety -- Objective is which BO(s) drove
+    # this DC's inclusion. A DC selected under multiple objectives appears once, tagged
+    # with ALL of its matched objectives, comma-joined (see the Objective=",".join(matched)
+    # call site) -- not just the highest-ranked one. Downstream consumers already split on
+    # comma (see objectives_used below).
     Objective: str = ""
     No_New_Orders: bool = False
     Credit_On_Hold: bool = False
@@ -2013,6 +2284,21 @@ class DailyTaskRow:
     # own 3.2 aging-bucket concept (0-30/31-60/61-90/90+ collapses to what's actually
     # available: current-month / 1-90 days / 90+ days).
     Overdue_Aging_Bucket: Optional[str] = None
+    # dc_datamart.weighted_avg_repayment_days -- a real, live, per-DC figure (already
+    # pulled into dc_financials, see SQL_OUTSTANDING_3D), just not previously surfaced
+    # here. A single DC-wide average across the whole outstanding balance, NOT a
+    # per-bucket day count -- dc_datamart has no field that splits days-overdue by the
+    # 0-90/90+ amount buckets (see Overdue_Aging_Bucket's docstring on why that doesn't
+    # exist), so this is the one honest days-overdue figure available, not two.
+    Avg_Repayment_Days: Optional[float] = None
+    # Confirmed 2026-08-18 -- True when any of: this (SE, DC) pair has a live
+    # DCVisitStreak.consecutive_misses >= DCVisitStreak.ESCALATION_THRESHOLD (chronic
+    # non-execution, same threshold reconcile_outcomes' own escalation note uses),
+    # Overdue_Aging_Bucket == "90+ days" (real overdue balance aged past 90 days), or
+    # Credit_On_Hold is True. A cross-cutting "cover this one first" signal, not a new
+    # objective -- doesn't affect Priority_Score/ranking, purely informational.
+    Critical: bool = False
+    Critical_Reasons: str = ""
 
 
 def haversine_km(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
@@ -2211,6 +2497,46 @@ def _two_opt(order: List[Dict[str, Any]], origin: Tuple[float, float], avg_speed
     return best
 
 
+def _or_opt(order: List[Dict[str, Any]], origin: Tuple[float, float], avg_speed_kmph: float, max_segment: int = 3) -> List[Dict[str, Any]]:
+    """R4.2 specifies "2-opt/Or-opt local-search improvement" -- only 2-opt (edge-swaps,
+    see _two_opt above) was implemented; this is the missing half. Or-opt relocates a
+    short contiguous segment (length 1-3) to a different position in the route, keeping
+    the move only if it strictly reduces total distance -- catches improvements 2-opt's
+    pure edge-reversal can't reach (e.g. a single out-of-place stop that needs moving,
+    not reversing). Run after _two_opt in both Model 2 and Model 3, same "polish the
+    construction heuristic" role, a different neighborhood of moves. No special-cased
+    skip for "reinserting at the original spot" -- that candidate's distance always
+    equals best_dist exactly, so the strict-improvement check already excludes it."""
+    if len(order) < 3:
+        return order
+
+    def _tour_distance(seq: List[Dict[str, Any]]) -> float:
+        return _route_metrics(seq, origin, avg_speed_kmph)["total_distance_km"]
+
+    best = list(order)
+    best_dist = _tour_distance(best)
+    improved = True
+    while improved:
+        improved = False
+        n = len(best)
+        for seg_len in range(1, min(max_segment, n - 1) + 1):
+            for i in range(n - seg_len + 1):
+                segment = best[i : i + seg_len]
+                remainder = best[:i] + best[i + seg_len :]
+                for j in range(len(remainder) + 1):
+                    candidate = remainder[:j] + segment + remainder[j:]
+                    dist = _tour_distance(candidate)
+                    if dist < best_dist - 1e-9:
+                        best, best_dist = candidate, dist
+                        improved = True
+                        break
+                if improved:
+                    break
+            if improved:
+                break
+    return best
+
+
 def build_route_priority_max(
     candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
     avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
@@ -2295,7 +2621,15 @@ def build_route_priority_max(
 
     search_params = pywrapcp.DefaultRoutingSearchParameters()
     search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    search_params.time_limit.FromSeconds(5)
+    # GR-R9 requires Models 1-3 to always produce the same 3 plans for a fixed candidate
+    # pool/date snapshot -- a wall-clock time_limit is machine-load-dependent, so local
+    # search can be cut off at a different point on a re-run under contention.
+    # solution_limit instead bounds the search by a deterministic COUNT of solutions
+    # explored, reached almost instantly given the tiny problem size here (<=5 stops +
+    # depot, R1_7_MAX_STOPS). time_limit is kept only as a generous safety net against a
+    # genuinely pathological case, not as what normally governs termination.
+    search_params.solution_limit = 200
+    search_params.time_limit.FromSeconds(30)
 
     solution = routing.SolveWithParameters(search_params)
     if solution is None:
@@ -2358,32 +2692,50 @@ def build_route_distance_min(
 
     best_metrics = None
     best_k = 0
+    computed_by_k: Dict[int, Dict[str, Any]] = {}
     for k in range(max_k, 0, -1):
         top_k = by_priority[:k]
-        order = _two_opt(_greedy_nearest_neighbor(top_k, origin), origin, avg_speed_kmph)
+        order = _or_opt(_two_opt(_greedy_nearest_neighbor(top_k, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
         metrics = _route_metrics(order, origin, avg_speed_kmph)
+        computed_by_k[k] = metrics
         if _within_caps(metrics):
             best_metrics, best_k = metrics, k
             break
 
-    if best_metrics is None:
-        # No K reaches the 180-min floor (or some K blows the 420-min total) -- fail
-        # safe with the FULLEST attempt (max_k, all available candidates) shown anyway,
-        # per GR-R5, rather than an empty plan with no explanation. Under a floor (not a
-        # ceiling), more stops means more cumulative travel, so max_k is the closest
-        # this construction can get -- the opposite of the old ceiling-era fallback,
-        # which showed the smallest (K=1) attempt instead.
-        if by_priority:
-            order = _two_opt(_greedy_nearest_neighbor(by_priority[:max_k], origin), origin, avg_speed_kmph)
-            best_metrics = _route_metrics(order, origin, avg_speed_kmph)
-            best_k = max_k
+    if best_metrics is None and by_priority:
+        # No K satisfied both R1.2's >=180-min floor and R1.1's <=420-min total cap
+        # together. These need DIFFERENT fallbacks -- picking "more stops" (max_k)
+        # unconditionally, as before, helps only a floor shortfall (more stops -> more
+        # cumulative travel, closer to 180) and actively makes a cap breach WORSE (more
+        # stops -> more total time, further past 420). GR-R3's cap is a hard "no bypass"
+        # (Plan rejected/re-solved, marked Infeasible), unlike R1.2's floor, which GR-R5
+        # explicitly says to fail-safe and show anyway -- so only ever fall back to a K
+        # that actually respects the 420-min cap; if none does, show no route at all
+        # rather than one that breaches it.
+        under_cap_ks = [k for k, m in computed_by_k.items() if (m["total_travel_min"] + m["total_visit_min"]) <= R1_1_FIELD_MINUTES_CAP]
+        if under_cap_ks:
+            best_k = max(under_cap_ks)
+            best_metrics = computed_by_k[best_k]
             feasible = False
-            reason = "Travel_Floor_Not_Met: even using every available candidate, this route falls short of the 180-min travel floor (or exceeds the 420-min total) -- shown as best available (GR-R5)"
+            reason = (
+                f"Travel_Floor_Not_Met: even using the largest cap-respecting candidate set (K={best_k} of {max_k}), "
+                "this route falls short of the 180-min travel floor -- shown as best available (GR-R5)"
+            )
         else:
+            # Not even K=1 stays inside the 420-min hard cap -- GR-R3 has no bypass, so
+            # this is a genuine Infeasible, not a "show the fullest attempt anyway."
+            selected_ids: set = set()
+            dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords]
             return {
                 "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
-                "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True, "infeasibility_reason": "",
+                "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
+                "infeasibility_reason": "Field_Time_Cap_Exceeded: even a single-stop route exceeds the 420-min field-time cap (GR-R3, hard, no bypass) -- no route shown",
             }
+    elif best_metrics is None:
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True, "infeasibility_reason": "",
+        }
     else:
         feasible, reason = True, ""
 
@@ -2492,7 +2844,7 @@ def build_route_balanced(
     raw = []  # (k, metrics, feasible)
     for k in range(1, max_k + 1):
         top_k = by_priority[:k]
-        order = _two_opt(_clarke_wright_order(top_k, origin), origin, avg_speed_kmph)
+        order = _or_opt(_two_opt(_clarke_wright_order(top_k, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
         metrics = _route_metrics(order, origin, avg_speed_kmph)
         raw.append((k, metrics, _within_caps(metrics)))
 
@@ -2512,6 +2864,7 @@ def build_route_balanced(
         return {
             "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
             "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True, "infeasibility_reason": "",
+            "alpha_used": round(alpha, 3),
         }
 
     feasible_options = [e for e in evaluated if e[3]]
@@ -2519,13 +2872,25 @@ def build_route_balanced(
         blended, best_k, best_metrics, feasible = max(feasible_options, key=lambda e: e[0])
         reason = ""
     else:
-        # Nothing reaches the 180-min floor (or something blows the 420-min total) --
-        # fail safe with whichever evaluated K got CLOSEST to the floor (highest travel
-        # time), not the best blended score -- under a floor, more travel is closer to
-        # feasible, and the blended score's own efficiency term would otherwise favor
-        # showing the LEAST-travelled (least helpful) option here. Per GR-R5.
-        blended, best_k, best_metrics, feasible = max(evaluated, key=lambda e: e[2]["total_travel_min"])
-        reason = "Travel_Floor_Not_Met: no candidate set reaches the 180-min travel floor (or stays under the 420-min total) -- shown as best available (GR-R5)"
+        # Nothing reaches R1.2's >=180-min floor together with R1.1's <=420-min total
+        # cap. These need DIFFERENT fallbacks -- picking whichever K got closest to the
+        # floor (highest travel time) unconditionally, as before, actively picks a WORSE
+        # option when the real problem is a cap breach (more travel -> further past 420,
+        # not closer to feasible). GR-R3's cap is hard/"no bypass" (Infeasible, not
+        # shown), unlike R1.2's floor, which GR-R5 says to fail-safe and show anyway --
+        # so only ever fall back to a K that respects the 420-min cap.
+        under_cap = [e for e in evaluated if (e[2]["total_travel_min"] + e[2]["total_visit_min"]) <= R1_1_FIELD_MINUTES_CAP]
+        if under_cap:
+            blended, best_k, best_metrics, feasible = max(under_cap, key=lambda e: e[2]["total_travel_min"])
+            reason = f"Travel_Floor_Not_Met: no cap-respecting candidate set reaches the 180-min travel floor -- shown is the closest (K={best_k} of {max_k}), per GR-R5"
+        else:
+            dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords]
+            return {
+                "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+                "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
+                "infeasibility_reason": "Field_Time_Cap_Exceeded: even K=1 exceeds the 420-min field-time cap (GR-R3, hard, no bypass) -- no route shown",
+                "alpha_used": round(alpha, 3),
+            }
 
     selected_ids = {c["dc"]["DC_ID"] for c in by_priority[:best_k]}
     dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords if c["dc"]["DC_ID"] not in selected_ids]
@@ -2557,6 +2922,7 @@ def generate_se_daily_plan(
     farmer_meeting_scheduled_today: bool = False,
     dc_bo_scores: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     route_selector: Optional[Callable[..., Dict[str, Any]]] = None,
+    consecutive_misses_by_dc: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """Section 6 process flow + Section 7/8/10: rank objectives, respect capacity/travel
     caps, apply the confirmed tie-break/override rules, and shape the output exactly as
@@ -2588,6 +2954,7 @@ def generate_se_daily_plan(
     dc_club_by_id = dc_club_by_id or {}
     ytd_pl_by_dc = ytd_pl_by_dc or {}
     dc_bo_scores = dc_bo_scores or {}
+    consecutive_misses_by_dc = consecutive_misses_by_dc or {}
     header = {
         "SE_ID": se_id, "SE_Name": se_name, "Plan_Date": plan_date,
         "Total_Capacity_Minutes": constants.total_capacity_min,
@@ -2741,9 +3108,26 @@ def generate_se_daily_plan(
     # objective, same honest-degrade signal the old engine used, just applied per-DC.
     weights = (constants.rank1_weight, constants.rank2_weight, constants.rank3_weight)
     pool: List[Tuple[Dict[str, Any], List[str], float]] = []
+    # Recorded for every in-scope DC that fails ALL 3 qualifiers -- discarded below
+    # (never attached to the returned plan) unless ranked_pool ends up completely empty,
+    # in which case this is exactly the detail behind the generic "No in-scope DC
+    # qualified for any objective this run" skip reason (see Skipped_Qualification_Detail
+    # in the return dict, and planning.services' skipped_ses handling). Free to compute
+    # either way -- it's the same QUALIFIERS check already running per DC, just kept
+    # instead of discarded.
+    unqualified_detail: List[Dict[str, Any]] = []
     for dc in ranked_dcs:
         matched = [obj for obj, fn in QUALIFIERS.items() if fn(dc)]
         if not matched:
+            d = dc.get("Days_Since_Last_Visit")
+            outstanding = dc_financials.get(dc["DC_ID"], {}).get("Current_Outstanding")
+            pl_grade = dc_bo_scores.get(dc["DC_ID"], {}).get("PL", {}).get("grade")
+            unqualified_detail.append({
+                "DC_ID": dc["DC_ID"], "DC_Name": dc.get("DC_Name"),
+                "Visits": f"last visit {d}d ago (need >{constants.qualify_visits_days_since}d/never)",
+                "Outstanding": f"balance={outstanding!r} (need >={constants.qualify_outstanding_balance:,.0f})",
+                "PL": f"grade={pl_grade!r} (need C/D)",
+            })
             continue
         # Prefer a real per-DC grade (dc_bo_scores) over the SE-level proxy when one is
         # supplied -- e.g. score_bo3_outstanding_live_proxy() gives Outstanding a real,
@@ -2794,6 +3178,23 @@ def generate_se_daily_plan(
             overdue_aging = "1-90 days"
         else:
             overdue_aging = "Current month"
+        # Same gate as overdue_aging above, same reason: Weighted_Avg_Repayment_Days is
+        # an average across the whole outstanding balance, not specifically the overdue
+        # portion -- showing a days figure next to a genuine Rs0 overdue amount would be
+        # just as self-contradictory as an aging-bucket label would be there.
+        avg_repayment_days = fin.get("Weighted_Avg_Repayment_Days") if (current_overdue and current_overdue > 0) else None
+
+        # Confirmed 2026-08-18 -- cross-cutting "cover this one first" signal, computed
+        # from data already gathered above (no new query): chronic miss escalation,
+        # 90+ day aged overdue, or credit-on-hold. See DailyTaskRow.Critical docstring.
+        misses = consecutive_misses_by_dc.get(dc_id, 0)
+        critical_reasons = []
+        if misses >= DC_VISIT_ESCALATION_THRESHOLD:
+            critical_reasons.append(f"Escalated -- missed {misses}x running")
+        if overdue_aging == "90+ days":
+            critical_reasons.append(f"₹{current_overdue:,.0f} overdue 90+ days")
+        if credit_on_hold:
+            critical_reasons.append("Credit on hold")
 
         # 8.12 bundling: one visit-task covers every matched objective for this DC.
         purpose = " + ".join(dict.fromkeys(PURPOSE_BY_OBJECTIVE.get(o, o) for o in matched))
@@ -2818,6 +3219,9 @@ def generate_se_daily_plan(
             Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,
             Last_Payment_Join_Key_Unconfirmed=False,
             Overdue_Aging_Bucket=overdue_aging,
+            Avg_Repayment_Days=avg_repayment_days,
+            Critical=bool(critical_reasons),
+            Critical_Reasons="; ".join(critical_reasons),
         )
 
     if route_selector is None:
@@ -2874,10 +3278,15 @@ def generate_se_daily_plan(
         credit_blocked_count = sum(1 for r in sequenced if r.Credit_On_Hold)
 
     # GR-14 -- independent second-pass exclusion check (redundant with
-    # apply_dc_exclusion_rules() upstream by design, not treated as a duplicate).
+    # apply_dc_exclusion_rules() upstream by design, not treated as a duplicate). Legal
+    # Hold is only ever recorded as DC_Status == "Legal_Hold" (see apply_dc_exclusion_
+    # rules()'s `legal_hold = dc.get("DC_Status") == "Legal_Hold"`) -- no dc dict ever
+    # carries a separate "Legal_Hold" key, so checking .get("Legal_Hold") here always
+    # returned None/False and silently never caught anything; this half of the
+    # redundant check was dead since it was written.
     gr14_violations = [
         r.DC_ID for r in sequenced
-        if dc_by_id.get(r.DC_ID, {}).get("DC_Status") in ("Inactive", "Closed") or dc_by_id.get(r.DC_ID, {}).get("Legal_Hold")
+        if dc_by_id.get(r.DC_ID, {}).get("DC_Status") in ("Inactive", "Closed", "Legal_Hold")
     ]
 
     objectives_used = sorted(
@@ -2889,6 +3298,12 @@ def generate_se_daily_plan(
         **header,
         "Ranked_Objectives": objectives_used,
         "Tasks": [r.__dict__ for r in sequenced],
+        # Only present when ranked_pool ended up completely empty (every in-scope DC
+        # failed all 3 qualifiers) -- the detail behind the generic "No in-scope DC
+        # qualified for any objective this run" skip reason. planning.services folds
+        # this into skipped_ses alongside the separate Not_In_Scope tier (DCs excluded
+        # before ever reaching this function at all -- see apply_dc_exclusion_rules()).
+        "Skipped_Qualification_Detail": unqualified_detail if (not ranked_pool and unqualified_detail) else None,
         "Capacity_Check": {
             "Call_Minutes_Used": call_minutes_used, "Call_Minutes_Budget": constants.call_minutes_per_day,
             "Field_Minutes_Used": field_minutes_used, "Field_Minutes_Budget": constants.field_minutes_per_day,
@@ -2905,7 +3320,22 @@ def generate_se_daily_plan(
             "Credit_Blocked_Basis": "sale_orderrequest.credit_on_hold (Source 3d, confirmed queryable) -- flagged per 6.4, not auto-blocked" if dc_financials else "not evaluated -- dc_financials not supplied this run",
             "GR_14_Second_Pass_Violations": gr14_violations,
             "Qualify_Outstanding_Days_Overdue_Leg": "not enforced -- no confirmed per-DC days-overdue field in dc_datamart; balance-only qualification applied (see Layer 2 docstring)",
-            "Qualify_PL_Order_Count": "not enforced -- coupon_analysis has no confirmed DC-level join key; PL objective never qualifies a DC into Candidate_DCs until that's resolved",
+            # The literal '<3 PL orders in 30 days' (8.5) is never enforced either way --
+            # coupon_analysis has no confirmed DC-level join key. What DOES vary is whether
+            # this call's dc_bo_scores carries a real per-DC PL grade (planning/services.py
+            # wires this in for every Django-generated plan; the bare CLI run_pipeline()
+            # path never does) -- _qualify_pl() uses that live grade C/D as a proxy
+            # whenever it's present, so the flag must say which case this run actually is,
+            # not a single static claim that was only ever true for the CLI path.
+            "Qualify_PL_Order_Count": (
+                "literal order-count rule not enforced (no confirmed DC-level join key) -- live proxy applied instead: "
+                "a DC qualifies for PL when its live PL_Ratio grade is C or D (see _qualify_pl docstring)"
+                if any((v or {}).get("PL", {}).get("grade") is not None for v in dc_bo_scores.values())
+                else
+                "not enforced -- coupon_analysis has no confirmed DC-level join key, and no per-DC PL grade "
+                "(dc_bo_scores) was supplied this run, so PL objective never qualifies a DC into Candidate_DCs "
+                "on this path (see _qualify_pl docstring)"
+            ),
         },
         "Travel": {"Sequencing_Basis": sequencing_basis, "Daily_Cap_Km": constants.daily_travel_cap_km, "Cap_Exceeded": travel_cap_warning},
         "Data_Confidence": "Live" if attendance_gate_ok is True else "Provisional_No_Attendance_Gate",
@@ -2977,6 +3407,17 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
     )
     merge(club_exc)
     dc_club_by_id = {row["DC_ID"]: row for row in dc_club}
+    if dc_club_scheme_window_expired(plan_date):
+        expiry_exc = Exceptions(run_ts)
+        expiry_exc.flag(
+            "ALL", "Source3g", "Club_Scheme_Window_Expired",
+            f"plan_date {plan_date} is past the DC Club scheme's confirmed validity window "
+            f"({DC_CLUB_SCHEME_WINDOW_START} to {DC_CLUB_SCHEME_WINDOW_END}, exclusive) -- "
+            "SQL_DC_CLUB_QUALIFYING_TURNOVER_3G now silently returns no rows; every DC's "
+            "Qualifying_Turnover/Club_Tier will read None until the scheme's next-year window "
+            "is confirmed and DC_CLUB_SCHEME_WINDOW_START/END are updated.",
+        )
+        merge(expiry_exc)
 
     liquidation_exc = Exceptions(run_ts)
     liquidation = normalize_liquidation(live["Liquidation_3d"], liquidation_exc)
@@ -2987,6 +3428,9 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
     merge(geo_check_exc)
 
     constants = BusinessConstants()
+    drift_exc = Exceptions(run_ts)
+    check_business_constants_against_config(constants, config_rows, drift_exc)
+    merge(drift_exc)
     last_visit_by_dc: Dict[str, str] = {}
     for v in visits:
         if v["DC_ID"] and v["Date"]:

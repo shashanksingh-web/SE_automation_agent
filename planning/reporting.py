@@ -23,6 +23,20 @@ def summary_lines(plan_run: PlanRun) -> List[str]:
         lines.append(f"  Skipped SEs ({len(plan_run.skipped_ses)}, 0 tasks each):")
         for s in plan_run.skipped_ses:
             lines.append(f"    - {s.get('se_email') or s.get('se_id')}: {s.get('reason')}")
+            breakdown = s.get("dc_breakdown")
+            if breakdown:
+                not_in_scope = breakdown.get("not_in_scope") or []
+                no_match = breakdown.get("in_scope_no_objective_match") or []
+                lines.append(
+                    f"        {breakdown.get('total_assigned_dcs', 0)} DC(s) assigned -- "
+                    f"{len(not_in_scope)} not in scope, {len(no_match)} in-scope but matched no objective"
+                )
+                # The in-scope-but-unmatched ones are the actionable ones -- a DC one
+                # condition away from qualifying, not a structural Rank/scope problem.
+                for dc in no_match[:3]:
+                    lines.append(f"          closest: {dc['DC_Name']} ({dc['DC_ID']}) -- {dc['Visits']} | {dc['Outstanding']} | {dc['PL']}")
+                if len(no_match) > 3:
+                    lines.append(f"          ... and {len(no_match) - 3} more (use --json or /api/planning/runs/{plan_run.id}/ to see all)")
     exc_count = plan_run.exceptions.count()
     lines.append(f"  Exceptions: {exc_count}")
     for e in plan_run.exceptions.all()[:10]:
@@ -45,6 +59,12 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     single source of truth for the outcome table -- generate_se_plan --table and
     activate_tuff both render through this function.
 
+    Critical column added 2026-08-18, placed right after Sr so it's visible without
+    scrolling right -- non-empty (the specific reason(s): chronic miss escalation, 90+
+    day aged overdue, or credit-on-hold) marks a task as "cover this one first," per
+    DailyTaskRow.Critical. Empty for every non-critical task, not a fixed-width flag
+    column, so it doesn't demand attention when there's nothing to flag.
+
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
     after a bordered/wrapped grid variant wasn't clearer. DC Name/Reason are truncated
@@ -57,12 +77,18 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     for t in tasks:
         last_visit = f"{t.last_visit_date} ({t.days_since_last_visit}d)" if t.last_visit_date else "Never"
         if t.present_overdue is not None:
-            overdue = f"{t.present_overdue:,.0f}" + (f" ({t.overdue_aging_bucket})" if t.overdue_aging_bucket else "")
+            extras = []
+            if t.overdue_aging_bucket:
+                extras.append(t.overdue_aging_bucket)
+            if t.avg_repayment_days is not None:
+                extras.append(f"avg repayment {t.avg_repayment_days:.0f}d")
+            overdue = f"{t.present_overdue:,.0f}" + (f" ({', '.join(extras)})" if extras else "")
         else:
             overdue = "N/A"
         rows.append([
             (t.se_name or t.se_id).split("@")[0],
             str(t.sr_no),
+            t.critical_reasons if t.critical else "",
             (t.dc_name or "N/A")[:26],
             f"{t.distance_km:.1f}" if t.distance_km is not None else "N/A",
             t.recommended_task_type,
@@ -78,7 +104,7 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             t.dc_club_participation or "N/A",
         ])
     headers = [
-        "SE", "Sr", "DC Name", "Km", "Task Type", "Purpose", "Reason",
+        "SE", "Sr", "Critical", "DC Name", "Km", "Task Type", "Purpose", "Reason",
         "Last Visit", "Outstanding", "Overdue (Aging)", "Last Order", "Order Value",
         "Last Payment", "YTD PL", "Club",
     ]

@@ -3,6 +3,7 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from planning.models import PlanRun
+from planning.product_cohort import ProductCohortError, build_season_weeks, split_csv
 from planning.reporting import summary_lines, table_lines
 from planning.services import PlanningError, generate_plan_for_scope, make_farmer_meeting_asker
 from planning.views import _serialize_plan_run
@@ -23,19 +24,45 @@ class Command(BaseCommand):
         parser.add_argument("scope_value", help="e.g. an SE email, a node name, a state name, an ABM employee code, ...")
         parser.add_argument("--date", default=None, help="Plan date YYYY-MM-DD (default: today)")
         parser.add_argument("--json", action="store_true", help="Print the full plan as JSON instead of a summary")
-        parser.add_argument("--table", action="store_true", help="Print the full outcome as one fixed-width plain-text table (one command, one shot -- the default reporting format)")
+        parser.add_argument("--table", action="store_true", help="Deprecated, no-op -- the outcome table now always prints (see reporting.table_lines()); kept only so existing callers passing this flag don't break")
         parser.add_argument(
             "--confirm-farmer-meeting", action="append", default=[], metavar="EMAIL",
             help="Explicitly confirm a Farmer Meeting for this SE email today, no interactive terminal needed "
                  "(repeatable for multiple SEs). Applies even if the SE isn't FM_Urgency-flagged this run.",
         )
+        parser.add_argument(
+            "--focus-product", metavar="MATERIAL_ID", default=None,
+            help="Also run Focus Product Campaign Targeting (Product Cohort API) for this materialId, "
+                 "persisted against this same PlanRun. Requires PRODUCT_COHORT_SESSION/PRODUCT_COHORT_GO_ADMIN_SESSION "
+                 "in the environment -- see Product _cohort/PRODUCT_COHORT_AUTH.md.",
+        )
+        parser.add_argument("--focus-node", default=None, help="Product Cohort node -- defaults to scope_value when scope_type is NODE, required otherwise")
+        parser.add_argument("--focus-product-years", type=int, default=4)
+        parser.add_argument("--focus-product-buildup-weeks", help="e.g. 14-20 -- Step 2B seed, omit to skip Step 2B")
+        parser.add_argument("--focus-product-peak-week", type=int, help="Step 2B seed, omit to skip Step 2B")
+        parser.add_argument("--focus-product-closure-weeks", help="e.g. 40-48 -- Step 2B seed, omit to skip Step 2B")
+        parser.add_argument("--focus-product-outer-weeks", default="1-52", help="Step 2B seed window, default 1-52")
+        parser.add_argument("--focus-product-crop-districts", help="comma-separated -- Step 3 input, omit to skip Step 3")
+        parser.add_argument("--focus-product-related-products", help="comma-separated product names -- Step 3 input, omit to skip Step 3")
 
     def handle(self, *args, **options):
+        try:
+            season_weeks = build_season_weeks(
+                options["focus_product_outer_weeks"], options["focus_product_buildup_weeks"],
+                options["focus_product_peak_week"], options["focus_product_closure_weeks"],
+            )
+        except ProductCohortError as e:
+            raise CommandError(str(e))
+
         try:
             plan_run = generate_plan_for_scope(
                 options["scope_type"], options["scope_value"], options["date"],
                 farmer_meeting_asker=make_farmer_meeting_asker(self.stdout, self.style),
                 farmer_meeting_confirmed_emails=set(options["confirm_farmer_meeting"]),
+                focus_product_material_id=options["focus_product"], focus_product_node_id=options["focus_node"],
+                focus_product_years=options["focus_product_years"], focus_product_season_weeks=season_weeks,
+                focus_product_crop_districts=split_csv(options["focus_product_crop_districts"]),
+                focus_product_related_products=split_csv(options["focus_product_related_products"]),
             )
         except PlanningError as e:
             raise CommandError(str(e))
@@ -49,7 +76,8 @@ class Command(BaseCommand):
         for line in lines[1:]:
             self.stdout.write(line)
 
-        if options["table"]:
-            self.stdout.write("")
-            for line in table_lines(plan_run):
-                self.stdout.write(line)
+        # Always shown, matching activate_tuff.py's Step 2 output -- the 15-column
+        # outcome table is the project's default reporting format, not opt-in.
+        self.stdout.write("")
+        for line in table_lines(plan_run):
+            self.stdout.write(line)

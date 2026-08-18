@@ -29,6 +29,20 @@ _cache: dict = {}
 _lock = threading.Lock()
 
 
+def _shallow_clone(data: Any) -> Any:
+    """Cheap defensive copy: a fresh outer list/dict plus a fresh dict per row, so a
+    caller that does e.g. `row["Latitude"] = ...` mutates its own copy, not the shared
+    cache entry every other caller in this process sees. Deliberately NOT a deep copy --
+    every value in these output tables is a flat, immutable scalar (str/int/float/None),
+    so copying just the row-level containers is enough, without reintroducing the O(n)
+    recursive-copy cost this cache exists to avoid (~84-400ms per large file)."""
+    if isinstance(data, list):
+        return [dict(row) if isinstance(row, dict) else row for row in data]
+    if isinstance(data, dict):
+        return dict(data)
+    return data
+
+
 def load_output_json(output_dir: Path, filename: str) -> Any:
     path = output_dir / filename
     if not path.exists():
@@ -38,8 +52,8 @@ def load_output_json(output_dir: Path, filename: str) -> Any:
     with _lock:
         cached = _cache.get(key)
         if cached is not None and cached[0] == mtime:
-            return cached[1]
+            return _shallow_clone(cached[1])
     data = json.loads(path.read_text())
     with _lock:
         _cache[key] = (mtime, data)
-    return data
+    return _shallow_clone(data)

@@ -17,6 +17,7 @@ urlpatterns = [
     path("routes/<str:se>/<str:plan_date>/", views.route_plans, name="route_plans"),
     path("routes/<str:se>/<str:plan_date>/select/<str:plan_type>/", views.select_route_plan_view, name="select_route_plan"),
     path("pitch/<int:daily_task_id>/", views.pitch_script, name="pitch_script"),
+    path("dc-card/<int:daily_task_id>/", views.dc_card, name="dc_card"),
     path("headcount/", views.headcount_bifurcation, name="headcount_bifurcation"),
     path("directory/states/", views.directory_states, name="directory_states"),
     path("directory/nodes/", views.directory_nodes, name="directory_nodes"),

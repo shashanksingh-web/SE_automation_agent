@@ -94,6 +94,10 @@ class DailyTask(models.Model):
     # "overdue since <date>"/day-count, since no such field exists in dc_datamart's
     # confirmed schema (checked live 2026-08-06). See DailyTaskRow.Overdue_Aging_Bucket.
     overdue_aging_bucket = models.CharField(max_length=20, blank=True, null=True)
+    # dc_datamart.weighted_avg_repayment_days -- a real, live, DC-wide average, not a
+    # per-bucket day count (dc_datamart has no field that splits days-overdue by the
+    # 0-90/90+ amount buckets). See DailyTaskRow.Avg_Repayment_Days.
+    avg_repayment_days = models.FloatField(blank=True, null=True)
     # Columns 11-12
     last_order_date = models.DateField(blank=True, null=True)
     last_order_value = models.FloatField(blank=True, null=True)
@@ -104,6 +108,12 @@ class DailyTask(models.Model):
     ytd_private_label = models.FloatField(blank=True, null=True)
     # Column 15
     dc_club_participation = models.CharField(max_length=64, blank=True, default="")
+
+    # Confirmed 2026-08-18 -- cross-cutting "cover this one first" signal: chronic miss
+    # escalation (DCVisitStreak.consecutive_misses >= DCVisitStreak.ESCALATION_THRESHOLD),
+    # a real overdue balance aged 90+ days, or credit-on-hold. See DailyTaskRow.Critical.
+    critical = models.BooleanField(default=False)
+    critical_reasons = models.CharField(max_length=255, blank=True, default="")
 
     # Not printed columns, kept for traceability/safety (see DailyTaskRow docstring)
     objective = models.CharField(max_length=32, blank=True, default="")
@@ -164,6 +174,12 @@ class DCVisitStreak(models.Model):
     a DC missed 3+ consecutive times gets escalated (priority_multiplier boost) the next
     time it's scored, per `reconcile_outcomes`. Reset to 0 on any COMPLETED/PARTIAL
     outcome for that pair."""
+
+    # Single source of truth for both reconcile_outcomes.py's own escalation-note logic
+    # and services.generate_plan_for_scope's Critical flag (confirmed 2026-08-18) -- a
+    # module-level constant in reconcile_outcomes.py would create a circular import if
+    # services.py imported it back (reconcile_outcomes already imports FROM services.py).
+    ESCALATION_THRESHOLD = 3
 
     se_id = models.CharField(max_length=64)
     dc_id = models.CharField(max_length=32)
@@ -238,8 +254,60 @@ class PitchScript(models.Model):
     data_sources_skipped = models.JSONField(default=list, blank=True)
     generated_at = models.DateTimeField(auto_now_add=True)
 
+    # The S1 block-peer top-product recommendation (planning.pitching._format_product_list)
+    # -- already computed into script_hindi's own S1 sentence as free text ("...सबसे ज़्यादा
+    # बिकने वाले प्रोडक्ट्स: C SQUARE (Brand: GAPL, Sub-category: Insecticide, Segment:
+    # PRIVATE LABEL) (₹31,200), ..."), captured here structured too so a caller doesn't
+    # have to parse Hindi prose. A list of 0-5 {name, value, category, sub_category,
+    # brand, business_segment, scope} dicts, ranked highest-value first -- widened
+    # 2026-08-18 from a single top product per direct instruction. scope is "block" or
+    # "node" (planning.services' block-first-then-node-fallback within dominant_category)
+    # or "nearby_radius"/"nearby_node" (planning.services._attach_nearby_product_
+    # recommendations' geographic fallback, used only when this DC's own block+node peers
+    # had zero purchase data in its category, or it has no dominant_category at all).
+    # Never padded to a fixed count -- a DC with only 2 real candidates just gets 2.
+    recommended_products = models.JSONField(default=list, blank=True)
+
     def __str__(self):
         return f"Pitch for {self.daily_task_id} ({self.purpose_key})"
+
+
+class DCCard(models.Model):
+    """DC Card (Preface) -- "Dehaat Center Ko Jaano" -- planning/dc_card.py's output. A
+    second, complementary pre-pitch briefing framework (pitch_config's "DC Card
+    (Preface)" CSV), shown to the SE when they open a DC's card, BEFORE the PitchScript's
+    own Ask/Tell/Wish. Generated automatically alongside PitchScript, same trigger point
+    and per-DC-task cadence (planning.services.generate_plan_for_scope) -- unlike
+    FocusProductTargetRun, this isn't opt-in, since every DC-tied task genuinely has a
+    DC to brief on.
+
+    Not modeled as 7 separate fields for each CSV sub-point -- collapsed to one field per
+    of the 3 CSV sections (matching how the card is actually read/shown, one block at a
+    time) plus the single rendered Hindi text. Crop Type/Style (Section 2's DC-first
+    "what crop does this DC serve" question) has no field here at all -- see
+    data_sources_skipped, which always carries it; there being no source is the finding,
+    not a bug to work around with a blank column."""
+
+    daily_task = models.OneToOneField(DailyTask, related_name="dc_card", on_delete=models.CASCADE)
+
+    who_section = models.TextField(blank=True, default="")
+    where_dc_stands_section = models.TextField(blank=True, default="")
+    private_label_section = models.TextField(blank=True, default="")
+    card_hindi = models.TextField()
+
+    # Same recommended-products list as PitchScript's own field of the same name
+    # (planning.dc_card._pl_recommendation reuses pitching's _format_product_list, so
+    # the two can never name different products for the same DC/category/run) --
+    # captured structured here too, not just inside private_label_section's prose. See
+    # PitchScript.recommended_products for the full shape/scope-tag docstring.
+    recommended_products = models.JSONField(default=list, blank=True)
+
+    data_sources_used = models.JSONField(default=list, blank=True)
+    data_sources_skipped = models.JSONField(default=list, blank=True)
+    generated_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"DC Card for {self.daily_task_id}"
 
 
 class RoutePlan(models.Model):
@@ -287,6 +355,15 @@ class RoutePlan(models.Model):
     total_minutes = models.FloatField(blank=True, null=True)
     priority_score_captured = models.FloatField(blank=True, null=True)
 
+    # GR-R10 audit trail -- these two ops assumptions feed directly into the numbers
+    # above (travel time/priority, and therefore feasibility) but weren't persisted
+    # anywhere, so a later re-run with a different assumption was unauditable against
+    # this one. avg_speed_kmph_used applies to all 3 models; alpha_used only to BALANCED
+    # (Model 3's priority/travel blend weight, see build_route_balanced) and stays null
+    # for the other two.
+    avg_speed_kmph_used = models.FloatField(blank=True, null=True)
+    alpha_used = models.FloatField(blank=True, null=True)
+
     feasible = models.BooleanField(default=True)
     # e.g. Travel_Floor_Not_Met when even the best model can't reach the 180-min
     # travel floor (R1.2) with a non-trivial stop set (GR-R5, fail-safe not a hard reject).
@@ -330,6 +407,32 @@ class RouteStop(models.Model):
 
     def __str__(self):
         return f"{self.route_plan_id} #{self.sequence_no} {self.dc_id}"
+
+
+class FocusProductTargetRun(models.Model):
+    """Focus Product Campaign Targeting (Product _cohort/, planning/product_cohort.py)
+    result, tied to a PlanRun -- product-first, not DC-first, so unlike RoutePlan/
+    PitchScript this isn't generated automatically for every PlanRun. Only created when
+    a run is explicitly given a Focus Product (materialId) to evaluate, since no
+    confirmed source anywhere in this pipeline says which Focus Products to check by
+    default for a given scope/day (see the pitch_config Focus Product Targeting CSV).
+
+    step_2a/2b/3 are stored as opaque JSON, not reshaped into confirmed columns -- Step
+    2B/3's response schema was still unconfirmed as of the last live check (2026-08-14),
+    and Step 2A's own shape, while confirmed, doesn't warrant its own columns for what's
+    fundamentally a pass-through diagnostic result, not a scored/ranked pipeline output
+    like DailyTask/RoutePlan."""
+
+    plan_run = models.ForeignKey(PlanRun, related_name="focus_product_targets", on_delete=models.CASCADE)
+    material_id = models.CharField(max_length=64)
+    node_id = models.CharField(max_length=64)
+    step_2a = models.JSONField(blank=True, null=True)
+    step_2b = models.JSONField(blank=True, null=True)
+    step_3 = models.JSONField(blank=True, null=True)
+    generated_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"FocusProduct {self.material_id}@{self.node_id} (PlanRun #{self.plan_run_id})"
 
 
 class RouteDroppedDC(models.Model):

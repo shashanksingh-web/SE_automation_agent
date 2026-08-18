@@ -41,10 +41,13 @@ composer, unchanged.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import DailyTask, PitchScript, PlanRun
 from .pitch_config_loader import get_pitch_config
+
+logger = logging.getLogger(__name__)
 
 # --- Hindi Ask/Wish phrasing per single Purpose ------------------------------------------
 # The CSVs' own "What to Ask"/"What to Wish" columns are English guidance on WHAT ground
@@ -126,13 +129,69 @@ def _tp_last_discount(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return f"पिछली बार आपको {discount:.0f}% का डिस्काउंट मिला था।", "S2a"
 
 
+def _format_product_list(products: List[Dict[str, Any]]) -> str:
+    """Renders recommended_products (planning.services' _peer_stats/
+    _attach_nearby_product_recommendations, 0-5 items, highest value first) as
+    'NAME (Brand: X, Sub-category: Y) (₹V), NAME2 (...), ...'. Shared by pitching.py's
+    S1 and dc_card.py's PL_Recommendation so a product's phrasing can't drift between
+    them. Replaces the old singular _product_enrichment_note(ctx, prefix) now that a DC
+    can have up to 5 recommended products, not 1 -- widened 2026-08-18."""
+    parts = []
+    for p in products:
+        bits = []
+        if p.get("brand"):
+            bits.append(f"Brand: {p['brand']}")
+        if p.get("sub_category"):
+            bits.append(f"Sub-category: {p['sub_category']}")
+        if p.get("business_segment"):
+            bits.append(f"Segment: {p['business_segment']}")
+        enrichment = f" ({', '.join(bits)})" if bits else ""
+        value_note = f" (₹{p['value']:,.0f})" if p.get("value") else ""
+        parts.append(f"{p['name']}{enrichment}{value_note}")
+    return ", ".join(parts)
+
+
 def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """recommended_products (planning.services, widened 2026-08-18 to up to 5 products
+    per direct instruction -- was a single block_top_product before) drives this
+    talking point now, same context dict planning/dc_card.py's _pl_recommendation()
+    reads, so the pitch and the DC Card can never name different products for the same
+    DC/category/run. scope on the first item tells you which tier actually produced the
+    list: "block"/"node" (this DC's own dominant_category, peer-purchase ranked) or
+    "nearby_radius"/"nearby_node" (planning.services._attach_nearby_product_
+    recommendations' geographic fallback -- this DC's own block+node peers had nothing,
+    widened outward rather than showing nothing, per direct instruction 2026-08-18).
+    Falls back to category-average-only phrasing when block_category_avg exists but
+    recommended_products doesn't (a real, if rare, granularity gap between the
+    category-total and product-level peer queries). None if neither exists."""
+    products = ctx.get("recommended_products") or []
     block_avg, category = ctx.get("block_category_avg"), ctx.get("dominant_category")
+    if products:
+        scope = products[0].get("scope")
+        if scope in ("block", "node"):
+            scope_label = "नोड" if scope == "node" else "ब्लॉक"
+            dc_amt = ctx.get("dc_category_purchase") or 0
+            return (
+                f"आपके {scope_label} में बाकी दुकानदारों ने इस महीने {category} में औसतन ₹{block_avg:,.0f} का बिज़नेस किया है -- "
+                f"सबसे ज़्यादा बिकने वाले प्रोडक्ट्स: {_format_product_list(products)} ({scope_label} में), "
+                f"आपकी तरफ से अभी तक ₹{dc_amt:,.0f} हुआ है।",
+                "S1",
+            )
+        # Geographic fallback -- this DC's own block+node peers had nothing to rank from
+        # (either no dominant_category at all, or a category with zero product-level
+        # peer data), so this widened outward rather than showing nothing.
+        basis_label = "आसपास के (200km के अंदर) DCs" if scope == "nearby_radius" else "आसपास के नज़दीकी Nodes"
+        return (
+            f"इस DC/ब्लॉक/नोड में इस महीने कोई खरीद डेटा नहीं है -- {basis_label} में लोकप्रिय प्रोडक्ट्स के आधार पर सुझाव: "
+            f"{_format_product_list(products)}।",
+            "S1",
+        )
     if not block_avg or not category:
         return None
+    scope_label = "नोड" if ctx.get("peer_comparison_scope") == "node" else "ब्लॉक"
     dc_amt = ctx.get("dc_category_purchase") or 0
     return (
-        f"आपके ब्लॉक में बाकी दुकानदारों ने इस महीने {category} में औसतन ₹{block_avg:,.0f} का बिज़नेस किया है, "
+        f"आपके {scope_label} में बाकी दुकानदारों ने इस महीने {category} में औसतन ₹{block_avg:,.0f} का बिज़नेस किया है, "
         f"आपकी तरफ से अभी तक ₹{dc_amt:,.0f} हुआ है।",
         "S1",
     )
@@ -282,9 +341,8 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
         script, used, skipped = _compose_sale_ptp_combo(task, ctx)
         return script, used, skipped
     applicable = _applicable_sources(purposes)
-    ordered_codes = [c for c in _order_for_purposes(purposes, ctx) if c in applicable] + [
-        c for c in applicable if c not in _order_for_purposes(purposes, ctx)
-    ]
+    ordered = _order_for_purposes(purposes, ctx)
+    ordered_codes = [c for c in ordered if c in applicable] + [c for c in applicable if c not in ordered]
 
     cfg = get_pitch_config()
     used, skipped, tell_sentences = [], [], []
@@ -335,24 +393,40 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     return "\n".join(lines).strip(), used, skipped
 
 
-def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, Dict[str, Any]]) -> int:
+def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, Dict[str, Any]]) -> Tuple[int, List[Dict[str, str]]]:
     """Called automatically from generate_plan_for_scope() right after DailyTask rows
     exist for this run. extra_data_by_dc carries the newly-wired sources (S1/S2/S3/S6/S7)
     keyed by dc_id -- S5 (Outstanding) and S8 (YTD PL) are read directly off DailyTask's
-    own already-persisted fields, not duplicated here. Returns the count of pitches created."""
+    own already-persisted fields, not duplicated here. Returns (created_count, failures)
+    -- each task is isolated in its own try/except so one bad DC's data can't blank out
+    every other task's pitch in the same run (previously a single unhandled exception
+    here aborted the whole loop, silently leaving every task after it with no PitchScript
+    at all); failures is a list the caller can fold into its own run_exceptions."""
     created = 0
+    failures: List[Dict[str, str]] = []
     for task in plan_run.tasks.filter(dc_id__isnull=False):  # Farmer Meeting tasks have no DC -- no pitch to generate
-        ctx = dict(extra_data_by_dc.get(task.dc_id, {}))
-        ctx["present_outstanding"] = task.present_outstanding
-        ctx["present_overdue"] = task.present_overdue
-        ctx["overdue_aging_bucket"] = task.overdue_aging_bucket
-        ctx["ytd_private_label"] = task.ytd_private_label
-        script, used, skipped = _compose(task, ctx)
-        _, matched_key, _ = _match_script(task.purpose_of_visit or "")
-        PitchScript.objects.update_or_create(
-            daily_task=task,
-            defaults={"purpose_key": matched_key or task.purpose_of_visit, "script_hindi": script,
-                      "data_sources_used": used, "data_sources_skipped": skipped},
-        )
-        created += 1
-    return created
+        try:
+            ctx = dict(extra_data_by_dc.get(task.dc_id, {}))
+            ctx["present_outstanding"] = task.present_outstanding
+            ctx["present_overdue"] = task.present_overdue
+            ctx["overdue_aging_bucket"] = task.overdue_aging_bucket
+            ctx["ytd_private_label"] = task.ytd_private_label
+            script, used, skipped = _compose(task, ctx)
+            _, matched_key, _ = _match_script(task.purpose_of_visit or "")
+            # Same list already folded into script's own S1 sentence via
+            # _format_product_list - captured structured here too. Empty list means
+            # neither this DC's own category-scoped peers nor the geographic fallback
+            # had anything to recommend this run.
+            PitchScript.objects.update_or_create(
+                daily_task=task,
+                defaults={
+                    "purpose_key": matched_key or task.purpose_of_visit, "script_hindi": script,
+                    "data_sources_used": used, "data_sources_skipped": skipped,
+                    "recommended_products": ctx.get("recommended_products") or [],
+                },
+            )
+            created += 1
+        except Exception as e:
+            logger.warning("PitchingAgent: failed to generate a pitch for DC %s (task %s): %s: %s", task.dc_id, task.id, type(e).__name__, e)
+            failures.append({"dc_id": task.dc_id, "detail": f"{type(e).__name__}: {e}"})
+    return created, failures

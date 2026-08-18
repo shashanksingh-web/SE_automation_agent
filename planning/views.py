@@ -3,10 +3,35 @@ from django.views.decorators.http import require_GET
 
 from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
-from .models import DailyTask, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, ScheduledScope
+from .models import DailyTask, DCCard, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, ScheduledScope
+from .product_cohort import ProductCohortError, build_season_weeks, split_csv
 from .routing import RoutingError, list_route_plans, select_default_route_plan
 from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
 from .services import _output_dir as _planning_output_dir
+
+
+def _focus_product_kwargs_from_get(request) -> dict:
+    """Shared by _generate_and_respond/tuff -- lets any scope endpoint accept the same
+    ?focus_product=<materialId>&focus_node=...&... query params activate_tuff/
+    generate_se_plan's CLI flags do, so the API isn't a second, drifting implementation
+    of the same optional Focus Product Campaign Targeting wiring (see
+    planning.services.generate_plan_for_scope's focus_product_* docstring)."""
+    material_id = request.GET.get("focus_product")
+    if not material_id:
+        return {}
+    season_weeks = build_season_weeks(
+        request.GET.get("focus_product_outer_weeks", "1-52"), request.GET.get("focus_product_buildup_weeks"),
+        int(request.GET["focus_product_peak_week"]) if request.GET.get("focus_product_peak_week") else None,
+        request.GET.get("focus_product_closure_weeks"),
+    )
+    return {
+        "focus_product_material_id": material_id,
+        "focus_product_node_id": request.GET.get("focus_node"),
+        "focus_product_years": int(request.GET.get("focus_product_years", 4)),
+        "focus_product_season_weeks": season_weeks,
+        "focus_product_crop_districts": split_csv(request.GET.get("focus_product_crop_districts")),
+        "focus_product_related_products": split_csv(request.GET.get("focus_product_related_products")),
+    }
 
 
 def _serialize_task(t: DailyTask) -> dict:
@@ -21,10 +46,12 @@ def _serialize_task(t: DailyTask) -> dict:
         "Reason_Of_Visit": t.reason_of_visit, "Last_Visit_Date": t.last_visit_date,
         "Days_Since_Last_Visit": t.days_since_last_visit, "Present_Outstanding": t.present_outstanding,
         "Present_Overdue": t.present_overdue, "Overdue_Aging_Bucket": t.overdue_aging_bucket,
+        "Avg_Repayment_Days": t.avg_repayment_days,
         "Last_Order_Date": t.last_order_date,
         "Last_Order_Value": t.last_order_value, "Last_Payment_Date": t.last_payment_date,
         "Last_Payment_Join_Key_Unconfirmed": t.last_payment_join_key_unconfirmed,
         "YTD_Private_Label": t.ytd_private_label, "DC_Club_Participation": t.dc_club_participation,
+        "Critical": t.critical, "Critical_Reasons": t.critical_reasons,
         "Objective": t.objective, "No_New_Orders": t.no_new_orders, "Credit_On_Hold": t.credit_on_hold,
         "Credit_On_Hold_Reason": t.credit_on_hold_reason, "Estimated_Duration": t.estimated_duration,
         "Priority_Multiplier": t.priority_multiplier,
@@ -74,6 +101,15 @@ def _serialize_plan_run(plan_run: PlanRun) -> dict:
             }
             for e in plan_run.exceptions.all()
         ],
+        # Empty unless this run was given ?focus_product=... -- see
+        # _focus_product_kwargs_from_get, product-first not DC-first, opt-in per call.
+        "Focus_Product_Targets": [
+            {
+                "ID": f.id, "Material_ID": f.material_id, "Node_ID": f.node_id,
+                "Step_2A": f.step_2a, "Step_2B": f.step_2b, "Step_3": f.step_3, "Generated_At": f.generated_at,
+            }
+            for f in plan_run.focus_product_targets.all()
+        ],
     }
 
 
@@ -81,7 +117,11 @@ def _serialize_plan_run(plan_run: PlanRun) -> dict:
 def _generate_and_respond(request, scope_type: str, scope_value: str):
     plan_date = request.GET.get("date")
     try:
-        plan_run = generate_plan_for_scope(scope_type, scope_value, plan_date)
+        focus_product_kwargs = _focus_product_kwargs_from_get(request)
+    except ProductCohortError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    try:
+        plan_run = generate_plan_for_scope(scope_type, scope_value, plan_date, **focus_product_kwargs)
     except PlanningError as e:
         return JsonResponse({"error": str(e)}, status=422)
     except Exception as e:  # Metabase/network errors etc. -- surface, don't swallow
@@ -156,9 +196,14 @@ def tuff(request, scope_type: str, scope_value: str):
     force_normalization = request.GET.get("force_normalization", "").lower() in ("1", "true", "yes")
     skip_normalization = request.GET.get("skip_normalization", "").lower() in ("1", "true", "yes")
     try:
+        focus_product_kwargs = _focus_product_kwargs_from_get(request)
+    except ProductCohortError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    try:
         plan_run, normalization_info = activate_tuff_scope(
             scope_type, scope_value, plan_date,
             force_normalization=force_normalization, skip_normalization=skip_normalization,
+            **focus_product_kwargs,
         )
     except PlanningError as e:
         return JsonResponse({"error": str(e)}, status=422)
@@ -196,24 +241,107 @@ def select_route_plan_view(request, se: str, plan_date: str, plan_type: str):
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})
 
 
+def _no_pitch_or_card_response(daily_task_id: int, model_name: str) -> JsonResponse:
+    """Shared 404 body for pitch_script/dc_card -- distinguishes "not applicable"
+    (Farmer Meeting task, no dc_id, never gets one by design) from "should have one but
+    doesn't" (a DC-tied task whose generation failed for just that task -- see
+    pitching.generate_pitches_for_plan_run/dc_card.generate_dc_cards_for_plan_run's
+    per-task isolation) from "no such DailyTask at all." All three used to return the
+    identical "Farmer Meeting tasks never get one" message, which read as expected
+    behavior even when it meant a real generation failure."""
+    try:
+        task = DailyTask.objects.get(id=daily_task_id)
+    except DailyTask.DoesNotExist:
+        return JsonResponse({"error": f"No DailyTask {daily_task_id}.", "Reason": "no_such_task"}, status=404)
+    if task.dc_id is None:
+        return JsonResponse({
+            "error": f"No {model_name} for DailyTask {daily_task_id} (Farmer Meeting tasks never get one).",
+            "Reason": "not_applicable",
+        }, status=404)
+    return JsonResponse({
+        "error": f"No {model_name} for DailyTask {daily_task_id} -- this task has a DC (dc_id={task.dc_id}) and should have one; "
+                 "generation may have failed for this task specifically (check ExceptionRecord for this PlanRun) or hasn't run yet.",
+        "Reason": "generation_failed",
+    }, status=404)
+
+
+def _serialize_recommended_products(products: list) -> list:
+    """PitchScript.recommended_products/DCCard.recommended_products (planning/models.py)
+    -> the API's PascalCase shape. Up to 5 items, highest value first, widened 2026-08-18
+    from a single top product per direct instruction -- never padded, a DC with 2 real
+    candidates returns a 2-item list, not 5. Scope is "block"/"node" (this DC's own
+    dominant_category, peer-purchase ranked) or "nearby_radius"/"nearby_node"
+    (services._attach_nearby_product_recommendations' geographic fallback, used only
+    when this DC's own block+node peers had nothing to rank from)."""
+    return [
+        {
+            "Product_Name": p.get("name"),
+            "Value": p.get("value"),
+            "Category": p.get("category"),
+            "Sub_Category": p.get("sub_category"),
+            "Brand": p.get("brand"),
+            "Business_Segment": p.get("business_segment"),
+            "Scope": p.get("scope"),
+        }
+        for p in products
+    ]
+
+
 @require_GET
 def pitch_script(request, daily_task_id: int):
     """GET /api/planning/pitch/<daily_task_id>/ -- the Pitching Agent's output for one
     DailyTask (Hindi script + which data sources it did/didn't have). 404 if the task
-    has no pitch -- Farmer Meeting tasks (no dc_id) never get one, by design."""
+    has no pitch -- Farmer Meeting tasks (no dc_id) never get one, by design. Distinct
+    from a DC-tied task that SHOULD have a pitch but doesn't (generation failed for that
+    one task -- see pitching.generate_pitches_for_plan_run's per-task isolation) --
+    those used to get the exact same "never get one" message, which hid a real failure
+    behind wording that implied it was expected."""
     try:
         pitch = PitchScript.objects.select_related("daily_task").get(daily_task_id=daily_task_id)
     except PitchScript.DoesNotExist:
-        return JsonResponse({"error": f"No PitchScript for DailyTask {daily_task_id} (Farmer Meeting tasks never get one)."}, status=404)
+        return _no_pitch_or_card_response(daily_task_id, "PitchScript")
     return JsonResponse({
         "DailyTask_ID": pitch.daily_task_id,
         "SE": pitch.daily_task.se_name or pitch.daily_task.se_id,
         "DC_Name": pitch.daily_task.dc_name,
         "Purpose_Key": pitch.purpose_key,
         "Script_Hindi": pitch.script_hindi,
+        # S1 recommended products, structured - already folded into Script_Hindi's own
+        # S1 sentence as free text too. Up to 5, highest value first (widened 2026-08-18
+        # from a single top product); [] when this DC had nothing to recommend this run,
+        # even after the geographic fallback.
+        "Recommended_Products": _serialize_recommended_products(pitch.recommended_products),
         "Data_Sources_Used": pitch.data_sources_used,
         "Data_Sources_Skipped": pitch.data_sources_skipped,
         "Generated_At": pitch.generated_at,
+    }, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def dc_card(request, daily_task_id: int):
+    """GET /api/planning/dc-card/<daily_task_id>/ -- the DC Card (Preface, "Dehaat
+    Center Ko Jaano") for one DailyTask -- shown to the SE BEFORE the pitch (see
+    /api/planning/pitch/<daily_task_id>/, a separate endpoint since the two are shown at
+    different points in the SE's flow, not one combined payload). 404 if the task has no
+    card -- Farmer Meeting tasks (no dc_id) never get one, same rule as PitchScript."""
+    try:
+        card = DCCard.objects.select_related("daily_task").get(daily_task_id=daily_task_id)
+    except DCCard.DoesNotExist:
+        return _no_pitch_or_card_response(daily_task_id, "DCCard")
+    return JsonResponse({
+        "DailyTask_ID": card.daily_task_id,
+        "SE": card.daily_task.se_name or card.daily_task.se_id,
+        "DC_Name": card.daily_task.dc_name,
+        "Who_Section": card.who_section,
+        "Where_DC_Stands_Section": card.where_dc_stands_section,
+        "Private_Label_Section": card.private_label_section,
+        "Card_Hindi": card.card_hindi,
+        # Same recommended-products list as PitchScript's own field of the same name -
+        # already folded into Private_Label_Section's prose too.
+        "Recommended_Products": _serialize_recommended_products(card.recommended_products),
+        "Data_Sources_Used": card.data_sources_used,
+        "Data_Sources_Skipped": card.data_sources_skipped,
+        "Generated_At": card.generated_at,
     }, safe=False, json_dumps_params={"default": str})
 
 
@@ -336,11 +464,37 @@ def directory_dcs(request):
     return JsonResponse(result, safe=False)
 
 
+def _pagination_params(request, default_limit: int, max_limit: int):
+    """Shared limit/offset parsing for the list endpoints below. Returns (limit, offset),
+    or None if either query param isn't a valid integer (caller returns 400). Response
+    body shape is left alone (still a bare JSON array, for backward compatibility with
+    existing callers) -- the true total/limit/offset are exposed via X-Total-Count/
+    X-Limit/X-Offset headers instead, same reasoning as directory.list_dcs's total/
+    limit/offset/returned fields: a caller previously had no way to tell a full result
+    from a silently truncated one."""
+    try:
+        limit = int(request.GET.get("limit", default_limit))
+        offset = int(request.GET.get("offset", 0))
+    except ValueError:
+        return None
+    return max(1, min(limit, max_limit)), max(0, offset)
+
+
+def _paginated_json_response(qs, total: int, limit: int, offset: int, row_fn):
+    response = JsonResponse([row_fn(r) for r in qs], safe=False, json_dumps_params={"default": str})
+    response["X-Total-Count"] = str(total)
+    response["X-Limit"] = str(limit)
+    response["X-Offset"] = str(offset)
+    return response
+
+
 @require_GET
 def visit_streaks(request):
-    """GET /api/planning/streaks/?se=&dc=&min_misses= -- DCVisitStreak: consecutive-miss
-    tracking per (SE, DC), independent of any single PlanRun. Feeds a priority_multiplier
-    escalation the next time a DC is scored (see reconcile_outcomes)."""
+    """GET /api/planning/streaks/?se=&dc=&min_misses=&limit=&offset= -- DCVisitStreak:
+    consecutive-miss tracking per (SE, DC), independent of any single PlanRun. Feeds a
+    priority_multiplier escalation the next time a DC is scored (see reconcile_outcomes).
+    limit defaults to 500, capped at 2000; see X-Total-Count on the response to tell a
+    full result from a truncated one."""
     qs = DCVisitStreak.objects.all()
     if request.GET.get("se"):
         qs = qs.filter(se_id=request.GET["se"])
@@ -351,35 +505,43 @@ def visit_streaks(request):
             qs = qs.filter(consecutive_misses__gte=int(request.GET["min_misses"]))
         except ValueError:
             return JsonResponse({"error": "min_misses must be an integer"}, status=400)
-    qs = qs.order_by("-consecutive_misses")[:500]
-    return JsonResponse([
-        {
-            "SE_ID": s.se_id, "DC_ID": s.dc_id, "Consecutive_Misses": s.consecutive_misses,
-            "Last_Outcome_Date": s.last_outcome_date, "Updated_At": s.updated_at,
-        }
-        for s in qs
-    ], safe=False, json_dumps_params={"default": str})
+    pagination = _pagination_params(request, default_limit=500, max_limit=2000)
+    if pagination is None:
+        return JsonResponse({"error": "limit/offset must be integers"}, status=400)
+    limit, offset = pagination
+    qs = qs.order_by("-consecutive_misses")
+    total = qs.count()
+    page = qs[offset : offset + limit]
+    return _paginated_json_response(page, total, limit, offset, lambda s: {
+        "SE_ID": s.se_id, "DC_ID": s.dc_id, "Consecutive_Misses": s.consecutive_misses,
+        "Last_Outcome_Date": s.last_outcome_date, "Updated_At": s.updated_at,
+    })
 
 
 @require_GET
 def completion_stats(request):
-    """GET /api/planning/completion-stats/?se=&objective= -- ObjectiveCompletionStats:
-    trailing-30d completion rate per (SE, objective), rolled up by
-    `compute_completion_stats` and consumed as a bounded (0.7x-1.3x) weighting
-    multiplier in BO1/BO3 scoring (Tier 2 adaptive weighting)."""
+    """GET /api/planning/completion-stats/?se=&objective=&limit=&offset= --
+    ObjectiveCompletionStats: trailing-30d completion rate per (SE, objective), rolled up
+    by `compute_completion_stats` and consumed as a bounded (0.7x-1.3x) weighting
+    multiplier in BO1/BO3 scoring (Tier 2 adaptive weighting). limit defaults to 500,
+    capped at 2000; see X-Total-Count on the response to tell a full result from a
+    truncated one."""
     qs = ObjectiveCompletionStats.objects.all()
     if request.GET.get("se"):
         qs = qs.filter(se_id=request.GET["se"])
     if request.GET.get("objective"):
         qs = qs.filter(objective=request.GET["objective"])
-    qs = qs.order_by("se_id", "objective")[:500]
-    return JsonResponse([
-        {
-            "SE_ID": s.se_id, "Objective": s.objective, "Completion_Rate_30d": s.completion_rate_30d,
-            "Sample_Size": s.sample_size, "Computed_At": s.computed_at,
-        }
-        for s in qs
-    ], safe=False, json_dumps_params={"default": str})
+    pagination = _pagination_params(request, default_limit=500, max_limit=2000)
+    if pagination is None:
+        return JsonResponse({"error": "limit/offset must be integers"}, status=400)
+    limit, offset = pagination
+    qs = qs.order_by("se_id", "objective")
+    total = qs.count()
+    page = qs[offset : offset + limit]
+    return _paginated_json_response(page, total, limit, offset, lambda s: {
+        "SE_ID": s.se_id, "Objective": s.objective, "Completion_Rate_30d": s.completion_rate_30d,
+        "Sample_Size": s.sample_size, "Computed_At": s.computed_at,
+    })
 
 
 @require_GET
@@ -414,7 +576,9 @@ def plan_run_detail(request, plan_run_id: int):
 
 @require_GET
 def plan_run_list(request):
-    """GET /api/planning/runs/?scope_type=NODE&scope_value=Jaipur&status=PENDING_REVIEW -- list past runs, newest first."""
+    """GET /api/planning/runs/?scope_type=NODE&scope_value=Jaipur&status=PENDING_REVIEW&limit=&offset=
+    -- list past runs, newest first. limit defaults to 50, capped at 500; see
+    X-Total-Count on the response to tell a full result from a truncated one."""
     qs = PlanRun.objects.all()
     if request.GET.get("scope_type"):
         qs = qs.filter(scope_type=request.GET["scope_type"].upper())
@@ -422,13 +586,15 @@ def plan_run_list(request):
         qs = qs.filter(scope_value=request.GET["scope_value"])
     if request.GET.get("status"):
         qs = qs.filter(status=request.GET["status"].upper())
-    qs = qs[:50]
-    return JsonResponse([
-        {
-            "PlanRun_ID": r.id, "Scope_Type": r.scope_type, "Scope_Value": r.scope_value,
-            "Plan_Date": r.plan_date, "Run_Timestamp": r.run_timestamp,
-            "SE_Count": r.se_count, "DC_Count": r.dc_count, "Task_Count": r.task_count,
-            "Status": r.status,
-        }
-        for r in qs
-    ], safe=False, json_dumps_params={"default": str})
+    pagination = _pagination_params(request, default_limit=50, max_limit=500)
+    if pagination is None:
+        return JsonResponse({"error": "limit/offset must be integers"}, status=400)
+    limit, offset = pagination
+    total = qs.count()
+    page = qs[offset : offset + limit]
+    return _paginated_json_response(page, total, limit, offset, lambda r: {
+        "PlanRun_ID": r.id, "Scope_Type": r.scope_type, "Scope_Value": r.scope_value,
+        "Plan_Date": r.plan_date, "Run_Timestamp": r.run_timestamp,
+        "SE_Count": r.se_count, "DC_Count": r.dc_count, "Task_Count": r.task_count,
+        "Status": r.status,
+    })

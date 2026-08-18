@@ -1,6 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 
 from planning.models import PlanRun
+from planning.product_cohort import ProductCohortError, build_season_weeks, split_csv
 from planning.reporting import summary_lines, table_lines
 from planning.services import PlanningError, activate_tuff_scope, make_farmer_meeting_asker
 
@@ -49,8 +50,30 @@ class Command(BaseCommand):
             help="Explicitly confirm a Farmer Meeting for this SE email today, no interactive terminal needed "
                  "(repeatable for multiple SEs). Applies even if the SE isn't FM_Urgency-flagged this run.",
         )
+        parser.add_argument(
+            "--focus-product", metavar="MATERIAL_ID", default=None,
+            help="Also run Focus Product Campaign Targeting (Product Cohort API) for this materialId, "
+                 "persisted against this same PlanRun. Requires PRODUCT_COHORT_SESSION/PRODUCT_COHORT_GO_ADMIN_SESSION "
+                 "in the environment -- see Product _cohort/PRODUCT_COHORT_AUTH.md.",
+        )
+        parser.add_argument("--focus-node", default=None, help="Product Cohort node -- defaults to scope_value when scope_type is NODE, required otherwise")
+        parser.add_argument("--focus-product-years", type=int, default=4)
+        parser.add_argument("--focus-product-buildup-weeks", help="e.g. 14-20 -- Step 2B seed, omit to skip Step 2B")
+        parser.add_argument("--focus-product-peak-week", type=int, help="Step 2B seed, omit to skip Step 2B")
+        parser.add_argument("--focus-product-closure-weeks", help="e.g. 40-48 -- Step 2B seed, omit to skip Step 2B")
+        parser.add_argument("--focus-product-outer-weeks", default="1-52", help="Step 2B seed window, default 1-52")
+        parser.add_argument("--focus-product-crop-districts", help="comma-separated -- Step 3 input, omit to skip Step 3")
+        parser.add_argument("--focus-product-related-products", help="comma-separated product names -- Step 3 input, omit to skip Step 3")
 
     def handle(self, *args, **options):
+        try:
+            season_weeks = build_season_weeks(
+                options["focus_product_outer_weeks"], options["focus_product_buildup_weeks"],
+                options["focus_product_peak_week"], options["focus_product_closure_weeks"],
+            )
+        except ProductCohortError as e:
+            raise CommandError(str(e))
+
         try:
             plan_run, normalization_info = activate_tuff_scope(
                 options["scope_type"], options["scope_value"], options["date"],
@@ -58,6 +81,10 @@ class Command(BaseCommand):
                 skip_normalization=options["skip_normalization"],
                 farmer_meeting_asker=make_farmer_meeting_asker(self.stdout, self.style),
                 farmer_meeting_confirmed_emails=set(options["confirm_farmer_meeting"]),
+                focus_product_material_id=options["focus_product"], focus_product_node_id=options["focus_node"],
+                focus_product_years=options["focus_product_years"], focus_product_season_weeks=season_weeks,
+                focus_product_crop_districts=split_csv(options["focus_product_crop_districts"]),
+                focus_product_related_products=split_csv(options["focus_product_related_products"]),
             )
         except PlanningError as e:
             raise CommandError(str(e))
@@ -89,3 +116,9 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("=== TUFF Outcome ==="))
         for line in table_lines(plan_run):
             self.stdout.write(line)
+
+        for fp in plan_run.focus_product_targets.all():
+            self.stdout.write("")
+            self.stdout.write(self.style.SUCCESS(f"=== Focus Product Campaign Targeting -- {fp.material_id} @ {fp.node_id} ==="))
+            for step_name, val in (("Step 2A", fp.step_2a), ("Step 2B", fp.step_2b), ("Step 3", fp.step_3)):
+                self.stdout.write(f"  {step_name}: {'(skipped/failed -- see Exceptions above)' if val is None else 'received, see FocusProductTargetRun #' + str(fp.id)}")

@@ -23,6 +23,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("plan_run_id", type=int)
         parser.add_argument("--pitches", action="store_true", help="Also print each task's pitch script (Hindi)")
+        parser.add_argument("--dc-cards", action="store_true", help="Also print each task's DC Card / Dehaat Center Ko Jaano preface (Hindi)")
 
     def handle(self, *args, **options):
         try:
@@ -57,6 +58,15 @@ class Command(BaseCommand):
                     "PlanRun predates skipped_ses (migration 0006). Re-run to capture who/why."
                 ))
 
+        focus_targets = plan_run.focus_product_targets.all()
+        if focus_targets:
+            self.stdout.write("")
+            self.stdout.write(self.style.SUCCESS("=== Focus Product Campaign Targeting ==="))
+            for fp in focus_targets:
+                self.stdout.write(f"  #{fp.id}: {fp.material_id} @ {fp.node_id}")
+                for step_name, val in (("Step 2A", fp.step_2a), ("Step 2B", fp.step_2b), ("Step 3", fp.step_3)):
+                    self.stdout.write(f"    {step_name}: {'skipped/failed -- see Exceptions' if val is None else 'received'}")
+
         if options["pitches"]:
             self.stdout.write("")
             self.stdout.write(self.style.SUCCESS("=== Pitch Scripts ==="))
@@ -75,3 +85,22 @@ class Command(BaseCommand):
                 self.stdout.write(pitch.script_hindi)
             if not any_pitch:
                 self.stdout.write("  (no pitch scripts on this run -- only DC-tied tasks get one; Farmer Meeting tasks don't)")
+
+        if options["dc_cards"]:
+            self.stdout.write("")
+            self.stdout.write(self.style.SUCCESS("=== DC Cards (Dehaat Center Ko Jaano) ==="))
+            tasks = plan_run.tasks.select_related("dc_card").order_by("se_id", "sr_no")
+            any_card = False
+            for t in tasks:
+                card = getattr(t, "dc_card", None)
+                if not card:
+                    continue
+                any_card = True
+                self.stdout.write("-" * 70)
+                self.stdout.write(f"{(t.se_name or t.se_id).split('@')[0]} Sr {t.sr_no}: {t.dc_name}")
+                self.stdout.write(f"used: {card.data_sources_used}")
+                self.stdout.write(f"skipped: {card.data_sources_skipped}")
+                self.stdout.write("")
+                self.stdout.write(card.card_hindi)
+            if not any_card:
+                self.stdout.write("  (no DC Cards on this run -- only DC-tied tasks get one; Farmer Meeting tasks don't)")

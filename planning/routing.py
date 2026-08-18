@@ -63,10 +63,14 @@ def generate_route_plans_for_se(
         })
         return {"Tasks": [], "Sequencing_Basis": "routing_agent_deferred_no_origin", "Travel_Cap_Exceeded": False, "exceptions": exceptions}
 
-    # GR-R1/GR-R2 -- independent pre-generation guardrail pass (same "second check even
-    # though upstream should already handle it" philosophy as GR-14 elsewhere in this
-    # pipeline). Guardrail-level, not model-level -- applies identically ahead of all 3
-    # models below, so these drops get attached to every RoutePlan this call produces.
+    # GR-R1/GR-R2/R0.7 -- independent pre-generation guardrail pass (same "second check
+    # even though upstream should already handle it" philosophy as GR-14 elsewhere in
+    # this pipeline). Guardrail-level, not model-level -- applies identically ahead of
+    # all 3 models below, so these drops get attached to every RoutePlan this call
+    # produces. R0.7's recency leg (Days_Since_Last_Visit < min) mirrors Legal_Hold below
+    # -- apply_dc_exclusion_rules() upstream should already exclude too-recent DCs from
+    # the ranked pool entirely, but this is the same redundant safety check, not a
+    # substitute for it.
     pre_dropped: List[Dict[str, str]] = []
     filtered: List[Dict[str, Any]] = []
     for c in candidates:
@@ -76,6 +80,10 @@ def generate_route_plans_for_se(
             continue
         if dc.get("DC_Status") == "Legal_Hold":
             pre_dropped.append({"dc_id": dc["DC_ID"], "reason": "Legal_Hold"})
+            continue
+        days_since = dc.get("Days_Since_Last_Visit")
+        if days_since is not None and days_since < constants.min_days_since_last_visit:
+            pre_dropped.append({"dc_id": dc["DC_ID"], "reason": "Visited_Too_Recently"})
             continue
         filtered.append(c)
 
@@ -110,6 +118,12 @@ def generate_route_plans_for_se(
             priority_score_captured=result["priority_score_captured"],
             feasible=result["feasible"], infeasibility_reason=result.get("infeasibility_reason", ""),
             is_default_selected=(plan_type == RoutePlan.PlanType.PRIORITY_MAX),
+            # GR-R10 audit trail (see RoutePlan.avg_speed_kmph_used/alpha_used docstring)
+            # -- none of the 3 model builders above are called with an explicit
+            # avg_speed_kmph override, so R3_2_DEFAULT_AVG_SPEED_KMPH is what every plan
+            # actually used; alpha_used only exists in BALANCED's own result dict.
+            avg_speed_kmph_used=agent.R3_2_DEFAULT_AVG_SPEED_KMPH,
+            alpha_used=result.get("alpha_used"),
         )
         RouteStop.objects.bulk_create([
             RouteStop(
@@ -247,6 +261,9 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             "total_visit_minutes": r.total_visit_minutes,
             "total_minutes": r.total_minutes,
             "priority_score_captured": r.priority_score_captured,
+            # GR-R10 audit trail -- the ops assumptions behind the numbers above.
+            "avg_speed_kmph_used": r.avg_speed_kmph_used,
+            "alpha_used": r.alpha_used,
             "feasible": r.feasible,
             "infeasibility_reason": r.infeasibility_reason or None,
             # R0.4's Origin_Point -- where/why this route starts where it does. See

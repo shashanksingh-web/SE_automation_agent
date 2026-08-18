@@ -14,8 +14,10 @@ import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, impor
 
 # 3+ consecutive misses on the same (SE, DC) pair triggers an escalation note + a
 # priority_multiplier boost on the just-reconciled task -- a visible flag in the outcome
-# table for chronic non-execution, not a silent internal-only adjustment.
-ESCALATION_THRESHOLD = 3
+# table for chronic non-execution, not a silent internal-only adjustment. Threshold lives
+# on DCVisitStreak itself (single source of truth -- also used by services.
+# generate_plan_for_scope's Critical flag), not duplicated here.
+ESCALATION_THRESHOLD = DCVisitStreak.ESCALATION_THRESHOLD
 ESCALATION_BOOST = 1.5
 MAX_PRIORITY_MULTIPLIER = 3.0
 
@@ -93,6 +95,18 @@ class Command(BaseCommand):
         counts = {"COMPLETED": 0, "PARTIAL": 0, "MISSED": 0}
         escalated = 0
 
+        # Batched instead of ~3 queries/task (get_or_create + streak.save + task.save) run
+        # serially -- a full-state daily reconciliation is thousands of DailyTask rows,
+        # thousands of round-trips before this. Fetch every DCVisitStreak that could
+        # possibly apply once, mutate in memory, then a single bulk_create() for brand-new
+        # (SE, DC) pairs and a single bulk_update() for existing ones; DailyTask rows get
+        # one bulk_update() at the end. bulk_create/bulk_update don't apply auto_now, so
+        # updated_at is set explicitly on every touched/new streak.
+        se_id_strs = sorted({t.se_id for t in tasks})
+        existing_streaks = {(s.se_id, s.dc_id): s for s in DCVisitStreak.objects.filter(se_id__in=se_id_strs, dc_id__in=dc_ids)}
+        new_streaks: dict = {}  # (se_id, dc_id) -> DCVisitStreak, for pairs with no existing row yet
+        touched_existing: set = set()  # keys into existing_streaks that got mutated this run
+
         for task in tasks:
             key = (task.se_id, task.dc_id)
             visit_date = visited.get(key)
@@ -111,25 +125,47 @@ class Command(BaseCommand):
             task.actual_order_value = order_value
             task.reconciled_at = now
 
-            streak, _ = DCVisitStreak.objects.get_or_create(se_id=task.se_id, dc_id=task.dc_id)
+            streak = existing_streaks.get(key)
+            if streak is None:
+                streak = new_streaks.get(key)
+            if streak is None:
+                streak = DCVisitStreak(se_id=task.se_id, dc_id=task.dc_id)
+                new_streaks[key] = streak
+            elif key in existing_streaks:
+                touched_existing.add(key)
+
             if status == DailyTask.OutcomeStatus.MISSED:
                 streak.consecutive_misses += 1
             else:
                 streak.consecutive_misses = 0
             streak.last_outcome_date = task.plan_date
-            streak.save(update_fields=["consecutive_misses", "last_outcome_date", "updated_at"])
+            streak.updated_at = now
 
             if status == DailyTask.OutcomeStatus.MISSED and streak.consecutive_misses >= ESCALATION_THRESHOLD:
                 task.priority_multiplier = round(min(task.priority_multiplier * ESCALATION_BOOST, MAX_PRIORITY_MULTIPLIER), 2)
+                # Strip any previous escalation suffix before appending a fresh one --
+                # previously, once "[ESCALATED" appeared once, the note was never
+                # touched again even as consecutive_misses kept climbing, so the printed
+                # miss-count went stale after the SE's first escalation.
+                base_reason = task.reason_of_visit.split(" [ESCALATED")[0]
                 note = f" [ESCALATED: missed {streak.consecutive_misses}x running]"
-                if "[ESCALATED" not in task.reason_of_visit:
-                    task.reason_of_visit = (task.reason_of_visit + note)[:255]
+                task.reason_of_visit = (base_reason + note)[:255]
                 escalated += 1
 
-            task.save(update_fields=[
-                "outcome_status", "actual_visit_date", "actual_order_value", "reconciled_at",
-                "priority_multiplier", "reason_of_visit",
-            ])
+        # batch_size=500 -- a STATE-scope reconciliation is thousands of tasks; one
+        # unbounded bulk query at that size risks the DB's own parameter-count limits.
+        if new_streaks:
+            DCVisitStreak.objects.bulk_create(list(new_streaks.values()), batch_size=500)
+        if touched_existing:
+            DCVisitStreak.objects.bulk_update(
+                [existing_streaks[k] for k in touched_existing],
+                ["consecutive_misses", "last_outcome_date", "updated_at"],
+                batch_size=500,
+            )
+        DailyTask.objects.bulk_update(tasks, [
+            "outcome_status", "actual_visit_date", "actual_order_value", "reconciled_at",
+            "priority_multiplier", "reason_of_visit",
+        ], batch_size=500)
 
         skipped_note = f" ({fm_tasks_skipped} Farmer Meeting task(s) skipped, no DC to reconcile against)" if fm_tasks_skipped else ""
         self.stdout.write(self.style.SUCCESS(
