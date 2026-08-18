@@ -928,14 +928,17 @@ STATE_TO_ZONE = {
 }
 
 
-def club_tier_for_turnover(qualifying_turnover: Optional[float]) -> Optional[Tuple[str, Optional[float]]]:
-    """Returns (tier_name, tod_percent) for the highest tier whose threshold is met, or
-    None if turnover is unknown or below every tier's entry point (Copper's 400,000)."""
+def club_tier_for_turnover(qualifying_turnover: Optional[float]) -> Optional[Tuple[str, Optional[float], str, str]]:
+    """Returns (tier_name, tod_percent, tour_reward_west, tour_reward_east) for the
+    highest tier whose threshold is met, or None if turnover is unknown or below every
+    tier's entry point (Copper's 400,000). Widened 2026-08-18 to carry the tour reward
+    alongside TOD% -- both are real per-tier benefits from DC_CLUB_TIER_TABLE, and
+    "what tier" alone is a weaker pitch point than "what tier gets you.\""""
     if qualifying_turnover is None:
         return None
-    for tier, threshold, tod_percent, _, _ in DC_CLUB_TIER_TABLE:
+    for tier, threshold, tod_percent, reward_west, reward_east in DC_CLUB_TIER_TABLE:
         if qualifying_turnover >= threshold:
-            return tier, tod_percent
+            return tier, tod_percent, reward_west, reward_east
     return None
 
 
@@ -957,12 +960,35 @@ def dc_club_participation_text(club: Optional[Dict[str, Any]]) -> str:
             bits.append(f"{club['Zone']} zone")
         if club.get("TOD_Percent") is not None:
             bits.append(f"{club['TOD_Percent']:.2f}% TOD")
+        # Bug fixed 2026-08-19: an already-tiered DC never had its own reward shown,
+        # only DCs still working towards one (Eligible_Tier_Reward_If_Cleared below) --
+        # see normalize_dc_club's Reward field for the fix.
+        if club.get("Reward"):
+            bits.append(club["Reward"])
         return "Enrolled -- " + ", ".join(bits)
+    copper_threshold = DC_CLUB_TIER_TABLE[-1][1]  # lowest tier, table ordered highest-to-lowest
     if club.get("Outstanding_Cleared") is False:
-        return "Enrolled -- no tier yet (outstanding not cleared)"
+        eligible = club.get("Eligible_Tier_If_Outstanding_Cleared")
+        if eligible:
+            benefit_bits = []
+            if club.get("Eligible_Tier_TOD_Percent_If_Cleared") is not None:
+                benefit_bits.append(f"{club['Eligible_Tier_TOD_Percent_If_Cleared']:.2f}% TOD")
+            if club.get("Eligible_Tier_Reward_If_Cleared"):
+                benefit_bits.append(club["Eligible_Tier_Reward_If_Cleared"])
+            benefit_note = f" -- {', '.join(benefit_bits)}" if benefit_bits else ""
+            return f"Enrolled -- no tier yet (outstanding not cleared; would be {eligible} if cleared{benefit_note})"
+        # Bug fixed 2026-08-19: outstanding not cleared isn't necessarily the ONLY
+        # blocker -- a DC with no/below-threshold turnover has nothing to become
+        # eligible for even once outstanding clears, but this used to say only
+        # "outstanding not cleared," silently hiding the second, often-bigger gap and
+        # implying clearing outstanding alone would unlock a tier when it wouldn't.
+        turnover = club.get("Qualifying_Turnover")
+        if turnover is None:
+            return "Enrolled -- no tier yet (outstanding not cleared; no qualifying turnover this scheme year either)"
+        return f"Enrolled -- no tier yet (outstanding not cleared; turnover ₹{turnover:,.0f} is also below Copper's ₹{copper_threshold:,.0f} entry threshold)"
     if club.get("Qualifying_Turnover") is None:
         return "Enrolled -- no tier yet (no qualifying turnover this scheme year)"
-    return "Enrolled -- no tier yet (below Copper's entry threshold)"
+    return f"Enrolled -- no tier yet (turnover ₹{club['Qualifying_Turnover']:,.0f} is below Copper's ₹{copper_threshold:,.0f} entry threshold)"
 
 
 def load_dc_master(path: Path = DC_MASTER_CSV) -> Tuple[Table, Exceptions]:
@@ -1816,17 +1842,45 @@ def normalize_dc_club(
         current_outstanding = dc_financials.get(dc_id, {}).get("Current_Outstanding")
         outstanding_cleared = None if current_outstanding is None else current_outstanding <= 0
 
-        club_tier = tod_percent = None
-        if outstanding_cleared:
-            tier_match = club_tier_for_turnover(qualifying_turnover)
-            if tier_match:
-                club_tier, tod_percent = tier_match
+        # Computed unconditionally, regardless of outstanding_cleared -- confirmed
+        # 2026-08-18: an SE talking to a DC that's turnover-qualified but outstanding-
+        # blocked needs to know WHICH tier clearing the balance would unlock, not just
+        # that they're currently blocked. Club_Tier itself stays hard-gated below (the
+        # confirmed rule is turnover AND cleared outstanding, never a tiebreak) -- this
+        # is purely informational, never used as if it were the real, applicable tier.
+        turnover_tier_match = club_tier_for_turnover(qualifying_turnover)
+        eligible_tier_if_cleared = eligible_tod_if_cleared = eligible_reward_if_cleared = None
+        if turnover_tier_match:
+            eligible_tier_if_cleared, eligible_tod_if_cleared, reward_west, reward_east = turnover_tier_match
+            # Zone-specific -- DC_CLUB_TIER_TABLE's tour reward only actually differs
+            # West vs East for Bronze (Kerala vs Sikkim); every other tier's reward is
+            # identical either way, but looking it up by zone is still correct rather
+            # than assuming that always holds. None (not guessed) when this DC's own
+            # zone isn't resolvable (state not in STATE_TO_ZONE).
+            eligible_reward_if_cleared = reward_west if zone == "West" else reward_east if zone == "East" else None
+
+        club_tier = tod_percent = reward = None
+        if outstanding_cleared and turnover_tier_match:
+            club_tier, tod_percent, tier_reward_west, tier_reward_east = turnover_tier_match
+            # Same zone-specific lookup as Eligible_Tier_Reward_If_Cleared below -- bug
+            # fixed 2026-08-19: this tier's own reward was computed into
+            # turnover_tier_match but never actually carried into the output row, so a
+            # DC that had ALREADY achieved a tier could never be told what it was
+            # getting, only DCs still working towards one. Confirmed live: every
+            # DC_CLUB_TIER_TABLE tier has a real reward string, this wasn't a "some
+            # tiers have none" gap.
+            reward = tier_reward_west if zone == "West" else tier_reward_east if zone == "East" else None
         # outstanding_cleared is False or None (unconfirmed) -> Club_Tier stays None,
         # even if turnover alone would qualify -- the confirmed rule is a hard AND, not
         # "turnover, with outstanding as a tiebreak."
 
         if qualifying_turnover is not None:
             partial_exclusion_flagged = True
+
+        # Only actionable (and only ever surfaced) when it differs from the real,
+        # already-applicable Club_Tier -- a DC that's already tiered has nothing to gain
+        # from being told what it's already getting.
+        still_pending = eligible_tier_if_cleared is not None and eligible_tier_if_cleared != club_tier
 
         out.append(
             {
@@ -1836,6 +1890,13 @@ def normalize_dc_club(
                 "Qualifying_Turnover": qualifying_turnover,
                 "Outstanding_Cleared": outstanding_cleared,
                 "Club_Tier": club_tier,
+                # This tier's own reward (tour voucher etc.) -- None until club_tier is
+                # actually achieved, same gating as TOD_Percent below.
+                "Reward": reward,
+                # Informational only -- see the comment above where this is computed.
+                "Eligible_Tier_If_Outstanding_Cleared": eligible_tier_if_cleared if still_pending else None,
+                "Eligible_Tier_TOD_Percent_If_Cleared": eligible_tod_if_cleared if still_pending else None,
+                "Eligible_Tier_Reward_If_Cleared": eligible_reward_if_cleared if still_pending else None,
                 "Zone": zone,
                 "TOD_Percent": tod_percent,
                 "Slab_Advance_Bonus_Eligible": None,  # see docstring -- genuine source-doc date ambiguity, not computed
@@ -1948,15 +2009,27 @@ def completion_multiplier(completion_rate_30d: Optional[float], sample_size: int
     return max(0.7, min(1.3, 0.7 + 0.6 * completion_rate_30d))
 
 
-def score_bo1_private_label(pl_value: float, pl_expected: float, c: BusinessConstants, weight_multiplier: float = 1.0) -> Dict[str, Any]:
+def score_bo1_private_label(
+    pl_value: float, pl_expected: float, c: BusinessConstants,
+    weight_multiplier: float = 1.0, yoy_growth_multiplier: float = 1.0,
+) -> Dict[str, Any]:
+    """yoy_growth_multiplier (confirmed 2026-08-18, planning.services._yoy_pl_growth_
+    multiplier): a second, independent multiplier from YoY PL growth (this fiscal-YTD
+    vs the same window last fiscal year) -- a provisional business default (+/-10% band),
+    not a confirmed Source 5 formula like weight_multiplier's completion-rate weighting
+    is. Multiplies in alongside weight_multiplier, not instead of it -- the two answer
+    different questions (recent completion rate vs longer-term growth trend)."""
     if not pl_expected:
         return {"score_pct": None, "grade": None, "reason": "PL_Expected undefined -- Config_Ambiguous"}
     weight_multiplier = max(0.7, min(1.3, weight_multiplier))
-    pct = (pl_value / pl_expected) * weight_multiplier
+    yoy_growth_multiplier = max(0.9, min(1.1, yoy_growth_multiplier))
+    pct = (pl_value / pl_expected) * weight_multiplier * yoy_growth_multiplier
     grade = "A" if pct >= c.bo1_grade_a else "B" if pct >= c.bo1_grade_b else "C" if pct >= c.bo1_grade_c else "D"
     reason = f"PL at {pct:.0%} of trailing baseline" if pct >= 0 else f"net PL negative this window ({pct:.0%} of baseline -- returns exceeding new PL billing)"
     if weight_multiplier != 1.0:
         reason += f"; completion-weighted {weight_multiplier:.2f}x"
+    if yoy_growth_multiplier != 1.0:
+        reason += f"; YoY growth-weighted {yoy_growth_multiplier:.2f}x"
     return {"score_pct": pct, "grade": grade, "reason": reason}
 
 
@@ -2276,6 +2349,13 @@ class DailyTaskRow:
     # Confirmed live 2026-08-06 -- payments_paymenttransaction.customer_id bridges
     # through customer_management_customer.id -> .partner_id, same pattern as Orders.
     Last_Payment_Join_Key_Unconfirmed: bool = False
+    # normalize_dc_club()'s full per-DC dict (confirmed 2026-08-19) -- DC_Club_Participation
+    # above is a one-line prose summary of this same data; this is the structured form so
+    # a caller can render current standing (Club_Tier/Zone/TOD_Percent/Reward) and
+    # eligibility-if-outstanding-cleared (Eligible_Tier_If_Outstanding_Cleared/
+    # ..._TOD_Percent_If_Cleared/..._Reward_If_Cleared) as distinct UI elements instead
+    # of parsing prose. None when club data wasn't available this run.
+    Club_Detail: Optional[Dict[str, Any]] = None
     # Real aging bucket from dc_datamart's os_1_to_90/os_90_plus split -- NOT an exact
     # "overdue since <date>" or a literal day count: checked live 2026-08-06, no
     # due-date or days-overdue column exists anywhere in dc_datamart's confirmed schema,
@@ -3214,6 +3294,7 @@ def generate_se_daily_plan(
             Last_Order_Date=fin.get("Last_Order_Date"), Last_Order_Value=fin.get("Last_Order_Value"),
             Last_Payment_Date=last_payment_by_dc.get(dc_id), YTD_Private_Label=ytd_pl_by_dc.get(dc_id),
             DC_Club_Participation=dc_club_participation_text(club) if dc_club_by_id else "Config_Ambiguous -- DC club data not supplied",
+            Club_Detail=club if dc_club_by_id else None,
             Objective=",".join(matched), No_New_Orders=_no_new_orders(dc_id),
             Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
             Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,

@@ -51,6 +51,25 @@ def _serialize_task(t: DailyTask) -> dict:
         "Last_Order_Value": t.last_order_value, "Last_Payment_Date": t.last_payment_date,
         "Last_Payment_Join_Key_Unconfirmed": t.last_payment_join_key_unconfirmed,
         "YTD_Private_Label": t.ytd_private_label, "DC_Club_Participation": t.dc_club_participation,
+        # Structured form of DC_Club_Participation's prose summary (se_daily_plan_agent.
+        # normalize_dc_club(), confirmed 2026-08-19) -- null when club data wasn't
+        # available this run, same gate as DC_Club_Participation's own
+        # "Config_Ambiguous" case. Club_Tier/Zone/TOD_Percent/Reward describe current
+        # standing (all null if not yet tiered); the Eligible_Tier_* trio describes what
+        # clearing outstanding would unlock (all null once already tiered, or if
+        # Qualifying_Turnover doesn't clear even Copper's entry threshold).
+        "Club_Detail": {
+            "Is_Club_Enrolled": t.club_detail.get("Is_Club_Enrolled"),
+            "Qualifying_Turnover": t.club_detail.get("Qualifying_Turnover"),
+            "Outstanding_Cleared": t.club_detail.get("Outstanding_Cleared"),
+            "Club_Tier": t.club_detail.get("Club_Tier"),
+            "Zone": t.club_detail.get("Zone"),
+            "TOD_Percent": t.club_detail.get("TOD_Percent"),
+            "Reward": t.club_detail.get("Reward"),
+            "Eligible_Tier_If_Outstanding_Cleared": t.club_detail.get("Eligible_Tier_If_Outstanding_Cleared"),
+            "Eligible_Tier_TOD_Percent_If_Cleared": t.club_detail.get("Eligible_Tier_TOD_Percent_If_Cleared"),
+            "Eligible_Tier_Reward_If_Cleared": t.club_detail.get("Eligible_Tier_Reward_If_Cleared"),
+        } if t.club_detail else None,
         "Critical": t.critical, "Critical_Reasons": t.critical_reasons,
         "Objective": t.objective, "No_New_Orders": t.no_new_orders, "Credit_On_Hold": t.credit_on_hold,
         "Credit_On_Hold_Reason": t.credit_on_hold_reason, "Estimated_Duration": t.estimated_duration,

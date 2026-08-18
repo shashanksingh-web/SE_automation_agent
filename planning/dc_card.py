@@ -40,12 +40,21 @@ this DC's own block peers -> node peers -> geographic (every other DC within 200
 then the nearest 10 Nodes by centroid distance if even that finds nothing) -- see
 services._attach_nearby_product_recommendations(). The geo tier only ever fires when
 every closer, more locally-relevant signal has genuinely come up empty, and is absent
-entirely (not an empty recommendation) when nothing is found anywhere nearby either."""
+entirely (not an empty recommendation) when nothing is found anywhere nearby either.
+
+Every tier past Product Cohort match is PRIVATE LABEL-only (confirmed 2026-08-18, per
+direct instruction) -- a section titled Private Label must only ever name a real
+business_segment == "PRIVATE LABEL" product, never a BRANDED one just because it
+outsold PL products among the same peers. Reads recommended_products_pl, a separately
+re-ranked list from Pitching's own (any-segment) recommended_products -- see
+planning.services._peer_stats' segment param."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional, Tuple
+
+import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 from .models import DailyTask, DCCard, FocusProductTargetRun, PlanRun
 from .pitching import _format_product_list
@@ -79,11 +88,20 @@ def _turnover_standing(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         parts.append(f"पिछले साल ₹{py:,.0f} का परचेज़ किया था")
     if ytd:
         parts.append(f"इस साल अभी तक ₹{ytd:,.0f} का परचेज़ हो चुका है")
-    if not parts and qualifying_turnover is None:
+    if not parts and qualifying_turnover is None and ctx.get("yoy_pl_growth_pct") is None:
         return None
     text = " और ".join(parts)
     if qualifying_turnover is not None:
         text += (", " if parts else "") + f"क्लब स्कीम Qualifying Turnover ₹{qualifying_turnover:,.0f} है"
+    # YoY PL comparison (confirmed 2026-08-18, planning.services._yoy_pl_growth_
+    # multiplier) -- PL-specific, distinct from the general purchase figures above.
+    # Like-for-like window (same days elapsed into the fiscal year on both sides), not a
+    # full prior-year total. None (not shown) when there's no real last-year baseline.
+    yoy_pct = ctx.get("yoy_pl_growth_pct")
+    if yoy_pct is not None:
+        last_year_pl = ctx.get("ytd_pl_last_year")
+        direction = "ज़्यादा" if yoy_pct >= 0 else "कम"
+        text += ("; " if text else "") + f"PL सेल पिछले साल की इसी अवधि (₹{last_year_pl:,.0f}) से {abs(yoy_pct):.0%} {direction} है"
     return text.strip() + "।", "Turnover_Standing"
 
 
@@ -101,16 +119,45 @@ def _scheme_standing(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     club = ctx.get("club")
     if not club or not club.get("Is_Club_Enrolled"):
         return "क्लब स्कीम में एनरोल्ड नहीं है।", "Scheme_Standing"
+    copper_threshold = agent.DC_CLUB_TIER_TABLE[-1][1]  # lowest tier, table ordered highest-to-lowest
     tier = club.get("Club_Tier")
     if not tier:
         if club.get("Outstanding_Cleared") is False:
-            return "क्लब स्कीम में है, लेकिन अभी कोई टियर नहीं -- आउटस्टैंडिंग क्लियर नहीं है (एलिजिबिलिटी की शर्त)।", "Scheme_Standing"
-        return "क्लब स्कीम में है, लेकिन अभी कोई टियर कन्फर्म नहीं है।", "Scheme_Standing"
+            note = "क्लब स्कीम में है, लेकिन अभी कोई टियर नहीं -- आउटस्टैंडिंग क्लियर नहीं है (एलिजिबिलिटी की शर्त)।"
+            eligible = club.get("Eligible_Tier_If_Outstanding_Cleared")
+            if eligible:
+                benefit_bits = []
+                if club.get("Eligible_Tier_TOD_Percent_If_Cleared") is not None:
+                    benefit_bits.append(f"{club['Eligible_Tier_TOD_Percent_If_Cleared']:.2f}% TOD")
+                if club.get("Eligible_Tier_Reward_If_Cleared"):
+                    benefit_bits.append(club["Eligible_Tier_Reward_If_Cleared"])
+                benefit_note = f" ({', '.join(benefit_bits)})" if benefit_bits else ""
+                note += f" आउटस्टैंडिंग क्लियर करने पर {eligible} टियर के लिए एलिजिबल हो जाएगा{benefit_note} -- यह पिच पॉइंट है।"
+            else:
+                # Bug fixed 2026-08-19: outstanding not cleared isn't necessarily the
+                # ONLY blocker -- a DC with no/below-threshold turnover has nothing to
+                # become eligible for even once outstanding clears. See
+                # se_daily_plan_agent.dc_club_participation_text's own fix for the
+                # English-string version of this same bug.
+                turnover = club.get("Qualifying_Turnover")
+                if turnover is None:
+                    note += " इस स्कीम वर्ष में कोई क्वालिफाइंग टर्नओवर भी दर्ज नहीं है।"
+                else:
+                    note += f" टर्नओवर ₹{turnover:,.0f} भी Copper के ₹{copper_threshold:,.0f} एंट्री थ्रेशोल्ड से कम है।"
+            return note, "Scheme_Standing"
+        turnover = club.get("Qualifying_Turnover")
+        if turnover is None:
+            return "क्लब स्कीम में है, लेकिन अभी कोई टियर कन्फर्म नहीं है (इस स्कीम वर्ष में कोई क्वालिफाइंग टर्नओवर दर्ज नहीं है)।", "Scheme_Standing"
+        return f"क्लब स्कीम में है, लेकिन अभी कोई टियर कन्फर्म नहीं है (टर्नओवर ₹{turnover:,.0f} Copper के ₹{copper_threshold:,.0f} एंट्री थ्रेशोल्ड से कम है)।", "Scheme_Standing"
     bits = [f"{tier} टियर"]
     if club.get("Zone"):
         bits.append(f"{club['Zone']} zone")
     if club.get("TOD_Percent") is not None:
         bits.append(f"{club['TOD_Percent']:.2f}% TOD")
+    # Bug fixed 2026-08-19: an already-tiered DC never had its own reward shown, only
+    # DCs still working towards one above -- see normalize_dc_club's Reward field.
+    if club.get("Reward"):
+        bits.append(club["Reward"])
     return ", ".join(bits) + "।", "Scheme_Standing"
 
 
@@ -175,22 +222,27 @@ def _pl_recommendation(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     The two signals are now independent -- either one present is enough to show
     something, and both together compose into one sentence when both exist.
 
-    recommended_products (planning.services, widened 2026-08-18 to up to 5 products per
-    direct instruction) is the single source of truth for the product-name half of this
-    section now, shared with pitching._tp_block_comparison via _format_product_list() so
-    the bracket notes can't drift in wording between the two. scope on the first item
-    says which tier produced it: "block"/"node" (this DC's own dominant_category,
-    peer-purchase ranked) or "nearby_radius"/"nearby_node" (services._attach_nearby_
-    product_recommendations' geographic fallback -- fires only when this DC's own
-    block+node peers had nothing at all to rank from). Falls back to category-average-
-    only phrasing when block_category_avg exists but recommended_products doesn't (a
-    real, if rare, granularity gap between the category-total and product-level peer
-    queries)."""
+    recommended_products_pl (planning.services, added 2026-08-18 per direct instruction)
+    is the single source of truth for the product-name half of this section -- unlike
+    Pitching's S1 (any segment, a general cross-sell signal), this section is titled
+    Private Label and must only ever name a real business_segment == "PRIVATE LABEL"
+    product, so it reads a segment-filtered list computed separately from Pitching's
+    general recommended_products (planning.services._peer_stats' segment param re-ranks
+    within PL only, rather than filtering the general top-5 -- see that function's own
+    docstring for why). Still shares _format_product_list() with pitching.py so the
+    bracket notes can't drift in wording. scope on the first item says which tier
+    produced it: "block"/"node" (this DC's own dominant_category, peer-purchase ranked,
+    PL-only) or "nearby_radius"/"nearby_node" (services._attach_nearby_product_
+    recommendations' geographic fallback, PL-only -- fires only when this DC's own
+    block+node peers had no PL purchase data at all to rank from, even if they had
+    plenty of non-PL data). Falls back to category-average-only phrasing when
+    block_category_avg exists but recommended_products_pl doesn't (this DC's category
+    peers buy in that category, just not any PRIVATE LABEL product within it)."""
     match = ctx.get("product_cohort_match")
     if match:
         return match
     category, block_avg = ctx.get("dominant_category"), ctx.get("block_category_avg")
-    products = ctx.get("recommended_products") or []
+    products = ctx.get("recommended_products_pl") or []
     ytd_pl = ctx.get("ytd_private_label")
     parts: List[str] = []
     if products:
@@ -199,18 +251,19 @@ def _pl_recommendation(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
             scope_label = "नोड" if scope == "node" else "ब्लॉक"
             dc_amt = ctx.get("dc_category_purchase") or 0
             parts.append(
-                f"सुझाई गई कैटेगरी: {category} -- इसमें {scope_label} में सबसे ज़्यादा बिकने वाले प्रोडक्ट्स: "
+                f"सुझाई गई कैटेगरी: {category} -- इसमें {scope_label} में सबसे ज़्यादा बिकने वाले प्राइवेट लेबल प्रोडक्ट्स: "
                 f"{_format_product_list(products)}। इस DC से इस कैटेगरी में अभी तक ₹{dc_amt:,.0f} का बिज़नेस हुआ है।"
             )
         else:
-            # This DC's own purchases + block peers + node peers all came up empty --
-            # geographic fallback (services._attach_nearby_product_recommendations,
-            # confirmed 2026-08-18): 200km radius first, nearest Nodes only if that
-            # itself found nothing. Absent entirely (not an empty list) when even that
-            # found nothing, so this branch only ever fires with real products to show.
+            # This DC's own purchases + block peers + node peers had no PRIVATE LABEL
+            # purchase data (even if they had plenty of non-PL data) -- geographic
+            # fallback (services._attach_nearby_product_recommendations, confirmed
+            # 2026-08-18): 200km radius first, nearest Nodes only if that itself found
+            # nothing. Absent entirely (not an empty list) when even that found nothing,
+            # so this branch only ever fires with real PL products to show.
             basis_label = "आसपास के (200km के अंदर) DCs" if scope == "nearby_radius" else "आसपास के नज़दीकी Nodes"
             parts.append(
-                f"इस DC/ब्लॉक/नोड में कोई खरीद डेटा नहीं है -- {basis_label} में लोकप्रिय प्रोडक्ट्स के आधार पर सुझाव: "
+                f"इस DC/ब्लॉक/नोड में कोई प्राइवेट लेबल खरीद डेटा नहीं है -- {basis_label} में लोकप्रिय प्राइवेट लेबल प्रोडक्ट्स के आधार पर सुझाव: "
                 f"{_format_product_list(products)}।"
             )
     elif category and block_avg:
@@ -266,18 +319,20 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "3. प्राइवेट लेबल (Private Label)\n" + private_label_section,
     ])
 
-    # Same recommended_products list as PitchScript's own field (planning/pitching.py) -
-    # only the category/geographic fallback path, not product_cohort_match (Focus
-    # Product Targeting's own pre-formatted override, opt-in and rare) - see that
-    # function's own docstring for why the two paths exist. A card built from
-    # product_cohort_match leaves this structured field empty even though
-    # private_label_section's prose has a recommendation; same honest-degrade tradeoff
-    # as everywhere else in this module.
+    # PL-only recommended_products_pl (planning/services.py, added 2026-08-18 per direct
+    # instruction) -- NOT the same list as PitchScript's own recommended_products field
+    # (that one is any segment, a general cross-sell signal; this section is titled
+    # Private Label and must only ever name a real PRIVATE LABEL product). Only the
+    # category/geographic fallback path, not product_cohort_match (Focus Product
+    # Targeting's own pre-formatted override, opt-in and rare) - see that function's own
+    # docstring for why the two paths exist. A card built from product_cohort_match
+    # leaves this structured field empty even though private_label_section's prose has a
+    # recommendation; same honest-degrade tradeoff as everywhere else in this module.
 
     return {
         "who_section": who_section,
         "where_dc_stands_section": where_dc_stands_section,
-        "recommended_products": ctx.get("recommended_products") or [],
+        "recommended_products": ctx.get("recommended_products_pl") or [],
         "private_label_section": private_label_section,
         "card_hindi": card_hindi,
         "data_sources_used": used,

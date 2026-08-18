@@ -108,6 +108,14 @@ class DailyTask(models.Model):
     ytd_private_label = models.FloatField(blank=True, null=True)
     # Column 15
     dc_club_participation = models.CharField(max_length=64, blank=True, default="")
+    # se_daily_plan_agent.normalize_dc_club()'s full per-DC club dict, structured --
+    # dc_club_participation above is a one-line prose summary of the exact same data,
+    # this is that data broken out so a caller can render current standing (tier/zone/
+    # TOD%/reward) and eligibility-if-outstanding-cleared (tier/TOD%/reward) as distinct
+    # UI elements instead of parsing prose. {} when club data wasn't available this run
+    # (Enrollment_Basis unconfirmed doesn't block this -- see that field's own caveat,
+    # recorded once per run via the Club_Enrollment_Flag_Unconfirmed exception).
+    club_detail = models.JSONField(default=dict, blank=True)
 
     # Confirmed 2026-08-18 -- cross-cutting "cover this one first" signal: chronic miss
     # escalation (DCVisitStreak.consecutive_misses >= DCVisitStreak.ESCALATION_THRESHOLD),

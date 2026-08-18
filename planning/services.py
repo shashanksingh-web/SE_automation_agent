@@ -228,6 +228,19 @@ def _fiscal_year_start(plan_date: str) -> str:
     return f"{year}-04-01"
 
 
+def _prior_fy_window(plan_date: str) -> Tuple[str, str]:
+    """(fy_start, plan_date) shifted back exactly one Indian fiscal year -- same number
+    of days elapsed into the year, not a full prior-year total, so a YoY PL growth
+    comparison (confirmed 2026-08-18) is like-for-like against _sql_ytd_pl's own window.
+    Reuses _sql_ytd_pl unchanged, just called with these shifted dates."""
+    d = datetime.fromisoformat(plan_date).date()
+    try:
+        prior_plan_date = d.replace(year=d.year - 1)
+    except ValueError:  # plan_date is Feb 29 and the prior year isn't a leap year
+        prior_plan_date = d.replace(year=d.year - 1, day=28)
+    return _fiscal_year_start(prior_plan_date.isoformat()), prior_plan_date.isoformat()
+
+
 def _sql_ytd_pl(dc_ids: List[str], fy_start: str, plan_date: str) -> str:
     # Real PL source, confirmed 2026-08-12 (Data Norm Agent doc, Source 3h, live query):
     # products_template.business_segment_name = 'PRIVATE LABEL' is the actual PL tag --
@@ -494,6 +507,16 @@ def _sql_block_product_purchase(dc_ids: List[str], plan_date: str) -> str:
     """
 
 
+# BO1 PL_Expected's trailing-90d leg (confirmed 2026-08-18): raises the recent-
+# performance baseline by 20% before averaging it with the AOP-target leg, i.e. this
+# DC is expected to beat its own trailing average by this much, not just match it.
+# Provisional business default, NOT the same as config item 1.3's growth-requirement
+# language (that one asks for the AOP-target leg to carry a growth factor, not this
+# leg) -- a distinct engineering decision, picked deliberately over multiplying the AOP
+# leg or the final combined figure instead. Tune here if the business wants a different
+# factor.
+PL_TRAILING_LEG_GROWTH_MULTIPLIER = 1.2
+
 BUSINESS_AREA_STRENGTH_TOP_N = 5  # DC Card Who section -- top-N sub-categories by 12-month value, not just 1
 
 
@@ -576,9 +599,10 @@ def _node_centroids(dc_master: "agent.Table") -> Dict[str, Tuple[float, float]]:
 def _attach_nearby_product_recommendations(
     client: "agent.MetabaseClient", dc_master: "agent.Table", needs_geo_fallback: List[str],
     extra_data_by_dc: Dict[str, Dict[str, Any]], plan_date: str,
+    result_key: str = "recommended_products", segment: Optional[str] = None,
 ) -> None:
-    """Mutates extra_data_by_dc in place, adding to recommended_products (a list of up
-    to NEARBY_PL_PRODUCT_COUNT {name, value, category, sub_category, brand,
+    """Mutates extra_data_by_dc in place, adding to result_key (a list of up to
+    NEARBY_PL_PRODUCT_COUNT {name, value, category, sub_category, brand,
     business_segment, scope} dicts, highest value first, scope "nearby_radius" or
     "nearby_node") for every dc_id in needs_geo_fallback that a real candidate search
     actually found something for -- same unified key/shape pitching.py and dc_card.py
@@ -586,7 +610,16 @@ def _attach_nearby_product_recommendations(
     to know which tier a DC's recommendation actually came from. Leaves the key entirely
     absent for a DC where not even the Node-level fallback found any purchase data
     anywhere nearby -- pitching._tp_block_comparison/dc_card._pl_recommendation treat
-    that the same as every other "no data" case, not a fabricated empty recommendation."""
+    that the same as every other "no data" case, not a fabricated empty recommendation.
+
+    result_key/segment (added 2026-08-18): called once as-is for the general
+    recommended_products list (any segment), and once with result_key=
+    "recommended_products_pl", segment="PRIVATE LABEL" for dc_card.py's Private Label
+    section, which must only ever recommend a real PRIVATE LABEL product -- segment
+    restricts candidate purchases BEFORE ranking, same reasoning as _peer_stats' own
+    segment param (filtering an already-ranked general list would routinely return
+    nothing, since higher-value BRANDED items usually crowd PL out of an unfiltered
+    top-5)."""
     dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
 
     def _own_coords(dc_id: str) -> Optional[Tuple[float, float]]:
@@ -647,6 +680,8 @@ def _attach_nearby_product_recommendations(
             for row in purchases_by_dc.get(cid, []):
                 if category and row.get("category_name") != category:
                     continue
+                if segment and row.get("business_segment_name") != segment:
+                    continue
                 product = row.get("product_name")
                 value = agent.parse_number(row.get("purchase_30d")) or 0.0
                 if not product or value <= 0:
@@ -682,7 +717,7 @@ def _attach_nearby_product_recommendations(
         if products:
             scope = "nearby_radius" if is_radius else "nearby_node"
             entry = extra_data_by_dc.setdefault(dc_id, {})
-            entry["recommended_products"] = [{**p, "scope": scope} for p in products]
+            entry[result_key] = [{**p, "scope": scope} for p in products]
 
 
 def _sql_punch_in(se_user_ids: List[int], plan_date: str) -> str:
@@ -903,6 +938,7 @@ def generate_plan_for_scope(
     dc_club_by_id: Dict[str, Dict[str, Any]] = {}
     geo_by_dc: Dict[str, tuple] = {}
     ytd_pl_by_dc: Dict[str, float] = {}
+    ytd_pl_last_year_by_dc: Dict[str, float] = {}
     punch_in_by_se: Dict[int, tuple] = {}
     prev_punch_in_by_se: Dict[int, tuple] = {}  # Routing Agent R0.4 -- Origin_Point
     attendance_ok_by_se: Dict[int, bool] = {}
@@ -991,6 +1027,55 @@ def generate_plan_for_scope(
             for dc_id, fin in dc_financials.items()
         }
 
+        try:
+            fy_start = _fiscal_year_start(plan_date)
+            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_ytd_pl(dc_ids, fy_start, plan_date)):
+                dc_id = agent.normalize_id(row.get("dc_id"))
+                if dc_id:
+                    ytd_pl_by_dc[dc_id] = agent.parse_number(row.get("ytd_pl"))
+        except Exception as e:
+            run_exceptions.append({"source": "sale_orderrequestline", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+
+        try:
+            # YoY PL comparison (confirmed 2026-08-18) -- same query, same window shape,
+            # shifted back exactly one fiscal year via _prior_fy_window so it's a
+            # like-for-like comparison (same days-elapsed-into-the-year), not a full
+            # prior-year total. Feeds both DC Card's Turnover-wise Standing and BO1's
+            # yoy_growth_multiplier below -- moved ahead of the BO1 scoring block (was
+            # after it) so the multiplier is actually available when scoring runs.
+            prior_fy_start, prior_plan_date = _prior_fy_window(plan_date)
+            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_ytd_pl(dc_ids, prior_fy_start, prior_plan_date)):
+                dc_id = agent.normalize_id(row.get("dc_id"))
+                if dc_id:
+                    ytd_pl_last_year_by_dc[dc_id] = agent.parse_number(row.get("ytd_pl"))
+        except Exception as e:
+            run_exceptions.append({"source": "sale_orderrequestline", "reason_code": "Live_Pull_Failed", "detail": f"YoY PL comparison: {type(e).__name__}: {e}"})
+
+        def _yoy_pl_growth_multiplier(dc_id: str) -> Tuple[float, Optional[float]]:
+            """Returns (multiplier, growth_pct). A provisional business default, NOT a
+            confirmed Source 5 formula (unlike weight_multiplier's completion-rate
+            weighting, which IS confirmed) -- a gentle +/-10% nudge to BO1's score from
+            YoY PL growth, clamped at +/-30% growth so one outlier DC can't swing it
+            further. Neutral (1.0, None) only when there's no real LAST-YEAR baseline to
+            compare against (never divides by zero or a negative/zero prior figure).
+
+            Bug fixed 2026-08-18: a missing key in ytd_pl_by_dc means zero PL orders in
+            that window, not "unknown" -- _sql_ytd_pl only returns a row for a DC with
+            >=1 PL order (same convention as _sql_business_area_strength). Treating a
+            missing THIS-year figure as "no data" (instead of a real 0) previously
+            suppressed the single most important case entirely: a DC with real PL sales
+            last year and NONE this year. Confirmed live: Maa Laxmi Khad Beej Bhandar
+            went Rs56,900 (last year, same window) -> Rs0 (this year) -- a full PL
+            collapse that showed up as nothing at all in the DC Card or BO1 reasoning."""
+            this_year = ytd_pl_by_dc.get(dc_id) or 0.0
+            last_year = ytd_pl_last_year_by_dc.get(dc_id)
+            if not last_year or last_year <= 0:
+                return 1.0, None
+            growth_pct = (this_year - last_year) / last_year
+            clamped = max(-0.30, min(0.30, growth_pct))
+            multiplier = 1.0 + clamped * (0.10 / 0.30)
+            return multiplier, growth_pct
+
         # Real per-DC BO1 (PL) scoring, wired 2026-08-06, AOP-target leg added 2026-08-09.
         # score_bo1_private_label() (PL_Ratio -> A/B/C/D per 1.5's confirmed cutoffs) is
         # fed a PL_Expected blended from up to two legs:
@@ -1067,7 +1152,7 @@ def generate_plan_for_scope(
             leg_aop_by_dc: Dict[str, float] = {}
             for dc_id in set(pl_actual_30d_by_dc) | set(pl_sum_90d_by_dc):
                 pl_sum_90d = pl_sum_90d_by_dc.get(dc_id)
-                leg_trailing = (pl_sum_90d / 3.0) if pl_sum_90d else None
+                leg_trailing = (pl_sum_90d / 3.0 * PL_TRAILING_LEG_GROWTH_MULTIPLIER) if pl_sum_90d else None
 
                 leg_aop = None
                 node = dc_node_by_id.get(dc_id, "")
@@ -1080,11 +1165,17 @@ def generate_plan_for_scope(
                 legs = [v for v in (leg_trailing, leg_aop) if v is not None]
                 pl_expected = (sum(legs) / len(legs)) if legs else None
 
+                yoy_multiplier, yoy_growth_pct = _yoy_pl_growth_multiplier(dc_id)
                 result = agent.score_bo1_private_label(
-                    pl_actual_30d_by_dc.get(dc_id, 0.0), pl_expected, constants, weight_multiplier=_mult(dc_id, "PL"),
+                    pl_actual_30d_by_dc.get(dc_id, 0.0), pl_expected, constants,
+                    weight_multiplier=_mult(dc_id, "PL"), yoy_growth_multiplier=yoy_multiplier,
                 )
+                if leg_trailing is not None:
+                    result["reason"] += f"; trailing-90d leg carries a {PL_TRAILING_LEG_GROWTH_MULTIPLIER:.1f}x growth expectation (provisional, see PL_TRAILING_LEG_GROWTH_MULTIPLIER)"
                 if leg_aop is not None:
                     result["reason"] += "; AOP-allocated leg blended in (Node target x trailing-PL share, estimate, not a confirmed per-DC AOP figure)"
+                if yoy_growth_pct is not None:
+                    result["reason"] += f"; YoY PL {yoy_growth_pct:+.0%} vs same period last FY"
                 dc_bo_scores.setdefault(dc_id, {})["PL"] = result
 
             # SE-level AOP PL target rollup (new 2026-08-10): the AOP source has no SE
@@ -1240,15 +1331,6 @@ def generate_plan_for_scope(
         except Exception as e:
             run_exceptions.append({"source": "dc_mapping_club_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
         run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in club_exc.rows)
-
-        try:
-            fy_start = _fiscal_year_start(plan_date)
-            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_ytd_pl(dc_ids, fy_start, plan_date)):
-                dc_id = agent.normalize_id(row.get("dc_id"))
-                if dc_id:
-                    ytd_pl_by_dc[dc_id] = agent.parse_number(row.get("ytd_pl"))
-        except Exception as e:
-            run_exceptions.append({"source": "sale_orderrequestline", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
         try:
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_punch_in(uids, plan_date)):
@@ -1447,6 +1529,7 @@ def generate_plan_for_scope(
                 last_order_value=t["Last_Order_Value"], last_payment_date=t["Last_Payment_Date"],
                 last_payment_join_key_unconfirmed=t["Last_Payment_Join_Key_Unconfirmed"],
                 ytd_private_label=t["YTD_Private_Label"], dc_club_participation=t["DC_Club_Participation"],
+                club_detail=t.get("Club_Detail") or {},
                 objective=t["Objective"], no_new_orders=t["No_New_Orders"], credit_on_hold=t["Credit_On_Hold"],
                 credit_on_hold_reason=t["Credit_On_Hold_Reason"], estimated_duration=t["Estimated_Duration"],
                 priority_multiplier=t["Priority_Multiplier"],
@@ -1571,6 +1654,7 @@ def generate_plan_for_scope(
 
                 extra_data_by_dc: Dict[str, Dict[str, Any]] = {}
                 needs_geo_fallback: List[str] = []
+                needs_pl_geo_fallback: List[str] = []
                 for dc_id in task_dc_ids:
                     entry = dict(purchase_by_dc.get(dc_id, {}))
                     entry["last_discount"] = discount_by_dc.get(dc_id)
@@ -1589,7 +1673,7 @@ def generate_plan_for_scope(
                     entry["dc_category_purchase"] = cats.get(dominant_category) if dominant_category else None
                     block, node = block_by_dc.get(dc_id), node_by_dc.get(dc_id)
 
-                    def _peer_stats(candidate_ids: List[str]) -> Optional[Dict[str, Any]]:
+                    def _peer_stats(candidate_ids: List[str], segment: Optional[str] = None) -> Optional[Dict[str, Any]]:
                         """Category-average purchase + up to RECOMMENDED_PRODUCT_COUNT
                         (5) top-selling PRODUCTS (not just 1) among candidate_ids, within
                         dominant_category, ranked by peer-summed value, each with S1b
@@ -1603,7 +1687,16 @@ def generate_plan_for_scope(
                         which the Hindi builders already treat the same as None -- see
                         their own `if not block_avg` gate). top_products is never padded
                         -- a DC with only 2 real peer products in this category just gets
-                        2, not 5."""
+                        2, not 5.
+
+                        segment, when given, restricts totals/ranking to only that
+                        business_segment BEFORE ranking (not a post-hoc filter of the
+                        general top-5) -- added 2026-08-18 for dc_card.py's Private Label
+                        section, which must only ever recommend a PRIVATE LABEL product.
+                        Filtering the already-ranked general list instead would routinely
+                        return nothing, since higher-value BRANDED bulk items (fertilizer
+                        etc.) usually crowd PL products out of an unfiltered top 5 even
+                        when real PL peer-purchase data exists further down."""
                         if not candidate_ids:
                             return None
                         amounts = [per_dc_category.get(p, {}).get(dominant_category, 0.0) for p in candidate_ids]
@@ -1611,6 +1704,8 @@ def generate_plan_for_scope(
                         attrs: Dict[str, Dict[str, Any]] = {}
                         for p in candidate_ids:
                             for product, info in per_dc_category_product.get(p, {}).get(dominant_category, {}).items():
+                                if segment and info.get("business_segment") != segment:
+                                    continue
                                 totals[product] = totals.get(product, 0.0) + info["value"]
                                 attrs[product] = info
                         ranked = sorted(totals.items(), key=lambda kv: -kv[1])[:RECOMMENDED_PRODUCT_COUNT]
@@ -1624,18 +1719,25 @@ def generate_plan_for_scope(
                             for name, value in ranked
                         ]
                         return {
+                            # avg stays the whole-category average regardless of segment
+                            # -- it's never shown for a segment-filtered list (dc_card.py
+                            # only ever reports products_pl's product names/values, not a
+                            # PL-only average that doesn't exist as a real pulled figure).
                             "avg": (sum(amounts) / len(amounts)) if amounts else None,
                             "top_products": top_products,
                         }
 
+                    block_ids = [p for p in peer_dc_ids if block and block_by_dc.get(p) == block]
+                    node_ids = [p for p in node_peer_dc_ids if node and node_by_dc.get(p) == node]
+
                     if dominant_category:
-                        stats, scope = _peer_stats([p for p in peer_dc_ids if block and block_by_dc.get(p) == block]), "block"
+                        stats, scope = _peer_stats(block_ids), "block"
                         # Block yielded nothing usable (no peers, or peers with zero
                         # purchase in this category) -- widen to node-level peers. Only
                         # this direction: block is the more locally-relevant comparison
                         # when it has real data, so it's never overridden by node.
                         if not stats or not stats["avg"]:
-                            node_stats = _peer_stats([p for p in node_peer_dc_ids if node and node_by_dc.get(p) == node])
+                            node_stats = _peer_stats(node_ids)
                             if node_stats and node_stats["avg"]:
                                 stats, scope = node_stats, "node"
                         if stats and stats["avg"]:
@@ -1643,23 +1745,55 @@ def generate_plan_for_scope(
                             entry["peer_comparison_scope"] = scope
                             if stats["top_products"]:
                                 entry["recommended_products"] = [{**p, "scope": scope} for p in stats["top_products"]]
+
+                        # Private Label-only pass (confirmed 2026-08-18) -- same
+                        # block-then-node candidate pools, re-ranked within
+                        # business_segment == "PRIVATE LABEL" only, not a filter of
+                        # recommended_products above. dc_card.py's Private Label section
+                        # reads this, never the general list -- Pitching's S1 stays
+                        # general (any segment), since it's a "what's trending" cross-sell
+                        # signal, not PL-specific.
+                        pl_stats, pl_scope = _peer_stats(block_ids, segment="PRIVATE LABEL"), "block"
+                        if not pl_stats or not pl_stats["top_products"]:
+                            pl_node_stats = _peer_stats(node_ids, segment="PRIVATE LABEL")
+                            if pl_node_stats and pl_node_stats["top_products"]:
+                                pl_stats, pl_scope = pl_node_stats, "node"
+                        if pl_stats and pl_stats["top_products"]:
+                            entry["recommended_products_pl"] = [{**p, "scope": pl_scope} for p in pl_stats["top_products"]]
                     # DC Card-only additions -- read by planning/dc_card.py, ignored by
                     # planning/pitching.py's builders (they only ever ctx.get() the keys
                     # they know about).
                     entry["business_area_strength"] = business_area_by_dc.get(dc_id)
                     entry["club"] = dc_club_by_id.get(dc_id)
+                    # YoY PL comparison (confirmed 2026-08-18) -- PL-specific, distinct
+                    # from purchase_last_fy/purchase_ytd above (those are overall
+                    # purchase, not PL-tagged). ytd_pl itself is already in DailyTaskRow
+                    # (YTD_Private_Label); last year's figure and the growth % are new.
+                    entry["ytd_pl_last_year"] = ytd_pl_last_year_by_dc.get(dc_id)
+                    _, entry["yoy_pl_growth_pct"] = _yoy_pl_growth_multiplier(dc_id)
                     extra_data_by_dc[dc_id] = entry
                     # Own purchases + block peers + node peers all came up empty (no
                     # recommended_products set -- either no dominant_category at all, or
                     # peers had a category average but no product-level breakdown) --
                     # flagged for the geographic fallback below (confirmed 2026-08-18:
                     # 200km radius first, then nearest Nodes by centroid distance if
-                    # even that finds nothing).
+                    # even that finds nothing). Tracked separately from the PL-only need
+                    # below -- a DC can have a real general recommendation (any segment)
+                    # while still having nothing PL-specific to show, or vice versa.
                     if not entry.get("recommended_products"):
                         needs_geo_fallback.append(dc_id)
+                    if not entry.get("recommended_products_pl"):
+                        needs_pl_geo_fallback.append(dc_id)
 
                 if needs_geo_fallback:
-                    _attach_nearby_product_recommendations(client, dc_master, needs_geo_fallback, extra_data_by_dc, plan_date)
+                    _attach_nearby_product_recommendations(
+                        client, dc_master, needs_geo_fallback, extra_data_by_dc, plan_date, result_key="recommended_products",
+                    )
+                if needs_pl_geo_fallback:
+                    _attach_nearby_product_recommendations(
+                        client, dc_master, needs_pl_geo_fallback, extra_data_by_dc, plan_date,
+                        result_key="recommended_products_pl", segment="PRIVATE LABEL",
+                    )
 
                 from .pitching import generate_pitches_for_plan_run
                 _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc)
