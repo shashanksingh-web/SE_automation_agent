@@ -1,0 +1,500 @@
+{
+  "info": {
+    "_postman_id": "bd752809-413c-43d1-ae11-0b735e41c7fb",
+    "name": "Product Cohort \u2014 /sps/v1/fp",
+    "description": "Focus Product Cohort wizard APIs (`product_cohort_ui.html`).\n\n**Flow:** `01 \u00b7 Auth \u2192 Go Admin Sign in` \u2192 then Step 1\u20133 requests.\n\nEnv: `PC_*_url`, `go_admin_username`, `go_admin_password`, `fp_session`, `go_admin_session`.\nSample filters are literal in each request \u2014 edit there, not in env.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01 \u00b7 Auth",
+      "description": "Sign in first; session auto-saved to env.",
+      "item": [
+        {
+          "name": "Go Admin Sign in (save session)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const u = pm.environment.get('go_admin_username') || '';",
+                  "const p = pm.environment.get('go_admin_password') || '';",
+                  "if (!u.trim() || !p.trim()) {",
+                  "  throw new Error('Set go_admin_username and go_admin_password in environment CURRENT values (not Initial only).');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Capture Go Admin session \u2192 fp_session / go_admin_session",
+                  "function pickSession() {",
+                  "  try { const c = pm.cookies.get('go_admin_session'); if (c) return c; } catch (e) {}",
+                  "  const cookies = pm.response.headers.all()",
+                  "    .filter(h => String(h.key).toLowerCase() === 'set-cookie')",
+                  "    .map(h => h.value).join('; ');",
+                  "  let m = cookies.match(/go_admin_session=([^;]+)/i);",
+                  "  if (m) return m[1].trim();",
+                  "  const one = pm.response.headers.get('Set-Cookie') || '';",
+                  "  m = one.match(/go_admin_session=([^;]+)/i);",
+                  "  return m ? m[1].trim() : '';",
+                  "}",
+                  "const sid = pickSession();",
+                  "if (sid) {",
+                  "  pm.environment.set('fp_session', sid);",
+                  "  pm.environment.set('go_admin_session', sid);",
+                  "  console.log('Saved fp_session =', sid);",
+                  "  pm.test('Session saved to environment', () => pm.expect(sid.length).to.be.above(10));",
+                  "} else {",
+                  "  pm.test('Session saved to environment', () => pm.expect.fail('No go_admin_session in response'));",
+                  "}",
+                  "pm.test('Signin HTTP ok', () => pm.expect([200, 302, 301]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "username",
+                  "value": "{{go_admin_username}}",
+                  "type": "text"
+                },
+                {
+                  "key": "password",
+                  "value": "{{go_admin_password}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": "{{PC_feature_url}}/admin/signin",
+            "description": "Run first. Requires `product_cohort_user` role.\n\nSet **Current value** for `go_admin_username` / `go_admin_password` in the **Product Cohort** env."
+          },
+          "response": []
+        },
+        {
+          "name": "Auth probe \u2014 focus-product options",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/options",
+            "description": "Same check as UI on page load (pcCheckAuth)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 \u00b7 Step 1 \u2014 Filter options",
+      "description": "Dropdowns: state \u2192 node \u2192 category \u2192 sub-category \u2192 product.",
+      "item": [
+        {
+          "name": "Options root (states + categories)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/options",
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Nodes for state",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/options/nodes?stateId=Madhya Pradesh",
+            "description": "stateId = SAP state **name** (not code)."
+          },
+          "response": []
+        },
+        {
+          "name": "Sub-categories",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/options/sub-categories?categoryId=1",
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Products list",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/options/products?categoryId=1&subCategoryId=10",
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Products search",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/options/products?categoryId=1&search=urea",
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Plants (legacy \u2014 empty)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/options/plants",
+            "description": "Route kept for compatibility; returns []."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 \u00b7 Step 1 \u2014 Filter selections",
+      "description": "Save / list user filter history (PostgreSQL).",
+      "item": [
+        {
+          "name": "Save filter selection",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/filter-selections",
+            "description": "Upsert on (user, node, materialId).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stateId\": \"Madhya Pradesh\",\n  \"nodeId\": \"Khargone\",\n  \"categoryId\": \"1\",\n  \"categoryName\": \"INSECTICIDE\",\n  \"subCategoryId\": \"10\",\n  \"subCategoryName\": \"Sample Sub-category\",\n  \"materialId\": \"50001234\",\n  \"productName\": \"Sample Focus Product\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List filter selections",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/filter-selections",
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 \u00b7 Step 2A \u2014 Sales analysis",
+      "description": "Weekly + raw SAP invoice data (Redshift).",
+      "item": [
+        {
+          "name": "IB weekly sales",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/analysis/ib-weekly-sales?materialId=50001234&nodeId=Khargone&years=4",
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "IB raw order records",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/analysis/ib-raw-records?materialId=50001234&nodeId=Khargone&years=4",
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 \u00b7 Step 2B \u2014 Crop analysis (LLM)",
+      "description": "Crop seasonality from detected ISO week windows.",
+      "item": [
+        {
+          "name": "Step 2B analysis",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/analysis/step2b",
+            "description": "Week numbers from Step 2A range detection.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nodeId\": \"Khargone\",\n  \"materialId\": \"50001234\",\n  \"outerFromWeek\": 1,\n  \"outerToWeek\": 52,\n  \"buildupFromWeek\": 14,\n  \"buildupToWeek\": 20,\n  \"peakWeek\": 22,\n  \"closureFromWeek\": 40,\n  \"closureToWeek\": 48\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "06 \u00b7 Step 3 \u2014 DC cohort",
+      "description": "Target DC list with ALREADY_BOUGHT / RELATED / OTHERS signals.",
+      "item": [
+        {
+          "name": "Step 3 cohort",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-FP-Session",
+                "value": "{{fp_session}}",
+                "type": "text",
+                "description": "Filled by Sign in Tests script"
+              },
+              {
+                "key": "Cookie",
+                "value": "go_admin_session={{go_admin_session}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{PC_feature_url}}/sps/v1/fp/focus-product/analysis/step3-cohort",
+            "description": "Use districts + related products from Step 2B response.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"materialId\": \"50001234\",\n  \"nodeId\": \"Khargone\",\n  \"cropDistricts\": [\n    \"Khargone\",\n    \"Barwani\"\n  ],\n  \"relatedProductNames\": [\n    \"Related Product A\",\n    \"Related Product B\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
