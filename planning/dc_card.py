@@ -15,7 +15,8 @@ Reuses planning/services.py's already-built extra_data_by_dc context (the same d
 Pitching reads) rather than re-fetching anything -- see that function's call site for
 what's folded in: purchase_by_dc (S6/S7), avg_repayment_days, per_dc_category/
 dominant_category/block_category_avg (S1), plus this feature's own two additions,
-business_area_strength (Source 3h, _sql_business_area_strength) and club (the raw
+business_area_strength/business_area_strength_prior_year (Source 3h,
+_sql_business_area_strength_detailed) and club (the raw
 normalize_dc_club() row, for Scheme Standing).
 
 Crop Type/Style (Section 2's DC-first "what crop does this DC serve" question) has NO
@@ -62,21 +63,50 @@ from .pitching import _format_product_list
 logger = logging.getLogger(__name__)
 
 
-def _business_area_strength(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-    """business_area_strength is a list of up to BUSINESS_AREA_STRENGTH_TOP_N (5)
-    sub-categories (services._sql_business_area_strength), ranked highest 12-month value
-    first -- widened 2026-08-18 from a single top sub-category. A DC with fewer than 5
-    distinct sub-categories purchased just shows however many it genuinely has, never
-    padded to a fixed count."""
-    bas_list = [b for b in (ctx.get("business_area_strength") or []) if b.get("sub_category")]
-    if not bas_list:
-        return None
+def _render_business_area_subcats(subcats: List[Dict[str, Any]]) -> List[str]:
+    """One line per sub-category: total, then its Branded/Private Label split with
+    share% and product-wise detail (up to 3 products per segment, highest value first --
+    matches the worked example in pitch_config's DC Card (Preface) CSV; a DC with more
+    real products than that just shows its top 3, never all of them inline)."""
     lines = []
-    for b in bas_list:
-        value = b.get("net_value")
-        value_note = f" (₹{value:,.0f})" if value else ""
-        lines.append(f"{b['sub_category']}{value_note}")
-    return f"इस DC की सबसे मज़बूत sub-categories (पिछले 12 महीनों में): {', '.join(lines)}।", "Business_Area_Strength"
+    for sc in subcats:
+        seg_bits = []
+        for seg in sc["segments"]:
+            prod_bits = [f"{p['name']} (₹{p['value']:,.0f})" for p in seg["products"][:3]]
+            seg_bits.append(f"{seg['segment']} ₹{seg['total']:,.0f} ({seg['share_of_subcat']:.0f}%) -- {', '.join(prod_bits)}")
+        lines.append(f"{sc['sub_category']} ₹{sc['total']:,.0f}: {' | '.join(seg_bits)}")
+    return lines
+
+
+def _business_area_strength(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """business_area_strength / business_area_strength_prior_year (services.
+    _sql_business_area_strength_detailed + _build_business_area_tree) -- rebuilt
+    2026-08-22 per the confirmed corrected spec (SE_DC_Data_Normalization_Agent_Prompt
+    v3 re-sync + production Pitch Playbook screenshot). Replaces the old top-5/trailing-
+    12-month/single-number version: now EVERY sub-category this fiscal-YTD, each split
+    Branded vs. Private Label with a share% and product-wise detail, paired with the
+    identical structure over the same window last fiscal year so sub-category-level
+    trend is visible, not just one aggregate figure."""
+    current = [sc for sc in (ctx.get("business_area_strength") or []) if sc.get("sub_category")]
+    if not current:
+        return None
+    dc_total = sum(sc["total"] for sc in current)
+    branded_total = sum(seg["total"] for sc in current for seg in sc["segments"] if seg["segment"] == "Branded")
+    pl_total = dc_total - branded_total
+    header = (
+        f"कुल (इस साल YTD): ₹{dc_total:,.0f} -- Branded ₹{branded_total:,.0f} "
+        f"({branded_total / dc_total:.0%}) / Private Label ₹{pl_total:,.0f} ({pl_total / dc_total:.0%})"
+    )
+    lines = [header] + _render_business_area_subcats(current)
+
+    prior = [sc for sc in (ctx.get("business_area_strength_prior_year") or []) if sc.get("sub_category")]
+    if prior:
+        prior_total = sum(sc["total"] for sc in prior)
+        growth = f" (पिछले साल इसी अवधि में ₹{prior_total:,.0f} था)" if prior_total else ""
+        lines.append(f"पिछला साल, इतनी ही अवधि में{growth}:")
+        lines.extend(_render_business_area_subcats(prior))
+
+    return "\n".join(lines), "Business_Area_Strength"
 
 
 def _turnover_standing(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:

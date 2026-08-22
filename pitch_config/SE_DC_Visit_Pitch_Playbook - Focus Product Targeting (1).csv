@@ -1,0 +1,12 @@
+Focus Product Campaign Targeting — Product Cohort API (Investigated),
+"Surfaced while investigating the Crop Type/Style gap on the DC Card. This is a DIFFERENT, real capability — not a fix for that gap. Source: Product_Cohort_-sps-v1-fp_postman_collection.json + Product_Cohort_postman_environment.json (saas-platform-service.api.dehat.net/sps/v1/fp).",
+Aspect,Detail
+"Two separate things, worth keeping distinct","1) It does NOT answer 'given this DC, what crop does it serve' — the tool is product-first (pick a material → get its seasonal curve → get target districts and a DC cohort for that material), the reverse of a DC-first lookup. The Crop Type/Style gap on the DC Card stays open.
+
+2) It DOES do something real and useful for a different, valid need: proactive campaign targeting — given a Focus Product, which DCs to push it to, and when."
+Confirmed flow (3 steps),"Step 2A — Historical purchase pattern: weekly sales, raw order records, for the given Focus Product.
+Step 2B — LLM-inferred crop-seasonality read on that pattern: buildup / peak / closure weeks.
+Step 3 — Target DC cohort for that product, informed by 2A and 2B."
+Status,"🟡 Real capability confirmed to exist via the Postman collection's request schemas. NOT live-verified either way: credentials were shared in chat, but this agent doesn't authenticate to external services or handle passwords under any circumstance, and the service's domain isn't reachable from this agent's network access regardless. Response schemas for Steps 2B and 3 are empty in the saved Postman collection — so even the campaign-targeting use case isn't fully specified yet, just plausible from the request/description text."
+Relationship to the DC Card's Crop Type/Style gap,Genuinely different problems that look similar on the surface: Crop Type/Style has NO data source at all anywhere in the pipeline. Focus Product Targeting has a REAL source — it's just currently access-blocked and only partially schema-confirmed. Don't conflate 'no source exists' with 'source exists but isn't accessible yet.'
+Not used,"PRODUCT_COHORT_AUTH.md (auth setup instructions) — not used, since this agent doesn't handle authentication to external services under any circumstance."

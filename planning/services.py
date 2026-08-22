@@ -482,8 +482,8 @@ def _sql_block_product_purchase(dc_ids: List[str], plan_date: str) -> str:
     # wired before now. business_segment_name is a direct column on products_template
     # (confirmed live values: 'BRANDED'/'PRIVATE LABEL', occasionally null/empty --
     # left as-is, never coerced). product_brand via products_brand/brand_id, sub_category
-    # via products_subcategory/sub_category_id (same table _sql_business_area_strength
-    # already joins). No separate "Business_Category" column exists anywhere in this
+    # via products_subcategory/sub_category_id (same table _sql_business_area_strength_
+    # detailed already joins). No separate "Business_Category" column exists anywhere in this
     # schema distinct from category_name -- the CSV's own two labels ("Category_Name" /
     # "Business_Category") appear to refer to the same confirmed field, not two.
     d = datetime.fromisoformat(plan_date).date()
@@ -517,45 +517,87 @@ def _sql_block_product_purchase(dc_ids: List[str], plan_date: str) -> str:
 # factor.
 PL_TRAILING_LEG_GROWTH_MULTIPLIER = 1.2
 
-BUSINESS_AREA_STRENGTH_TOP_N = 5  # DC Card Who section -- top-N sub-categories by 12-month value, not just 1
-
-
-def _sql_business_area_strength(dc_ids: List[str], plan_date: str) -> str:
+def _sql_business_area_strength_detailed(dc_ids: List[str], window_start: str, window_end: str) -> str:
     # DC Card / "Dehaat Center Ko Jaano" Section 1 "कौन" (Who) -- Business Area Strength
-    # (Source 3h), wired 2026-08-14, widened 2026-08-18 from the single top sub-category
-    # to the top BUSINESS_AREA_STRENGTH_TOP_N (5) -- each DC's top sub-categories by
-    # 12-month net purchase value (price_unit * quantity, same value convention as every
-    # other purchase query in this file), tie-broken by sub_category_name for
-    # determinism. Same join chain as _sql_block_category_purchase (that one stops at
-    # products_category/category_id; this one goes one level finer,
-    # products_subcategory/sub_category_id, per the DC Card CSV's own "sub-category"
-    # wording -- e.g. Herbicide/Fungicide/Cereal Seeds, not the coarser Crop Protection/
-    # Crop Nutrition category). A DC with zero purchases in the window gets no rows here
-    # (confirmed live -- not every DC has one), and a DC with fewer than 5 distinct
-    # sub-categories purchased simply gets fewer rows -- callers must treat a missing
-    # dc_id as a genuine gap, not coerce to a default.
-    d = datetime.fromisoformat(plan_date).date()
-    window_start = (d - timedelta(days=365)).isoformat()
+    # (Source 3h). Rebuilt 2026-08-22 per the confirmed corrected spec (SE_DC_Data_
+    # Normalization_Agent_Prompt v3 re-sync + production Pitch Playbook screenshot, DC
+    # M/s AGAM BEEJ BHANDAR 1000016754): replaces the old top-5/trailing-12-month/no-
+    # bifurcation version (deleted). New structure -- EVERY sub-category (not top-N), a
+    # caller-supplied window (current-FY YTD for "Business Area Strength", prior-FY YTD
+    # for the paired "Historical Performance" via _prior_fy_window), each sub-category
+    # split Branded vs. Private Label with a share of that sub-category, each segment
+    # broken down product-wise. Returns flat product-level rows; the caller
+    # (_build_business_area_tree) aggregates sub-category/segment totals and shares in
+    # Python rather than nested SQL window functions -- easier to debug, matches this
+    # file's existing style (e.g. dc_financials, per_dc_category).
+    #
+    # Join chain fixed vs. the docx's own first draft of this query: that version filtered
+    # WHERE sor.partner_id = :dc_id directly, which returns ZERO rows for a real DC_ID --
+    # sale_orderrequest.partner_id is customer_management_customer's internal row id, not
+    # sap_partner_id. Confirmed live 2026-08-22 (the docx's own worked example used
+    # partner_id=20293, a small integer -- that IS the internal id, not a DC_ID, which is
+    # what made its own test look self-consistent). Every other confirmed query in this
+    # file (_sql_ytd_pl, _sql_pl_metrics, etc.) already bridges through
+    # customer_management_customer -- this one now does too.
     return f"""
-    SELECT dc_id, sub_category_name, net_value FROM (
-        SELECT cc.partner_id AS dc_id, sub.name AS sub_category_name,
-               SUM(sol.price_unit * sol.quantity) AS net_value,
-               ROW_NUMBER() OVER (
-                   PARTITION BY cc.partner_id
-                   ORDER BY SUM(sol.price_unit * sol.quantity) DESC, sub.name ASC
-               ) AS rn
-        FROM sale_orderrequest o
-        JOIN customer_management_customer cc ON cc.id = o.partner_id
-        JOIN sale_orderrequestline sol ON sol.order_request_id = o.id
-        JOIN products_product prod ON prod.id = sol.product_id
-        JOIN products_template tmpl ON tmpl.id = prod.template_id
-        LEFT JOIN products_subcategory sub ON sub.id = tmpl.sub_category_id
-        WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND o.status = 'processed'
-          AND o.created_at >= '{window_start}'
-        GROUP BY cc.partner_id, sub.name
-    ) ranked
-    WHERE rn <= {BUSINESS_AREA_STRENGTH_TOP_N}
+    SELECT
+      cc.partner_id AS dc_id, cat.name AS category_name, sub.name AS sub_category_name,
+      CASE WHEN tmpl.business_segment_name = 'PRIVATE LABEL' THEN 'Private Label' ELSE 'Branded' END AS brand_tier,
+      sol.product_name, sol.product_brand,
+      SUM(sol.price_unit * sol.quantity) - COALESCE(SUM(sol.discount_price_unit * sol.quantity), 0) AS product_net_value
+    FROM sale_orderrequestline sol
+    JOIN sale_orderrequest sor ON sor.id = sol.order_request_id
+    JOIN customer_management_customer cc ON cc.id = sor.partner_id
+    JOIN products_product prod ON prod.id = sol.product_id
+    JOIN products_template tmpl ON tmpl.id = prod.template_id
+    LEFT JOIN products_category cat ON cat.id = tmpl.category_id
+    LEFT JOIN products_subcategory sub ON sub.id = tmpl.sub_category_id
+    WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
+      AND sor.status = 'processed'
+      AND sor.created_at >= '{window_start}' AND sor.created_at <= '{window_end}'
+    GROUP BY cc.partner_id, cat.name, sub.name, brand_tier, sol.product_name, sol.product_brand
     """
+
+
+def _build_business_area_tree(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Flat product-level rows from _sql_business_area_strength_detailed -> per-DC list
+    of {sub_category, total, segments: [{segment, total, share_of_subcat, products:
+    [{name, brand, value}]}]}, sub-categories and segments ranked highest-value-first,
+    products ranked highest-value-first within their segment. Zero/negative net rows
+    (a sub-category that's all returns this window) are dropped, same convention as
+    every other value-ranked list in this file."""
+    tree: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row in rows:
+        dc_id = agent.normalize_id(row.get("dc_id"))
+        value = agent.parse_number(row.get("product_net_value")) or 0.0
+        if not dc_id or value <= 0:
+            continue
+        subcat_name = row.get("sub_category_name") or "Unclassified"
+        segment_name = row.get("brand_tier") or "Branded"
+        subcats = tree.setdefault(dc_id, {})
+        sc = subcats.setdefault(subcat_name, {"total": 0.0, "segments": {}})
+        sc["total"] += value
+        seg = sc["segments"].setdefault(segment_name, {"total": 0.0, "products": []})
+        seg["total"] += value
+        seg["products"].append({"name": row.get("product_name"), "brand": row.get("product_brand"), "value": value})
+
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for dc_id, subcats in tree.items():
+        subcat_list = []
+        for name, sc in subcats.items():
+            segments = []
+            for seg_name, seg in sc["segments"].items():
+                seg["products"].sort(key=lambda p: -p["value"])
+                segments.append({
+                    "segment": seg_name, "total": seg["total"],
+                    "share_of_subcat": (seg["total"] / sc["total"] * 100.0) if sc["total"] else 0.0,
+                    "products": seg["products"],
+                })
+            segments.sort(key=lambda s: -s["total"])
+            subcat_list.append({"sub_category": name, "total": sc["total"], "segments": segments})
+        subcat_list.sort(key=lambda s: -s["total"])
+        result[dc_id] = subcat_list
+    return result
 
 
 # DC Card PL recommendation geo fallback (confirmed 2026-08-18): own purchases -> block
@@ -1061,7 +1103,7 @@ def generate_plan_for_scope(
 
             Bug fixed 2026-08-18: a missing key in ytd_pl_by_dc means zero PL orders in
             that window, not "unknown" -- _sql_ytd_pl only returns a row for a DC with
-            >=1 PL order (same convention as _sql_business_area_strength). Treating a
+            >=1 PL order (same convention as _sql_business_area_strength_detailed). Treating a
             missing THIS-year figure as "no data" (instead of a real 0) previously
             suppressed the single most important case entirely: a DC with real PL sales
             last year and NONE this year. Confirmed live: Maa Laxmi Khad Beej Bhandar
@@ -1635,22 +1677,23 @@ def generate_plan_for_scope(
                         }
 
                 # DC Card / "Dehaat Center Ko Jaano" Section 1 "कौन" -- Business Area
-                # Strength (Source 3h), wired 2026-08-14 alongside the DC Card feature,
-                # widened 2026-08-18 to the top BUSINESS_AREA_STRENGTH_TOP_N (5)
-                # sub-categories per DC instead of just 1 -- business_area_by_dc[dc_id]
-                # is now a LIST, ranked highest-value first (the SQL's own ROW_NUMBER
-                # ordering), not a single dict. Only task_dc_ids, not the wider
-                # pull_dc_ids -- unlike S1's block comparison, this is never compared
-                # against peers, so there's no reason to pull it for DCs never actually
-                # on a task this run.
-                business_area_by_dc: Dict[str, List[Dict[str, Any]]] = {}
-                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength(task_dc_ids, plan_date)):
-                    dc_id = agent.normalize_id(row.get("dc_id"))
-                    if dc_id:
-                        business_area_by_dc.setdefault(dc_id, []).append({
-                            "sub_category": row.get("sub_category_name"),
-                            "net_value": agent.parse_number(row.get("net_value")),
-                        })
+                # Strength (Source 3h), wired 2026-08-14 alongside the DC Card feature.
+                # Rebuilt 2026-08-22 (see _sql_business_area_strength_detailed docstring):
+                # ALL sub-categories (not top-5), current-FY YTD window, each split
+                # Branded/Private Label with a share%, product-wise within each segment
+                # -- paired with the same structure over the prior FY's YTD window
+                # ("Historical Performance") for sub-category-level trend. Only
+                # task_dc_ids, not the wider pull_dc_ids -- unlike S1's block comparison,
+                # this is never compared against peers, so there's no reason to pull it
+                # for DCs never actually on a task this run.
+                fy_start = _fiscal_year_start(plan_date)
+                business_area_current_by_dc = _build_business_area_tree(
+                    list(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength_detailed(task_dc_ids, fy_start, plan_date)))
+                )
+                prior_fy_start, prior_plan_date = _prior_fy_window(plan_date)
+                business_area_prior_by_dc = _build_business_area_tree(
+                    list(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength_detailed(task_dc_ids, prior_fy_start, prior_plan_date)))
+                )
 
                 extra_data_by_dc: Dict[str, Dict[str, Any]] = {}
                 needs_geo_fallback: List[str] = []
@@ -1763,7 +1806,8 @@ def generate_plan_for_scope(
                     # DC Card-only additions -- read by planning/dc_card.py, ignored by
                     # planning/pitching.py's builders (they only ever ctx.get() the keys
                     # they know about).
-                    entry["business_area_strength"] = business_area_by_dc.get(dc_id)
+                    entry["business_area_strength"] = business_area_current_by_dc.get(dc_id)
+                    entry["business_area_strength_prior_year"] = business_area_prior_by_dc.get(dc_id)
                     entry["club"] = dc_club_by_id.get(dc_id)
                     # YoY PL comparison (confirmed 2026-08-18) -- PL-specific, distinct
                     # from purchase_last_fy/purchase_ytd above (those are overall
