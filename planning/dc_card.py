@@ -105,8 +105,40 @@ def _business_area_strength(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         growth = f" (पिछले साल इसी अवधि में ₹{prior_total:,.0f} था)" if prior_total else ""
         lines.append(f"पिछला साल, इतनी ही अवधि में{growth}:")
         lines.extend(_render_business_area_subcats(prior))
+    else:
+        # Honest, explicit rather than silent (confirmed 2026-08-22, per direct
+        # instruction) -- absence used to just mean the "पिछला साल" block never
+        # appeared at all, indistinguishable from a caller wondering whether it was
+        # even checked. Real live data shows this is genuinely rare once current-year
+        # data exists (14/14 in the last full batch checked) -- when it IS missing,
+        # say so, don't leave it looking like a gap in the render.
+        lines.append("पिछले साल की इसी अवधि का कोई तुलनात्मक डेटा उपलब्ध नहीं है।")
 
     return "\n".join(lines), "Business_Area_Strength"
+
+
+def _business_area_detail(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Structured form of _business_area_strength()'s text, for DCCard.business_area_detail
+    (added 2026-08-22) -- the same current/prior-year sub-category x segment x product
+    tree services._build_business_area_tree() already produces, just not flattened into
+    prose. Built separately from the text version (not derived from it) so a caller
+    doesn't have to re-parse Hindi to get the numbers back out -- same reasoning as
+    recommended_products' own structured field. {} when there's no current-year data at
+    all (matches _business_area_strength's own None case)."""
+    current = [sc for sc in (ctx.get("business_area_strength") or []) if sc.get("sub_category")]
+    if not current:
+        return {}
+    dc_total = sum(sc["total"] for sc in current)
+    branded_total = sum(seg["total"] for sc in current for seg in sc["segments"] if seg["segment"] == "Branded")
+    prior = [sc for sc in (ctx.get("business_area_strength_prior_year") or []) if sc.get("sub_category")]
+    return {
+        "current": current,
+        "current_total": dc_total,
+        "current_branded_total": branded_total,
+        "current_pl_total": dc_total - branded_total,
+        "prior": prior or None,
+        "prior_total": (sum(sc["total"] for sc in prior) if prior else None),
+    }
 
 
 def _turnover_standing(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
@@ -363,6 +395,7 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "who_section": who_section,
         "where_dc_stands_section": where_dc_stands_section,
         "recommended_products": ctx.get("recommended_products_pl") or [],
+        "business_area_detail": _business_area_detail(ctx),
         "private_label_section": private_label_section,
         "card_hindi": card_hindi,
         "data_sources_used": used,

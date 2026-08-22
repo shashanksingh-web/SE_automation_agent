@@ -335,11 +335,37 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
     return "\n".join(lines).strip(), used, skipped
 
 
+def _dc_card_recap(ctx: Dict[str, Any]) -> str:
+    """Short "देहात सेंटर को जानो" (DC Card) recap prepended to every pitch script --
+    per pitch_config's own worked examples (DC Visit Pitch (Multi-Purpose) CSV row 4/5/
+    6/8/10), which show every sample pitch opening with a "1) कौन: सबसे मज़बूत कैटेगरी"
+    line before "── पिच शुरू ──". Confirmed 2026-08-22, per direct instruction, to reuse
+    the exact same business_area_strength tree services.py already builds for the DC
+    Card (planning/dc_card.py's own Business Area Strength section, current-FY YTD) --
+    top sub-category only here (the full DC Card itself, all sub-categories + Branded/PL
+    split + Historical Performance, is shown to the SE separately and first; this is
+    just the one-line recap the pitch script leads with). Explicitly labeled "चालू वर्ष
+    YTD" so the SE never reads a bare category name as an all-time or arbitrary-window
+    figure -- same reasoning as the DC Card's own header line. Empty string (no recap at
+    all) when this DC has no current-year purchase data, matching this file's convention
+    of never showing an empty/placeholder structure."""
+    current = [sc for sc in (ctx.get("business_area_strength") or []) if sc.get("sub_category")]
+    if not current:
+        return ""
+    top = current[0]  # already sorted highest-total-first by services._build_business_area_tree
+    return (
+        f"📋 देहात सेंटर को जानो:\n"
+        f"1) कौन: सबसे मज़बूत कैटेगरी (चालू वर्ष YTD) — {top['sub_category']} ₹{top['total']:,.0f}\n\n"
+        f"── पिच शुरू ──\n"
+    )
+
+
 def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
     purposes, matched_key, win_condition_or_rationale = _match_script(task.purpose_of_visit or "")
+    recap = _dc_card_recap(ctx)
     if set(purposes) == {"Sale", "Promise To Pay / Collection"}:
         script, used, skipped = _compose_sale_ptp_combo(task, ctx)
-        return script, used, skipped
+        return recap + script, used, skipped
     applicable = _applicable_sources(purposes)
     ordered = _order_for_purposes(purposes, ctx)
     ordered_codes = [c for c in ordered if c in applicable] + [c for c in applicable if c not in ordered]
@@ -390,7 +416,7 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     if wish_texts:
         lines.append("[विश/क्लोज़] " + " ".join(wish_texts))
 
-    return "\n".join(lines).strip(), used, skipped
+    return recap + "\n".join(lines).strip(), used, skipped
 
 
 def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, Dict[str, Any]]) -> Tuple[int, List[Dict[str, str]]]:

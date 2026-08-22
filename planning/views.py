@@ -336,6 +336,46 @@ def pitch_script(request, daily_task_id: int):
     }, safe=False, json_dumps_params={"default": str})
 
 
+def _serialize_business_area_subcats(subcats: list) -> list:
+    return [
+        {
+            "Sub_Category": sc.get("sub_category"),
+            "Total": sc.get("total"),
+            "Segments": [
+                {
+                    "Segment": seg.get("segment"),
+                    "Total": seg.get("total"),
+                    "Share_Of_Subcategory": seg.get("share_of_subcat"),
+                    "Products": [
+                        {"Name": p.get("name"), "Brand": p.get("brand"), "Value": p.get("value")}
+                        for p in seg.get("products", [])
+                    ],
+                }
+                for seg in sc.get("segments", [])
+            ],
+        }
+        for sc in subcats
+    ]
+
+
+def _serialize_business_area_detail(detail: dict):
+    """DCCard.business_area_detail (planning/models.py) -> the API's PascalCase shape.
+    None when this DC has no current-year business-area data at all (the dict is {} in
+    that case) -- Prior/Prior_Total are independently nullable even when Current isn't,
+    since prior-year comparison data can be genuinely unavailable for a DC that still
+    has real current-year activity."""
+    if not detail:
+        return None
+    return {
+        "Current_Total": detail.get("current_total"),
+        "Current_Branded_Total": detail.get("current_branded_total"),
+        "Current_PL_Total": detail.get("current_pl_total"),
+        "Current": _serialize_business_area_subcats(detail.get("current") or []),
+        "Prior_Total": detail.get("prior_total"),
+        "Prior": _serialize_business_area_subcats(detail["prior"]) if detail.get("prior") else None,
+    }
+
+
 @require_GET
 def dc_card(request, daily_task_id: int):
     """GET /api/planning/dc-card/<daily_task_id>/ -- the DC Card (Preface, "Dehaat
@@ -358,6 +398,11 @@ def dc_card(request, daily_task_id: int):
         # Same recommended-products list as PitchScript's own field of the same name -
         # already folded into Private_Label_Section's prose too.
         "Recommended_Products": _serialize_recommended_products(card.recommended_products),
+        # Structured form of Who_Section's "Business Area Strength" bullet - null when
+        # this DC has no current-year business-area data at all. Prior is independently
+        # nullable even when Current isn't (prior-year comparison can genuinely be
+        # unavailable for a DC with real current-year activity).
+        "Business_Area_Detail": _serialize_business_area_detail(card.business_area_detail),
         "Data_Sources_Used": card.data_sources_used,
         "Data_Sources_Skipped": card.data_sources_skipped,
         "Generated_At": card.generated_at,

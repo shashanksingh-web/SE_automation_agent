@@ -310,6 +310,13 @@ class DCCard(models.Model):
     # PitchScript.recommended_products for the full shape/scope-tag docstring.
     recommended_products = models.JSONField(default=list, blank=True)
 
+    # Structured form of who_section's "Business Area Strength" bullet (planning.dc_card.
+    # _business_area_detail, added 2026-08-22) -- every sub-category this fiscal-YTD,
+    # split Branded vs. Private Label with share% and product-wise detail, paired with
+    # the same structure over the prior FY's YTD window where that data exists. {} when
+    # this DC has no current-year business-area data at all.
+    business_area_detail = models.JSONField(default=dict, blank=True)
+
     data_sources_used = models.JSONField(default=list, blank=True)
     data_sources_skipped = models.JSONField(default=list, blank=True)
     generated_at = models.DateTimeField(auto_now_add=True)
