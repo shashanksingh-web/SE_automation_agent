@@ -420,10 +420,46 @@ def _sql_dc_sale_summary(dc_ids: List[str], plan_date: str) -> str:
     """
 
 
+def _sql_coupon_discount_history(dc_ids: List[str], plan_date: str) -> str:
+    """S2b Suggested Discount raw input -- wired 2026-08-24 per the confirmed methodology
+    (Required Data Sources CSV, ✅ Ready): combine this DC's own historical discount
+    pattern with the Same Block Purchase pattern (S1) -- i.e. what discount is working
+    for comparable DCs in the same block, on the same product, informed by this DC's own
+    history. Both sides read from coupon_analysis filtered on coupon_name IS NOT NULL (a
+    real scheme was actually applied -- coupon_applied_flag is separately confirmed
+    unusable, constant 'true' on 100% of rows). Called ONCE for pull_dc_ids (task DCs +
+    block peers + node peers, the same pool _sql_block_category_purchase/_peer_stats
+    already use) -- the caller looks up "this DC's own row" vs. "a peer's row" out of the
+    same result set, no separate query per DC.
+
+    Restricted to coupon_type='PER_UNIT' (per the Normalization Agent's live sample,
+    ~83% of real scheme rows -- PER_UNIT+INSTANT dominates) so coupon_unit_benefit is
+    unambiguously a rupees-per-unit figure. PERCENTAGE-type coupons' unit_benefit isn't
+    the same unit and would silently corrupt a blended average if mixed in -- a
+    defensible simplification, not itself a confirmed business rule, flagged here rather
+    than left implicit. 180-day trailing window (not 30d like S1) since real-scheme rows
+    are the sparser 36% of coupon_analysis -- a 30-day window would starve this of
+    sample for most DC/product pairs.
+
+    partner_id here is already the DC's own sap_partner_id directly, no
+    customer_management_customer bridge needed -- confirmed live, same join
+    _sql_club_qualifying_turnover already uses successfully in this file."""
+    d = datetime.fromisoformat(plan_date).date()
+    window_start = (d - timedelta(days=180)).isoformat()
+    return f"""
+    SELECT partner_id AS dc_id, product_name, AVG(coupon_unit_benefit) AS avg_discount_per_unit
+    FROM coupon_analysis
+    WHERE partner_id::text IN ({_sql_list(dc_ids)})
+      AND coupon_name IS NOT NULL
+      AND coupon_type = 'PER_UNIT'
+      AND coupon_unit_benefit IS NOT NULL
+      AND created_at >= '{window_start}'
+    GROUP BY partner_id, product_name
+    """
+
+
 def _sql_last_discount(dc_ids: List[str], plan_date: str) -> str:
-    # Pitching Agent (S2, Last Discount only -- Suggested Discount has no source table
-    # anywhere in this system, confirmed exhaustively by the normalization doc; never
-    # invented here). Reuses the Source 3h join chain confirmed live 2026-08-08:
+    # Pitching Agent (S2a, Last Discount). Reuses the Source 3h join chain confirmed live 2026-08-08:
     # sale_orderrequestline -> products_product -> products_template, back to
     # sale_orderrequest for the DC and invoice date. discount_price_unit is null when no
     # discount was applied (confirmed live) -- NOT coerced to 0 here, left as NULL so the
@@ -557,6 +593,28 @@ def _sql_business_area_strength_detailed(dc_ids: List[str], window_start: str, w
       AND sor.created_at >= '{window_start}' AND sor.created_at <= '{window_end}'
     GROUP BY cc.partner_id, cat.name, sub.name, brand_tier, sol.product_name, sol.product_brand
     """
+
+
+def _suggested_discount(
+    dc_id: str, product: str, block_ids: List[str], node_ids: List[str],
+    coupon_discount_by_dc_product: Dict[str, Dict[str, float]],
+) -> Optional[float]:
+    """S2b Suggested Discount for one product (₹/unit) -- combines this DC's own
+    historical discount on that product with the block-then-node peer average discount
+    on the same product (both from coupon_analysis, see _sql_coupon_discount_history).
+    Simple unweighted average when both signals exist -- the confirmed methodology says
+    "combine... informed by," not a documented weighting formula, so an unweighted blend
+    is the honest default, not invented precision. Falls back to whichever single signal
+    exists when only one does; None if neither -- same honest-degrade convention as
+    every other talking point in this file. Block tried before node, same "more locally
+    relevant" reasoning _peer_stats already uses for the product recommendation itself."""
+    own = coupon_discount_by_dc_product.get(dc_id, {}).get(product)
+    peer_amounts = [a for a in (coupon_discount_by_dc_product.get(p, {}).get(product) for p in block_ids) if a is not None]
+    if not peer_amounts:
+        peer_amounts = [a for a in (coupon_discount_by_dc_product.get(p, {}).get(product) for p in node_ids) if a is not None]
+    peer_avg = (sum(peer_amounts) / len(peer_amounts)) if peer_amounts else None
+    signals = [v for v in (own, peer_avg) if v is not None]
+    return (sum(signals) / len(signals)) if signals else None
 
 
 def _build_business_area_tree(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -1651,6 +1709,17 @@ def generate_plan_for_scope(
                     if dc_id and discounted_price is not None and list_price:
                         discount_by_dc[dc_id] = ((list_price - discounted_price) / list_price) * 100.0
 
+                # S2b Suggested Discount raw input (see _sql_coupon_discount_history
+                # docstring) -- pulled once for pull_dc_ids (task DCs + block + node
+                # peers), looked up per (dc_id, product_name) below rather than queried
+                # per DC.
+                coupon_discount_by_dc_product: Dict[str, Dict[str, float]] = {}
+                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_coupon_discount_history(pull_dc_ids, plan_date)):
+                    dc_id, product = agent.normalize_id(row.get("dc_id")), row.get("product_name")
+                    avg_discount = agent.parse_number(row.get("avg_discount_per_unit"))
+                    if dc_id and product and avg_discount is not None:
+                        coupon_discount_by_dc_product.setdefault(dc_id, {})[product] = avg_discount
+
                 per_dc_category: Dict[str, Dict[str, float]] = {}
                 for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_category_purchase(pull_dc_ids, plan_date)):
                     dc_id, cat = agent.normalize_id(row.get("dc_id")), row.get("category_name")
@@ -1788,6 +1857,13 @@ def generate_plan_for_scope(
                             entry["peer_comparison_scope"] = scope
                             if stats["top_products"]:
                                 entry["recommended_products"] = [{**p, "scope": scope} for p in stats["top_products"]]
+                                # S2b Suggested Discount -- for the #1 recommended
+                                # product only (the methodology's own wording is "the
+                                # recommended product + discount combination," singular).
+                                top_product_name = stats["top_products"][0]["name"]
+                                entry["suggested_discount"] = _suggested_discount(
+                                    dc_id, top_product_name, block_ids, node_ids, coupon_discount_by_dc_product,
+                                )
 
                         # Private Label-only pass (confirmed 2026-08-18) -- same
                         # block-then-node candidate pools, re-ranked within

@@ -34,6 +34,30 @@ def _focus_product_kwargs_from_get(request) -> dict:
     }
 
 
+def _serialize_club_detail(club_detail: dict):
+    """se_daily_plan_agent.normalize_dc_club()'s raw per-DC dict -> the API's PascalCase
+    Club_Detail shape -- shared by DailyTask's own field (see _serialize_task) and
+    DCCard's (dc_card view), both of which persist the identical raw dict. None when
+    club data wasn't available this run. Club_Tier/Zone/TOD_Percent/Reward describe
+    current standing (all null if not yet tiered); the Eligible_Tier_* trio describes
+    what clearing outstanding would unlock (all null once already tiered, or if
+    Qualifying_Turnover doesn't clear even Copper's entry threshold)."""
+    if not club_detail:
+        return None
+    return {
+        "Is_Club_Enrolled": club_detail.get("Is_Club_Enrolled"),
+        "Qualifying_Turnover": club_detail.get("Qualifying_Turnover"),
+        "Outstanding_Cleared": club_detail.get("Outstanding_Cleared"),
+        "Club_Tier": club_detail.get("Club_Tier"),
+        "Zone": club_detail.get("Zone"),
+        "TOD_Percent": club_detail.get("TOD_Percent"),
+        "Reward": club_detail.get("Reward"),
+        "Eligible_Tier_If_Outstanding_Cleared": club_detail.get("Eligible_Tier_If_Outstanding_Cleared"),
+        "Eligible_Tier_TOD_Percent_If_Cleared": club_detail.get("Eligible_Tier_TOD_Percent_If_Cleared"),
+        "Eligible_Tier_Reward_If_Cleared": club_detail.get("Eligible_Tier_Reward_If_Cleared"),
+    }
+
+
 def _serialize_task(t: DailyTask) -> dict:
     return {
         # The DailyTask row's own DB id -- needed by the frontend to call
@@ -51,25 +75,7 @@ def _serialize_task(t: DailyTask) -> dict:
         "Last_Order_Value": t.last_order_value, "Last_Payment_Date": t.last_payment_date,
         "Last_Payment_Join_Key_Unconfirmed": t.last_payment_join_key_unconfirmed,
         "YTD_Private_Label": t.ytd_private_label, "DC_Club_Participation": t.dc_club_participation,
-        # Structured form of DC_Club_Participation's prose summary (se_daily_plan_agent.
-        # normalize_dc_club(), confirmed 2026-08-19) -- null when club data wasn't
-        # available this run, same gate as DC_Club_Participation's own
-        # "Config_Ambiguous" case. Club_Tier/Zone/TOD_Percent/Reward describe current
-        # standing (all null if not yet tiered); the Eligible_Tier_* trio describes what
-        # clearing outstanding would unlock (all null once already tiered, or if
-        # Qualifying_Turnover doesn't clear even Copper's entry threshold).
-        "Club_Detail": {
-            "Is_Club_Enrolled": t.club_detail.get("Is_Club_Enrolled"),
-            "Qualifying_Turnover": t.club_detail.get("Qualifying_Turnover"),
-            "Outstanding_Cleared": t.club_detail.get("Outstanding_Cleared"),
-            "Club_Tier": t.club_detail.get("Club_Tier"),
-            "Zone": t.club_detail.get("Zone"),
-            "TOD_Percent": t.club_detail.get("TOD_Percent"),
-            "Reward": t.club_detail.get("Reward"),
-            "Eligible_Tier_If_Outstanding_Cleared": t.club_detail.get("Eligible_Tier_If_Outstanding_Cleared"),
-            "Eligible_Tier_TOD_Percent_If_Cleared": t.club_detail.get("Eligible_Tier_TOD_Percent_If_Cleared"),
-            "Eligible_Tier_Reward_If_Cleared": t.club_detail.get("Eligible_Tier_Reward_If_Cleared"),
-        } if t.club_detail else None,
+        "Club_Detail": _serialize_club_detail(t.club_detail),
         "Critical": t.critical, "Critical_Reasons": t.critical_reasons,
         "Objective": t.objective, "No_New_Orders": t.no_new_orders, "Credit_On_Hold": t.credit_on_hold,
         "Credit_On_Hold_Reason": t.credit_on_hold_reason, "Estimated_Duration": t.estimated_duration,
@@ -376,6 +382,20 @@ def _serialize_business_area_detail(detail: dict):
     }
 
 
+def _serialize_turnover_detail(detail: dict):
+    """DCCard.turnover_detail (planning/models.py) -> the API's PascalCase shape. None
+    when none of these signals were available this run (the dict is {} in that case)."""
+    if not detail:
+        return None
+    return {
+        "Purchase_Last_FY": detail.get("purchase_last_fy"),
+        "Purchase_YTD": detail.get("purchase_ytd"),
+        "Qualifying_Turnover": detail.get("qualifying_turnover"),
+        "YoY_PL_Growth_Pct": detail.get("yoy_pl_growth_pct"),
+        "YTD_PL_Last_Year": detail.get("ytd_pl_last_year"),
+    }
+
+
 @require_GET
 def dc_card(request, daily_task_id: int):
     """GET /api/planning/dc-card/<daily_task_id>/ -- the DC Card (Preface, "Dehaat
@@ -403,6 +423,12 @@ def dc_card(request, daily_task_id: int):
         # nullable even when Current isn't (prior-year comparison can genuinely be
         # unavailable for a DC with real current-year activity).
         "Business_Area_Detail": _serialize_business_area_detail(card.business_area_detail),
+        # Structured form of Who_Section's "Turnover-wise Standing" bullet - null when
+        # none of these signals were available this run.
+        "Turnover_Detail": _serialize_turnover_detail(card.turnover_detail),
+        # Structured form of Who_Section's "Scheme Standing" bullet - same shape/meaning
+        # as DailyTask.Club_Detail (see _serialize_club_detail).
+        "Club_Detail": _serialize_club_detail(card.club_detail),
         "Data_Sources_Used": card.data_sources_used,
         "Data_Sources_Skipped": card.data_sources_skipped,
         "Generated_At": card.generated_at,

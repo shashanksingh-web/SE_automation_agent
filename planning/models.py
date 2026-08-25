@@ -317,6 +317,19 @@ class DCCard(models.Model):
     # this DC has no current-year business-area data at all.
     business_area_detail = models.JSONField(default=dict, blank=True)
 
+    # Structured form of who_section's "Turnover-wise Standing" bullet (planning.dc_card.
+    # _turnover_detail, added 2026-08-22) -- last-FY/YTD purchase, club-scheme qualifying
+    # turnover, and the YoY PL comparison as separate fields instead of one dense
+    # sentence. {} when none of those signals are available this run (same gate as
+    # _turnover_standing's own None case).
+    turnover_detail = models.JSONField(default=dict, blank=True)
+
+    # se_daily_plan_agent.normalize_dc_club()'s raw per-DC dict, structured (added
+    # 2026-08-22) -- same shape/field meaning as DailyTask.club_detail (see that field's
+    # docstring), backing this card's "Scheme Standing" bullet instead of DailyTask's
+    # DC_Club_Participation. {} when club data wasn't available this run.
+    club_detail = models.JSONField(default=dict, blank=True)
+
     data_sources_used = models.JSONField(default=list, blank=True)
     data_sources_skipped = models.JSONField(default=list, blank=True)
     generated_at = models.DateTimeField(auto_now_add=True)

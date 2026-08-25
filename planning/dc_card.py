@@ -167,6 +167,28 @@ def _turnover_standing(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return text.strip() + "।", "Turnover_Standing"
 
 
+def _turnover_detail(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Structured form of _turnover_standing()'s dense sentence, for DCCard.turnover_detail
+    (added 2026-08-22) -- last-FY/YTD purchase, club-scheme qualifying turnover, and the
+    YoY PL comparison as separate fields a caller can lay out (stat row, table, whatever)
+    instead of re-parsing prose. Built independently of the text version, same reasoning
+    as _business_area_detail. {} when none of those signals are available this run (same
+    gate _turnover_standing's own None case uses)."""
+    club = ctx.get("club") or {}
+    qualifying_turnover = club.get("Qualifying_Turnover")
+    py, ytd = ctx.get("purchase_last_fy"), ctx.get("purchase_ytd")
+    yoy_pct = ctx.get("yoy_pl_growth_pct")
+    if not py and not ytd and qualifying_turnover is None and yoy_pct is None:
+        return {}
+    return {
+        "purchase_last_fy": py,
+        "purchase_ytd": ytd,
+        "qualifying_turnover": qualifying_turnover,
+        "yoy_pl_growth_pct": yoy_pct,
+        "ytd_pl_last_year": ctx.get("ytd_pl_last_year"),
+    }
+
+
 def _repayment_cycle(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     avg_days = ctx.get("avg_repayment_days")
     # <= 0 isn't a genuine "pays same-day" signal -- same convention as pitching.py's
@@ -396,6 +418,8 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "where_dc_stands_section": where_dc_stands_section,
         "recommended_products": ctx.get("recommended_products_pl") or [],
         "business_area_detail": _business_area_detail(ctx),
+        "turnover_detail": _turnover_detail(ctx),
+        "club_detail": ctx.get("club") or {},
         "private_label_section": private_label_section,
         "card_hindi": card_hindi,
         "data_sources_used": used,

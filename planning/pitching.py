@@ -16,14 +16,12 @@ Missing-data handling: a talking point is included ONLY if its underlying data i
 actually present in this run's pulled data. S4 (Current Inventory) is never included --
 not a per-run skip, structurally absent, confirmed exhaustively by the normalization
 doc that no DC-level data source exists for it anywhere in this system. S2b (Suggested
-Discount) is DIFFERENT as of the 2026-08-12 pitch_config re-export: that sheet now
-gives a confirmed computation methodology (this DC's own discount history blended with
-the S1 Same-Block Purchase pattern) -- a real data source, just not yet wired into a
-_TALKING_POINTS builder here, so it's honestly reported as "confirmed, not yet wired"
-rather than folded into S4's "no data source exists" claim. This is the same
-honest-degrade discipline as everywhere else in this codebase -- never fabricate a
-number to fill a talking point, and never claim something is impossible once it stops
-being true.
+Discount, wired 2026-08-24) is a real per-run skip like any other source -- shown when
+this DC's own coupon_analysis history and/or its block/node peers' has a real discount
+figure for the #1 recommended product, silently absent (not fabricated) when neither
+does. This is the same honest-degrade discipline as everywhere else in this codebase --
+never fabricate a number to fill a talking point, and never claim something is
+impossible once it stops being true.
 
 Sale + Promise To Pay / Collection combo, built directly off the DC Visit Pitch
 (Multi-Purpose) sheet's own worked example (that sheet's "Promise To Pay / Collection
@@ -121,12 +119,27 @@ def _tp_historical_purchase(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 def _tp_last_discount(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """S2a as of the 2026-08-12 pitch_config re-export (was bare "S2" before that split
-    -- see pitch_config_loader's module docstring). S2b (Suggested Discount) has a
-    confirmed methodology now but no builder here yet -- see _compose()'s skip message."""
+    -- see pitch_config_loader's module docstring)."""
     discount = ctx.get("last_discount")
     if discount is None:
         return None
     return f"पिछली बार आपको {discount:.0f}% का डिस्काउंट मिला था।", "S2a"
+
+
+def _tp_suggested_discount(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """S2b, wired 2026-08-24 (planning.services._suggested_discount) -- combines this
+    DC's own coupon_analysis discount history on the #1 recommended product with the
+    block-then-node peer average discount on that same product. ₹/unit, NOT a
+    percentage -- coupon_unit_benefit (the confirmed source) is a currency figure,
+    distinct from S2a's % (a different table/formula, discount_price_unit vs
+    price_unit) -- never conflated into the same sentence. Only shown when a real
+    recommended product exists, since the discount is FOR that specific product, same
+    dependency S1's own sentence has."""
+    discount = ctx.get("suggested_discount")
+    products = ctx.get("recommended_products") or []
+    if discount is None or not products:
+        return None
+    return f"आपकी और आसपास के दुकानदारों की हिस्ट्री के हिसाब से, {products[0]['name']} पर अभी ₹{discount:.0f} प्रति यूनिट डिस्काउंट सजेस्ट हो रहा है।", "S2b"
 
 
 def _format_product_list(products: List[Dict[str, Any]]) -> str:
@@ -202,6 +215,7 @@ def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 _TALKING_POINTS = {
     "S1": _tp_block_comparison,
     "S2a": _tp_last_discount,
+    "S2b": _tp_suggested_discount,
     "S3": _tp_historical_purchase,
     "S5": _tp_outstanding,
     "S6": _tp_historical_purchase,
@@ -283,13 +297,13 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
         used.append(f"{code} {label}")
         return text
 
-    # Sales talking points -- same 3 reachable sources as the generic composer, in the
-    # sheet's own worked-example order (block/peer comparison, historical purchase
-    # trend, then YTD-vs-target).
-    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S3", "S8")) if s]
+    # Sales talking points -- same reachable sources as the generic composer, in the
+    # sheet's own worked-example order (block/peer comparison, suggested discount on
+    # that same product, historical purchase trend, then YTD-vs-target). S2b wired
+    # 2026-08-24, right after S1 since it's a discount ON the product S1 just named.
+    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S2b", "S3", "S8")) if s]
 
     skipped.append("S4 Current Inventory (no DC-level data source exists anywhere in this system)")
-    skipped.append("S2b Suggested Discount (methodology confirmed by Normalization Agent 2026-08-12, not yet wired into pitch generation)")
 
     lines: List[str] = []
     if overdue > 0:
@@ -378,8 +392,7 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
         label = cfg.data_source_labels.get(code, code)
         if not builder:
             # An applicable code pitch_config lists but this module has no builder for
-            # yet (e.g. S2b Suggested Discount as of the 2026-08-12 re-export) --
-            # recorded as skipped, not silently dropped, so a future pitch_config
+            # yet -- recorded as skipped, not silently dropped, so a future pitch_config
             # addition can never vanish from the trace without a visible trace of why.
             skipped.append(f"{code} {label} (confirmed data source, no _TALKING_POINTS builder wired yet)")
             continue
@@ -394,8 +407,8 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
         tell_sentences.append(sentence)
         used.append(f"{code} {label}")
 
-    # S4 (Current Inventory) and S2b (Suggested Discount) no longer get a hardcoded
-    # unconditional skip line here -- both are now correctly reported (or not) by the
+    # S4 (Current Inventory, structurally absent) no longer gets a hardcoded
+    # unconditional skip line here -- it's now correctly reported (or not) by the
     # ordered_codes loop above, driven by each Purpose's real Applicable Sources
     # (matches Query Resolution/Stock at DC actually listing S4, while P2B/Promise To
     # Pay don't -- the old unconditional message claimed S4 was missing even on pitches
