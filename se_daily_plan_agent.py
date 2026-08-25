@@ -40,6 +40,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -560,14 +561,50 @@ def normalize_mobile(value: Any) -> Optional[str]:
 
 
 def normalize_id(value: Any) -> Optional[str]:
+    """Bug fixed 2026-08-25: this used to .lstrip("0") every ID, which collides two
+    genuinely different IDs whenever one happens to be zero-padded (normalize_id("0012345")
+    == normalize_id("12345")) -- confirmed live that every real DC_ID in this system is a
+    fixed 10-digit string starting with "1" (never "0"), so stripping leading zeros was
+    pure defensive cruft against a case that doesn't occur here, while creating a real
+    collision risk. No longer strips anything from the string form.
+
+    Also fixed: a float/Decimal-typed ID (e.g. 1000016754.0, from a DB driver that returns
+    a numeric column as a native number rather than a string) used to stringify with a
+    trailing ".0" that a plain string ID like "1000016754" would never carry -- silently
+    breaking every cross-source join on that ID with no exception raised on either side.
+    Whole-number floats/Decimals are cast through int() first so both representations
+    converge on the same string. A genuinely fractional numeric ID (which should never
+    happen for an ID field) is left as str(value) rather than silently truncated."""
     value = clean_null(value)
     if value is None:
         return None
-    return str(value).strip().lstrip("0") or "0"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, Decimal) and value == value.to_integral_value():
+        return str(int(value))
+    text = str(value).strip()
+    return text or None
 
 
 def standardize_date(value: Any) -> Optional[str]:
-    """Standardize to YYYY-MM-DD (Section 3). Keeps distinct date fields distinct upstream."""
+    """Standardize to YYYY-MM-DD (Section 3). Keeps distinct date fields distinct upstream.
+
+    Known, documented limitation (made explicit 2026-08-25, not fixed -- see below for
+    why): a bare "DD-MM-YYYY"-shaped string is genuinely ambiguous with "MM-DD-YYYY"
+    whenever both components are <=12 (e.g. "01-02-2026" could mean 1-Feb or 2-Jan), and
+    this function always resolves that ambiguity as DD-MM-YYYY with no exception raised
+    either way -- silently, since this is a low-level utility with no Exceptions object
+    threaded through it to flag against. This is a deliberate, confirmed convention
+    choice, not a guess: every live SQL source in this pipeline returns real datetime/date
+    objects (handled by the isinstance() branch below, never hits the string-guessing
+    path at all), so the ambiguous branch only fires for the local CSV sources (DC_RAnk,
+    Config, AOP), which are India-only business exports -- DD-MM-YYYY is the correct,
+    confirmed regional convention there (consistent with this codebase's own April-start
+    Indian fiscal year elsewhere, e.g. _fiscal_year_start()). If a source ever legitimately
+    used MM-DD-YYYY, every date where day<=12 would silently transpose with zero signal --
+    flagging that live would need an Exceptions object threaded into every one of this
+    function's ~15 call sites, a larger structural change than the ambiguity itself
+    warrants without evidence any caller actually feeds it a non-Indian-convention date."""
     value = clean_null(value)
     if value is None:
         return None
@@ -582,22 +619,48 @@ def standardize_date(value: Any) -> Optional[str]:
     return text[:10] if len(text) >= 10 else text
 
 
+ZERO_COORD_EPSILON_DEGREES = 1e-3  # ~111m at the equator
+
 def is_zero_coord(lat: Any, long: Any) -> bool:
-    """(0, 0) means 'not yet checked out', never a real location (Section 4)."""
+    """(0, 0) means 'not yet checked out', never a real location (Section 4).
+
+    Bug fixed 2026-08-25: the epsilon was 1e-9, which only catches an EXACT (0, 0) --
+    real device GPS chips are known to emit near-zero-but-not-exactly-zero coordinates
+    during a cold-start/no-fix state (a common default before a real fix is acquired),
+    which slipped straight past this check and got treated as a real, valid location.
+    Widened to ZERO_COORD_EPSILON_DEGREES (~111m) -- safe for this system specifically
+    because every real DC/SE in this network operates inside India (roughly 8-37N,
+    68-97E), nowhere near true (0, 0) (a point in the Gulf of Guinea); no real field
+    coordinate could ever legitimately fall this close to Null Island, so anything this
+    close is definitionally a GPS glitch here, not a real nearby location that a tighter
+    epsilon would need to protect."""
     lat_f, long_f = parse_number(lat), parse_number(long)
-    return lat_f is not None and long_f is not None and abs(lat_f) < 1e-9 and abs(long_f) < 1e-9
+    return lat_f is not None and long_f is not None and abs(lat_f) < ZERO_COORD_EPSILON_DEGREES and abs(long_f) < ZERO_COORD_EPSILON_DEGREES
 
 
 def photo_logged_from_task_details(task_details_json: Any) -> Optional[bool]:
-    """Photo_Logged must be derived from the task_details image array, never a flag column."""
+    """Photo_Logged must be derived from the task_details image array, never a flag column.
+
+    Bug fixed 2026-08-25: `blob.get("images") or blob.get("image")` treated a genuinely
+    present-but-empty "images": [] as falsy and silently fell through to check a second
+    key -- a task_details blob confirmed to have zero images could still read Photo_Logged
+    from an unrelated "image" key if one happened to exist too. Key presence is now
+    checked explicitly (`"images" in blob`), not truthiness, so an explicit empty array is
+    honored as "no photo, confirmed," not overridden."""
     if task_details_json is None:
         return None
     try:
         blob = json.loads(task_details_json) if isinstance(task_details_json, str) else task_details_json
     except (json.JSONDecodeError, TypeError):
         return None
-    images = blob.get("images") or blob.get("image") if isinstance(blob, dict) else None
-    if images is None and isinstance(blob, dict):
+    if not isinstance(blob, dict):
+        return None
+    if "images" in blob:
+        images = blob["images"]
+    elif "image" in blob:
+        images = blob["image"]
+    else:
+        images = None
         for key in blob:
             if isinstance(blob[key], list) and "image" in key.lower():
                 images = blob[key]
