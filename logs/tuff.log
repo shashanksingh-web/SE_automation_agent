@@ -1691,3 +1691,688 @@
 2026-08-18 09:54:52,687 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #699 (ABM=E02190267 @ 2026-08-19): 169 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
 2026-08-18 09:55:40,888 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #700 (ABM=E02190210 @ 2026-08-19): 109 exceptions across 186 DCs (59%) -- exceeds 10% threshold.
 2026-08-18 09:56:59,562 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #701 (STATE=Bihar @ 2026-08-19): 3785 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 10:19:27,499 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:19:28,145 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:19:40,527 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:19:40,945 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:19:55,371 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:19:55,785 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:20:41,718 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:20:42,160 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:20:57,611 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:20:58,027 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:21:14,485 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:21:14,898 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:21:30,326 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:21:30,736 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:22:00,404 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:22:00,839 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:23:43,061 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #702 (SE=anurag.gautam@agrevolution.in @ 2026-08-19): 34 exceptions across 64 DCs (53%) -- exceeds 10% threshold.
+2026-08-18 10:37:31,444 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:37:31,947 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:37:36,289 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:37:36,672 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:37:50,062 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:37:50,403 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:38:27,634 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #703 (SE=anurag.gautam@agrevolution.in @ 2026-08-19): 34 exceptions across 64 DCs (53%) -- exceeds 10% threshold.
+2026-08-18 10:44:32,213 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 10:44:32,701 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:45:15,680 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #704 (SE=anurag.gautam@agrevolution.in @ 2026-08-19): 34 exceptions across 64 DCs (53%) -- exceeds 10% threshold.
+2026-08-18 10:47:31,844 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:47:32,423 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:47:41,770 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:47:42,170 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:47:47,460 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:47:47,797 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:48:53,071 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #705 (ABM=E02190267 @ 2026-08-19): 169 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-18 10:49:24,695 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #706 (SE=dk.s@agrevolution.in @ 2026-08-19): 62 exceptions across 80 DCs (78%) -- exceeds 10% threshold.
+2026-08-18 10:56:14,418 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:56:14,923 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:56:28,345 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:56:28,825 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:56:42,210 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:56:42,865 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:56:56,296 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:56:56,713 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 10:58:01,957 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 10:58:02,369 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:00:32,615 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #707 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:02:24,252 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #708 (SE=rkumar@agrevolution.in @ 2026-08-18): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:02:28,978 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #709 (SE=rkumar@agrevolution.in @ 2026-08-18): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:02:41,421 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #710 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:07:38,160 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 11:07:39,058 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:07:45,366 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 11:07:45,690 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:08:07,191 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 11:08:07,651 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:08:13,925 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 11:08:14,314 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:08:19,581 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 11:08:19,930 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:10:57,211 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #711 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:12:26,984 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #712 (SE=rkumar@agrevolution.in @ 2026-08-18): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:12:29,045 ERROR django.request: Bad Gateway: /api/planning/se/rkumar@agrevolution.in/
+2026-08-18 11:12:33,605 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #713 (SE=rkumar@agrevolution.in @ 2026-08-18): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:12:42,873 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #714 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:14:04,135 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-08-18 11:14:05,986 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #715 (ABM=E02190267 @ 2026-08-14): 157 exceptions across 254 DCs (62%) -- exceeds 10% threshold.
+2026-08-18 11:14:25,391 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #716 (ABM=E02190267 @ 2026-08-19): 169 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-18 11:21:36,080 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #717 (ABM=E02213099 @ 2026-08-14): 50 exceptions across 90 DCs (56%) -- exceeds 10% threshold.
+2026-08-18 11:22:27,390 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #718 (STATE=Bihar @ 2026-08-14): 3768 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 11:24:04,823 ERROR django.request: Bad Gateway: /api/planning/state/Bihar/
+2026-08-18 11:24:16,479 ERROR django.request: Bad Gateway: /api/planning/state/Bihar/
+2026-08-18 11:24:16,813 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #719 (STATE=Bihar @ 2026-08-18): 3765 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 11:24:42,213 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #720 (STATE=Bihar @ 2026-08-14): 3768 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 11:35:54,224 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 11:35:55,221 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:36:02,552 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 11:36:03,169 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:36:14,584 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 11:36:15,014 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:36:59,904 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-18 11:37:00,373 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:38:13,826 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 11:38:14,308 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:38:28,791 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 11:38:29,395 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:38:35,698 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-18 11:38:36,082 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:38:57,615 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-18 11:38:58,073 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:41:30,377 ERROR django.request: Bad Gateway: /api/planning/se/rkumar@agrevolution.in/
+2026-08-18 11:41:31,166 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #721 (STATE=Bihar @ 2026-08-14): 3768 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 11:41:57,242 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #722 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:43:23,845 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #723 (SE=rajesh.raja@agrevolution.in @ 2026-08-18): 28 exceptions across 52 DCs (54%) -- exceeds 10% threshold.
+2026-08-18 11:43:28,210 ERROR django.request: Bad Gateway: /api/planning/se/rajesh.raja@agrevolution.in/
+2026-08-18 11:43:36,956 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #724 (SE=rajesh.raja@agrevolution.in @ 2026-08-18): 28 exceptions across 52 DCs (54%) -- exceeds 10% threshold.
+2026-08-18 11:43:39,473 ERROR django.request: Bad Gateway: /api/planning/se/rajesh.raja@agrevolution.in/
+2026-08-18 11:43:49,331 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #725 (SE=rajesh.raja@agrevolution.in @ 2026-08-14): 28 exceptions across 52 DCs (54%) -- exceeds 10% threshold.
+2026-08-18 11:45:31,238 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #726 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:47:27,061 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #727 (SE=rkumar@agrevolution.in @ 2026-08-18): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:48:28,112 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-08-18 11:48:29,344 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #728 (ABM=E02190267 @ 2026-08-18): 165 exceptions across 254 DCs (65%) -- exceeds 10% threshold.
+2026-08-18 11:48:37,729 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #729 (ABM=E02190267 @ 2026-08-19): 169 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-18 11:52:07,648 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-18 11:52:08,671 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-18 11:54:17,088 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #730 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:55:17,897 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #731 (SE=rkumar@agrevolution.in @ 2026-08-18): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:55:29,239 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #732 (SE=rkumar@agrevolution.in @ 2026-08-18): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:55:42,380 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #733 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-18 11:58:01,639 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-18 11:58:01,708 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-18 11:58:02,045 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-18 11:58:02,876 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-18 11:58:02,888 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-18 11:58:13,346 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 109296 rows in 10.5s
+2026-08-18 11:58:13,347 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-18 11:58:15,031 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12886 rows in 1.7s
+2026-08-18 11:58:15,031 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-18 11:58:17,739 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31544 rows in 2.7s
+2026-08-18 11:58:17,740 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-18 11:58:19,790 ERROR django.request: Bad Gateway: /api/planning/state/Bihar/
+2026-08-18 11:58:20,181 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #734 (STATE=Bihar @ 2026-08-18): 3765 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 11:58:57,458 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 109296 rows in 39.7s
+2026-08-18 11:58:57,473 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-18 11:59:04,663 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 82106 rows in 7.2s
+2026-08-18 11:59:04,682 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-18 11:59:05,936 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23230 rows in 1.3s
+2026-08-18 11:59:05,955 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-18 11:59:09,100 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #735 (STATE=Bihar @ 2026-08-19): 3791 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 11:59:11,258 INFO se_daily_plan_agent:   4/6 Orders_3d: 42840 rows in 5.3s
+2026-08-18 11:59:11,259 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-18 11:59:16,785 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 71290 rows in 5.5s
+2026-08-18 11:59:16,785 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-18 11:59:20,307 INFO se_daily_plan_agent:   4/6 Payments_3f: 48686 rows in 3.5s
+2026-08-18 11:59:20,308 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-18 11:59:21,132 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 0.8s
+2026-08-18 11:59:21,132 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-18 11:59:21,201 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.1s
+2026-08-18 11:59:21,201 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-08-18 11:59:21,700 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #736 (ABM=E02190210 @ 2026-08-19): 109 exceptions across 186 DCs (59%) -- exceeds 10% threshold.
+2026-08-18 11:59:24,032 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7385 rows in 2.8s
+2026-08-18 11:59:24,033 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-18 11:59:25,689 INFO se_daily_plan_agent:   Supplemented 9009 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-08-18 11:59:25,693 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-18 11:59:29,960 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-18 11:59:44,984 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-18 12:00:27,139 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #737 (STATE=Bihar @ 2026-08-19): 3791 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 12:00:40,180 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #738 (SE=dk.s@agrevolution.in @ 2026-08-19): 62 exceptions across 80 DCs (78%) -- exceeds 10% threshold.
+2026-08-18 12:00:49,112 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #738 (ABM=E02190210 @ 2026-08-19): 109 exceptions across 186 DCs (59%) -- exceeds 10% threshold.
+2026-08-18 12:01:17,076 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #739 (SE=dk.s@agrevolution.in @ 2026-08-19): 62 exceptions across 80 DCs (78%) -- exceeds 10% threshold.
+2026-08-18 12:14:33,628 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #740 (SE=sunny.kumar5@agrevolution.in @ 2026-08-19): 22 exceptions across 20 DCs (110%) -- exceeds 10% threshold.
+2026-08-18 12:16:40,032 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #741 (SE=abhinav.srivastava@agrevolution.in @ 2026-08-19): 34 exceptions across 45 DCs (76%) -- exceeds 10% threshold.
+2026-08-18 12:17:43,938 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #742 (STATE=Bihar @ 2026-08-19): 3791 exceptions across 5240 DCs (72%) -- exceeds 10% threshold.
+2026-08-18 12:20:05,589 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #743 (ABM=E02200544 @ 2026-08-19): 247 exceptions across 362 DCs (68%) -- exceeds 10% threshold.
+2026-08-18 12:21:43,277 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #744 (ABM=E02190267 @ 2026-08-19): 169 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-18 12:23:18,037 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #745 (ABM=E02190267 @ 2026-08-19): 169 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-19 05:01:51,130 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #746 (ABM=E02190267 @ 2026-08-20): 167 exceptions across 254 DCs (66%) -- exceeds 10% threshold.
+2026-08-19 07:25:35,390 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #747 (ABM=E02190267 @ 2026-08-20): 167 exceptions across 254 DCs (66%) -- exceeds 10% threshold.
+2026-08-19 10:05:06,000 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #748 (STATE=Madhya Pradesh @ 2026-08-19): 1850 exceptions across 2363 DCs (78%) -- exceeds 10% threshold.
+2026-08-19 10:05:44,066 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #749 (STATE=Uttar Pradesh @ 2026-08-20): 3282 exceptions across 4271 DCs (77%) -- exceeds 10% threshold.
+2026-08-19 12:36:43,669 ERROR django.request: Bad Gateway: /api/planning/abm/E02190185/
+2026-08-19 12:36:45,175 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #750 (ABM=E02190185 @ 2026-08-19): 77 exceptions across 123 DCs (63%) -- exceeds 10% threshold.
+2026-08-19 12:36:55,599 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #751 (ABM=E02190185 @ 2026-08-20): 77 exceptions across 123 DCs (63%) -- exceeds 10% threshold.
+2026-08-19 12:37:17,021 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #752 (RBM=E02211358 @ 2026-08-20): 533 exceptions across 803 DCs (66%) -- exceeds 10% threshold.
+2026-08-20 05:51:10,522 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-20 05:51:10,523 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-20 05:51:10,626 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-20 05:51:10,989 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-20 05:51:10,989 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-20 05:51:41,347 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 108521 rows in 30.4s
+2026-08-20 05:51:41,348 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-20 05:51:53,369 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12888 rows in 12.0s
+2026-08-20 05:51:53,370 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-20 05:52:01,581 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31512 rows in 8.2s
+2026-08-20 05:52:01,581 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-20 05:53:27,370 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 108521 rows in 85.8s
+2026-08-20 05:53:27,370 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-20 05:53:39,426 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 82015 rows in 12.1s
+2026-08-20 05:53:39,426 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-20 05:53:48,376 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23261 rows in 8.9s
+2026-08-20 05:53:48,379 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-20 05:53:52,474 INFO se_daily_plan_agent:   4/6 Orders_3d: 42440 rows in 4.1s
+2026-08-20 05:53:52,474 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-20 05:53:57,210 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 71287 rows in 4.7s
+2026-08-20 05:53:57,210 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-20 05:53:59,705 INFO se_daily_plan_agent:   4/6 Payments_3f: 48423 rows in 2.5s
+2026-08-20 05:53:59,705 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-20 05:54:05,936 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 6.2s
+2026-08-20 05:54:05,937 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-20 05:54:06,071 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.1s
+2026-08-20 05:54:06,072 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-08-20 05:54:11,423 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7404 rows in 5.4s
+2026-08-20 05:54:11,424 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-20 05:54:16,062 INFO se_daily_plan_agent:   Supplemented 9030 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-08-20 05:54:16,066 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-20 05:54:19,836 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-20 05:54:31,170 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-20 05:55:13,968 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #753 (STATE=Bihar @ 2026-08-21): 3801 exceptions across 5246 DCs (72%) -- exceeds 10% threshold.
+2026-08-20 06:11:46,177 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #754 (NODE=Bihar Sharif @ 2026-08-20): 124 exceptions across 188 DCs (66%) -- exceeds 10% threshold.
+2026-08-20 06:14:14,196 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #755 (SE=ravi.roy@agrevolution.in @ 2026-08-20): 20 exceptions across 38 DCs (53%) -- exceeds 10% threshold.
+2026-08-20 06:34:50,343 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #756 (ABM=E02190267 @ 2026-08-21): 171 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-20 11:13:07,409 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #757 (SE=anand.kumar@agrevolution.in @ 2026-08-20): 188 exceptions across 186 DCs (101%) -- exceeds 10% threshold.
+2026-08-20 11:13:08,062 ERROR django.request: Bad Gateway: /api/planning/se/rajesh.sinha@agrevolution.in/
+2026-08-20 11:13:09,087 ERROR django.request: Bad Gateway: /api/planning/se/ranjesh.ray@agrevolution.in/
+2026-08-20 11:13:09,164 ERROR django.request: Bad Gateway: /api/planning/se/kundan.kr@agrevolution.in/
+2026-08-20 11:13:09,778 ERROR django.request: Bad Gateway: /api/planning/se/anand.kumar@agrevolution.in/
+2026-08-20 11:13:11,848 ERROR django.request: Bad Gateway: /api/planning/se/susheel.kumar@agrevolution.in/
+2026-08-20 11:13:18,464 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #758 (SE=anand.kumar@agrevolution.in @ 2026-08-21): 188 exceptions across 186 DCs (101%) -- exceeds 10% threshold.
+2026-08-20 11:13:18,528 ERROR django.request: Bad Gateway: /api/planning/se/rajesh.sinha@agrevolution.in/
+2026-08-20 11:13:21,946 ERROR django.request: Bad Gateway: /api/planning/se/ranjesh.ray@agrevolution.in/
+2026-08-20 11:13:21,947 ERROR django.request: Bad Gateway: /api/planning/se/kundan.kr@agrevolution.in/
+2026-08-20 11:13:21,996 ERROR django.request: Bad Gateway: /api/planning/se/susheel.kumar@agrevolution.in/
+2026-08-20 11:13:27,137 ERROR django.request: Bad Gateway: /api/planning/se/ranjesh.ray@agrevolution.in/
+2026-08-20 11:13:27,645 ERROR django.request: Bad Gateway: /api/planning/se/susheel.kumar@agrevolution.in/
+2026-08-20 11:13:29,020 ERROR django.request: Bad Gateway: /api/planning/se/rajesh.sinha@agrevolution.in/
+2026-08-20 11:13:30,526 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #759 (SE=kundan.kr@agrevolution.in @ 2026-08-21): 23 exceptions across 37 DCs (62%) -- exceeds 10% threshold.
+2026-08-20 11:17:23,709 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #760 (ABM=E02190267 @ 2026-08-21): 171 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-20 12:15:52,481 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #761 (RBM=E02190265 @ 2026-08-21): 732 exceptions across 1273 DCs (58%) -- exceeds 10% threshold.
+2026-08-21 05:15:20,743 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #762 (ABM=E02190210 @ 2026-08-22): 114 exceptions across 195 DCs (58%) -- exceeds 10% threshold.
+2026-08-21 06:18:59,960 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #763 (RBM=E02211358 @ 2026-08-22): 526 exceptions across 803 DCs (66%) -- exceeds 10% threshold.
+2026-08-21 07:11:40,169 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #764 (ABM=E02190210 @ 2026-08-22): 114 exceptions across 195 DCs (58%) -- exceeds 10% threshold.
+2026-08-21 10:38:51,528 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #765 (ABM=E02190210 @ 2026-08-22): 114 exceptions across 195 DCs (58%) -- exceeds 10% threshold.
+2026-08-22 07:01:54,312 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-22 07:01:54,314 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-22 07:01:54,418 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-22 07:01:54,846 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-22 07:01:54,846 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-22 07:01:57,504 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 108750 rows in 2.7s
+2026-08-22 07:01:57,504 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-22 07:01:59,497 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12879 rows in 2.0s
+2026-08-22 07:01:59,497 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-22 07:02:00,136 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31499 rows in 0.6s
+2026-08-22 07:02:00,136 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-22 07:02:23,711 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 108750 rows in 23.6s
+2026-08-22 07:02:23,711 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-22 07:02:32,009 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 82593 rows in 8.3s
+2026-08-22 07:02:32,009 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-22 07:02:33,258 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23261 rows in 1.2s
+2026-08-22 07:02:33,258 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-22 07:02:37,361 INFO se_daily_plan_agent:   4/6 Orders_3d: 42466 rows in 4.1s
+2026-08-22 07:02:37,362 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-22 07:02:44,614 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 72155 rows in 7.3s
+2026-08-22 07:02:44,615 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-22 07:02:47,354 INFO se_daily_plan_agent:   4/6 Payments_3f: 48706 rows in 2.7s
+2026-08-22 07:02:47,354 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-22 07:02:48,143 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 0.8s
+2026-08-22 07:02:48,143 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-22 07:02:48,202 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.1s
+2026-08-22 07:02:48,202 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-08-22 07:02:52,680 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7433 rows in 4.5s
+2026-08-22 07:02:52,681 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-22 07:02:54,066 INFO se_daily_plan_agent:   Supplemented 9045 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-08-22 07:02:54,069 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-22 07:02:57,408 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-22 07:03:14,824 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-22 07:03:29,579 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #766 (NODE=Kota @ 2026-08-22): 222 exceptions across 246 DCs (90%) -- exceeds 10% threshold.
+2026-08-22 07:03:42,555 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #767 (NODE=Ahmedabad @ 2026-08-22): 487 exceptions across 523 DCs (93%) -- exceeds 10% threshold.
+2026-08-22 07:03:54,349 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #768 (NODE=Ahmednagar @ 2026-08-22): 102 exceptions across 127 DCs (80%) -- exceeds 10% threshold.
+2026-08-22 07:04:08,769 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #769 (NODE=Akola @ 2026-08-22): 295 exceptions across 387 DCs (76%) -- exceeds 10% threshold.
+2026-08-22 07:04:25,225 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #770 (NODE=Aligarh @ 2026-08-22): 294 exceptions across 340 DCs (86%) -- exceeds 10% threshold.
+2026-08-22 07:04:40,460 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #771 (NODE=Allahabad @ 2026-08-22): 121 exceptions across 159 DCs (76%) -- exceeds 10% threshold.
+2026-08-22 07:04:48,699 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #772 (NODE=Alwar @ 2026-08-22): 55 exceptions across 73 DCs (75%) -- exceeds 10% threshold.
+2026-08-22 07:05:01,943 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #773 (NODE=Ambikapur @ 2026-08-22): 100 exceptions across 147 DCs (68%) -- exceeds 10% threshold.
+2026-08-22 07:05:13,303 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #774 (NODE=Amravati @ 2026-08-22): 182 exceptions across 257 DCs (71%) -- exceeds 10% threshold.
+2026-08-22 07:05:23,903 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #775 (NODE=Amroha @ 2026-08-22): 248 exceptions across 287 DCs (86%) -- exceeds 10% threshold.
+2026-08-22 07:05:36,668 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #776 (NODE=Arariya @ 2026-08-22): 135 exceptions across 219 DCs (62%) -- exceeds 10% threshold.
+2026-08-22 07:05:36,703 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Arrah failed: 34 DC(s) found for NODE='Arrah', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-22 07:05:48,397 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #777 (NODE=Bahraich @ 2026-08-22): 70 exceptions across 119 DCs (59%) -- exceeds 10% threshold.
+2026-08-22 07:06:04,668 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #778 (NODE=Ballia @ 2026-08-22): 67 exceptions across 108 DCs (62%) -- exceeds 10% threshold.
+2026-08-22 07:06:16,308 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #779 (NODE=Barabanki @ 2026-08-22): 74 exceptions across 116 DCs (64%) -- exceeds 10% threshold.
+2026-08-22 07:06:31,627 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #780 (NODE=Bareilly @ 2026-08-22): 227 exceptions across 270 DCs (84%) -- exceeds 10% threshold.
+2026-08-22 07:06:44,992 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #781 (NODE=Begusarai @ 2026-08-22): 258 exceptions across 319 DCs (81%) -- exceeds 10% threshold.
+2026-08-22 07:07:00,440 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #782 (NODE=Bettiah @ 2026-08-22): 250 exceptions across 332 DCs (75%) -- exceeds 10% threshold.
+2026-08-22 07:07:13,835 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #783 (NODE=Bhagalpur @ 2026-08-22): 93 exceptions across 137 DCs (68%) -- exceeds 10% threshold.
+2026-08-22 07:07:28,504 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #784 (NODE=Bhawanipatna @ 2026-08-22): 79 exceptions across 104 DCs (76%) -- exceeds 10% threshold.
+2026-08-22 07:07:43,906 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #785 (NODE=Bhopal @ 2026-08-22): 283 exceptions across 368 DCs (77%) -- exceeds 10% threshold.
+2026-08-22 07:08:01,032 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #786 (NODE=Bihar Sharif @ 2026-08-22): 172 exceptions across 229 DCs (75%) -- exceeds 10% threshold.
+2026-08-22 07:08:17,273 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #787 (NODE=Bilaspur @ 2026-08-22): 140 exceptions across 160 DCs (88%) -- exceeds 10% threshold.
+2026-08-22 07:08:31,142 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #788 (NODE=Bulandshahr @ 2026-08-22): 133 exceptions across 161 DCs (83%) -- exceeds 10% threshold.
+2026-08-22 07:08:48,240 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #789 (NODE=Burdwan @ 2026-08-22): 69 exceptions across 84 DCs (82%) -- exceeds 10% threshold.
+2026-08-22 07:09:02,571 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #790 (NODE=Buxar @ 2026-08-22): 65 exceptions across 105 DCs (62%) -- exceeds 10% threshold.
+2026-08-22 07:09:14,581 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #791 (NODE=CHHATRAPATI SAMBHAJINAGAR @ 2026-08-22): 110 exceptions across 176 DCs (62%) -- exceeds 10% threshold.
+2026-08-22 07:09:25,216 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #792 (NODE=Chhindwara @ 2026-08-22): 268 exceptions across 343 DCs (78%) -- exceeds 10% threshold.
+2026-08-22 07:09:38,294 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #793 (NODE=Cooch Behar @ 2026-08-22): 163 exceptions across 208 DCs (78%) -- exceeds 10% threshold.
+2026-08-22 07:09:54,832 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #794 (NODE=Darbhanga @ 2026-08-22): 133 exceptions across 183 DCs (73%) -- exceeds 10% threshold.
+2026-08-22 07:09:54,900 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Dhar failed: 37 DC(s) found for NODE='Dhar', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-22 07:10:09,980 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #795 (NODE=Faizabad @ 2026-08-22): 147 exceptions across 189 DCs (78%) -- exceeds 10% threshold.
+2026-08-22 07:10:24,994 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #796 (NODE=Farrukhabad @ 2026-08-22): 148 exceptions across 224 DCs (66%) -- exceeds 10% threshold.
+2026-08-22 07:10:38,505 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #797 (NODE=Ghazipur @ 2026-08-22): 232 exceptions across 283 DCs (82%) -- exceeds 10% threshold.
+2026-08-22 07:10:54,047 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #798 (NODE=Giridih @ 2026-08-22): 80 exceptions across 119 DCs (67%) -- exceeds 10% threshold.
+2026-08-22 07:11:12,798 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #799 (NODE=Gorakhpur @ 2026-08-22): 163 exceptions across 210 DCs (78%) -- exceeds 10% threshold.
+2026-08-22 07:11:24,746 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #800 (NODE=Gwalior @ 2026-08-22): 120 exceptions across 153 DCs (78%) -- exceeds 10% threshold.
+2026-08-22 07:11:40,118 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #801 (NODE=Hapur @ 2026-08-22): 219 exceptions across 249 DCs (88%) -- exceeds 10% threshold.
+2026-08-22 07:11:54,492 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #802 (NODE=Hardoi @ 2026-08-22): 199 exceptions across 274 DCs (73%) -- exceeds 10% threshold.
+2026-08-22 07:12:06,428 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #803 (NODE=Hazaribagh @ 2026-08-22): 119 exceptions across 190 DCs (63%) -- exceeds 10% threshold.
+2026-08-22 07:12:19,470 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #804 (NODE=Head Office @ 2026-08-22): 228 exceptions across 293 DCs (78%) -- exceeds 10% threshold.
+2026-08-22 07:12:37,165 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #805 (NODE=Hisar @ 2026-08-22): 336 exceptions across 411 DCs (82%) -- exceeds 10% threshold.
+2026-08-22 07:12:46,937 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #806 (NODE=Hooghly @ 2026-08-22): 104 exceptions across 105 DCs (99%) -- exceeds 10% threshold.
+2026-08-22 07:13:04,117 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #807 (NODE=Indore @ 2026-08-22): 522 exceptions across 561 DCs (93%) -- exceeds 10% threshold.
+2026-08-22 07:13:18,960 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #808 (NODE=Jabalpur @ 2026-08-22): 144 exceptions across 191 DCs (75%) -- exceeds 10% threshold.
+2026-08-22 07:13:36,303 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #809 (NODE=Jaipur @ 2026-08-22): 489 exceptions across 619 DCs (79%) -- exceeds 10% threshold.
+2026-08-22 07:13:44,357 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #810 (NODE=Jaipur_Kota @ 2026-08-22): 42 exceptions across 52 DCs (81%) -- exceeds 10% threshold.
+2026-08-22 07:13:55,263 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #811 (NODE=Jalgaon @ 2026-08-22): 136 exceptions across 200 DCs (68%) -- exceeds 10% threshold.
+2026-08-22 07:14:07,729 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #812 (NODE=Jalna @ 2026-08-22): 112 exceptions across 167 DCs (67%) -- exceeds 10% threshold.
+2026-08-22 07:14:20,286 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #813 (NODE=Jaunpur @ 2026-08-22): 60 exceptions across 97 DCs (62%) -- exceeds 10% threshold.
+2026-08-22 07:14:27,546 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #814 (NODE=Jodhpur @ 2026-08-22): 27 exceptions across 48 DCs (56%) -- exceeds 10% threshold.
+2026-08-22 07:14:39,643 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #815 (NODE=Kasganj @ 2026-08-22): 149 exceptions across 186 DCs (80%) -- exceeds 10% threshold.
+2026-08-22 07:14:54,354 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #816 (NODE=Katihar @ 2026-08-22): 49 exceptions across 82 DCs (60%) -- exceeds 10% threshold.
+2026-08-22 07:15:12,016 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #817 (NODE=Khagaria @ 2026-08-22): 34 exceptions across 80 DCs (42%) -- exceeds 10% threshold.
+2026-08-22 07:15:26,805 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #818 (NODE=Khandwa @ 2026-08-22): 131 exceptions across 195 DCs (67%) -- exceeds 10% threshold.
+2026-08-22 07:15:41,119 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #819 (NODE=Khargone @ 2026-08-22): 176 exceptions across 241 DCs (73%) -- exceeds 10% threshold.
+2026-08-22 07:15:58,695 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #820 (NODE=Kheri @ 2026-08-22): 40 exceptions across 80 DCs (50%) -- exceeds 10% threshold.
+2026-08-22 07:16:14,731 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #821 (NODE=Krishnanagar (HQ) @ 2026-08-22): 47 exceptions across 74 DCs (64%) -- exceeds 10% threshold.
+2026-08-22 07:16:33,841 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #822 (NODE=Kushinagar @ 2026-08-22): 173 exceptions across 203 DCs (85%) -- exceeds 10% threshold.
+2026-08-22 07:16:51,394 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #823 (NODE=Lakhisarai @ 2026-08-22): 41 exceptions across 77 DCs (53%) -- exceeds 10% threshold.
+2026-08-22 07:17:04,429 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #824 (NODE=Madhepura @ 2026-08-22): 200 exceptions across 269 DCs (74%) -- exceeds 10% threshold.
+2026-08-22 07:17:16,298 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #825 (NODE=Malda @ 2026-08-22): 28 exceptions across 56 DCs (50%) -- exceeds 10% threshold.
+2026-08-22 07:17:27,859 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #826 (NODE=Mohania @ 2026-08-22): 25 exceptions across 51 DCs (49%) -- exceeds 10% threshold.
+2026-08-22 07:17:40,213 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #827 (NODE=Motihari @ 2026-08-22): 218 exceptions across 268 DCs (81%) -- exceeds 10% threshold.
+2026-08-22 07:17:52,105 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #828 (NODE=Murshidabad @ 2026-08-22): 122 exceptions across 142 DCs (86%) -- exceeds 10% threshold.
+2026-08-22 07:18:10,349 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #829 (NODE=Muzaffarpur @ 2026-08-22): 335 exceptions across 425 DCs (79%) -- exceeds 10% threshold.
+2026-08-22 07:18:23,637 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #830 (NODE=Nabarangpur @ 2026-08-22): 78 exceptions across 110 DCs (71%) -- exceeds 10% threshold.
+2026-08-22 07:18:35,463 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #831 (NODE=Nashik @ 2026-08-22): 175 exceptions across 230 DCs (76%) -- exceeds 10% threshold.
+2026-08-22 07:18:51,004 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #832 (NODE=Nawada @ 2026-08-22): 39 exceptions across 111 DCs (35%) -- exceeds 10% threshold.
+2026-08-22 07:19:00,633 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #833 (NODE=North 24 Parganas @ 2026-08-22): 157 exceptions across 170 DCs (92%) -- exceeds 10% threshold.
+2026-08-22 07:19:08,783 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #834 (NODE=Pune @ 2026-08-22): 531 exceptions across 572 DCs (93%) -- exceeds 10% threshold.
+2026-08-22 07:19:19,687 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #835 (NODE=Purnea @ 2026-08-22): 362 exceptions across 438 DCs (83%) -- exceeds 10% threshold.
+2026-08-22 07:19:33,102 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #836 (NODE=Raipur @ 2026-08-22): 239 exceptions across 281 DCs (85%) -- exceeds 10% threshold.
+2026-08-22 07:19:45,876 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #837 (NODE=Ranchi @ 2026-08-22): 171 exceptions across 257 DCs (67%) -- exceeds 10% threshold.
+2026-08-22 07:19:51,626 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #838 (NODE=Ratlam @ 2026-08-22): 49 exceptions across 60 DCs (82%) -- exceeds 10% threshold.
+2026-08-22 07:20:02,097 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #839 (NODE=Saharsa @ 2026-08-22): 64 exceptions across 147 DCs (44%) -- exceeds 10% threshold.
+2026-08-22 07:20:14,289 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #840 (NODE=Samastipur @ 2026-08-22): 259 exceptions across 329 DCs (79%) -- exceeds 10% threshold.
+2026-08-22 07:20:25,267 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #841 (NODE=Sangli @ 2026-08-22): 90 exceptions across 105 DCs (86%) -- exceeds 10% threshold.
+2026-08-22 07:20:36,571 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #842 (NODE=Saran @ 2026-08-22): 121 exceptions across 184 DCs (66%) -- exceeds 10% threshold.
+2026-08-22 07:20:48,831 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #843 (NODE=Sasaram @ 2026-08-22): 195 exceptions across 233 DCs (84%) -- exceeds 10% threshold.
+2026-08-22 07:21:00,673 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #844 (NODE=Shahjahanpur @ 2026-08-22): 35 exceptions across 61 DCs (57%) -- exceeds 10% threshold.
+2026-08-22 07:21:14,111 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #845 (NODE=Shajapur @ 2026-08-22): 95 exceptions across 136 DCs (70%) -- exceeds 10% threshold.
+2026-08-22 07:21:14,142 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Siliguri failed: 28 DC(s) found for NODE='Siliguri', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-22 07:21:29,200 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #846 (NODE=Sitamarhi @ 2026-08-22): 190 exceptions across 215 DCs (88%) -- exceeds 10% threshold.
+2026-08-22 07:21:43,420 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #847 (NODE=Sitapur @ 2026-08-22): 231 exceptions across 275 DCs (84%) -- exceeds 10% threshold.
+2026-08-22 07:21:55,244 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #848 (NODE=Siwan @ 2026-08-22): 109 exceptions across 171 DCs (64%) -- exceeds 10% threshold.
+2026-08-22 07:22:07,437 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #849 (NODE=Solapur @ 2026-08-22): 276 exceptions across 389 DCs (71%) -- exceeds 10% threshold.
+2026-08-22 07:22:18,051 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #850 (NODE=Sonbhadra @ 2026-08-22): 132 exceptions across 176 DCs (75%) -- exceeds 10% threshold.
+2026-08-22 07:22:28,355 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #851 (NODE=Sri Ganganagar @ 2026-08-22): 163 exceptions across 184 DCs (89%) -- exceeds 10% threshold.
+2026-08-22 07:22:28,382 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Ujjain failed: 69 DC(s) found for NODE='Ujjain', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-22 07:22:40,312 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #852 (NODE=Vaishali @ 2026-08-22): 257 exceptions across 314 DCs (82%) -- exceeds 10% threshold.
+2026-08-22 07:22:57,819 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #853 (NODE=Varanasi @ 2026-08-22): 167 exceptions across 207 DCs (81%) -- exceeds 10% threshold.
+2026-08-22 07:23:08,269 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #854 (NODE=Washim @ 2026-08-22): 146 exceptions across 184 DCs (79%) -- exceeds 10% threshold.
+2026-08-22 07:30:00,520 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-22 07:30:01,833 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 07:30:11,210 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-22 07:30:11,624 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 07:30:14,881 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-22 07:30:15,206 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 07:30:21,490 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-22 07:30:21,839 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 07:30:55,575 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-22 07:30:55,907 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 07:31:13,018 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #855 (SE=ravi.roy@agrevolution.in @ 2026-08-22): 20 exceptions across 38 DCs (53%) -- exceeds 10% threshold.
+2026-08-22 07:41:10,230 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #856 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-22 07:43:48,344 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #857 (SE=rkumar@agrevolution.in @ 2026-08-22): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-22 07:44:08,175 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #858 (SE=rkumar@agrevolution.in @ 2026-08-22): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-22 07:44:22,307 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #859 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-22 07:48:55,002 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #860 (ABM=E02190267 @ 2026-08-23): 169 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-22 09:45:34,861 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/dc_card.py changed, reloading.
+2026-08-22 09:45:36,108 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 09:46:14,955 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-22 09:46:15,541 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 09:46:54,361 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-22 09:46:55,091 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 09:47:21,791 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-22 09:47:22,228 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 09:47:31,554 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-22 09:47:31,972 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 09:48:04,827 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #861 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-22 09:52:47,646 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #862 (SE=rkumar@agrevolution.in @ 2026-08-22): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-22 09:53:19,876 ERROR django.request: Bad Gateway: /api/planning/se/rkumar@agrevolution.in/
+2026-08-22 09:53:20,054 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #863 (SE=rkumar@agrevolution.in @ 2026-08-22): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-22 09:53:28,774 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #864 (SE=rkumar@agrevolution.in @ 2026-08-14): 21 exceptions across 41 DCs (51%) -- exceeds 10% threshold.
+2026-08-22 10:04:45,165 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/pitching.py changed, reloading.
+2026-08-22 10:04:46,895 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-22 10:05:16,024 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #865 (SE=ravi.roy@agrevolution.in @ 2026-08-22): 20 exceptions across 38 DCs (53%) -- exceeds 10% threshold.
+2026-08-22 10:07:28,216 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #866 (ABM=E02190260 @ 2026-08-23): 76 exceptions across 140 DCs (54%) -- exceeds 10% threshold.
+2026-08-24 04:11:56,301 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #867 (ABM=E02190270 @ 2026-08-25): 123 exceptions across 142 DCs (87%) -- exceeds 10% threshold.
+2026-08-24 04:17:21,959 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-24 04:17:21,963 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-24 04:17:22,118 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-24 04:17:22,701 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-24 04:17:22,701 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-24 04:17:35,828 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 107955 rows in 13.1s
+2026-08-24 04:17:35,829 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-24 04:17:39,908 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12881 rows in 4.1s
+2026-08-24 04:17:39,908 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-24 04:17:44,436 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #868 (ABM=E02190267 @ 2026-08-24): 170 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-24 04:17:45,167 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31371 rows in 5.3s
+2026-08-24 04:17:45,167 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-24 04:18:12,703 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 107955 rows in 27.5s
+2026-08-24 04:18:12,705 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-24 04:18:21,073 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 82238 rows in 8.4s
+2026-08-24 04:18:21,075 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-24 04:18:22,594 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23261 rows in 1.5s
+2026-08-24 04:18:22,594 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-24 04:18:26,456 INFO se_daily_plan_agent:   4/6 Orders_3d: 42187 rows in 3.9s
+2026-08-24 04:18:26,456 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-24 04:18:30,977 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 71435 rows in 4.5s
+2026-08-24 04:18:30,977 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-24 04:18:33,872 INFO se_daily_plan_agent:   4/6 Payments_3f: 48518 rows in 2.9s
+2026-08-24 04:18:33,873 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-24 04:18:34,738 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 0.9s
+2026-08-24 04:18:34,738 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-24 04:18:34,790 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.1s
+2026-08-24 04:18:34,790 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-08-24 04:18:38,384 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7443 rows in 3.6s
+2026-08-24 04:18:38,385 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-24 04:18:39,985 INFO se_daily_plan_agent:   Supplemented 9049 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-08-24 04:18:39,988 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-24 04:18:43,457 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-24 04:19:01,773 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-24 04:19:14,174 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #869 (ABM=E02190267 @ 2026-08-24): 171 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-24 04:19:23,629 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #870 (ABM=E02190267 @ 2026-08-24): 171 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-08-24 04:22:49,666 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-24 04:22:51,156 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 04:23:03,601 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-24 04:23:04,011 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 04:23:31,619 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-24 04:23:32,199 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 04:24:43,538 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-24 04:24:43,982 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 04:25:01,443 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-08-24 04:25:02,068 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 04:28:03,040 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #871 (SE=abhinav.srivastava@agrevolution.in @ 2026-08-24): 35 exceptions across 45 DCs (78%) -- exceeds 10% threshold.
+2026-08-24 04:29:30,514 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #872 (SE=abhinav.srivastava@agrevolution.in @ 2026-08-24): 35 exceptions across 45 DCs (78%) -- exceeds 10% threshold.
+2026-08-24 04:34:29,120 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #873 (ABM=E02190271 @ 2026-08-24): 190 exceptions across 261 DCs (73%) -- exceeds 10% threshold.
+2026-08-24 15:07:42,255 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-24 15:07:44,491 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 15:07:52,982 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-24 15:07:53,301 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 15:17:09,479 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-24 15:17:10,460 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 15:17:14,741 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-24 15:17:15,070 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 15:19:11,436 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #874 (SE=ravi.roy@agrevolution.in @ 2026-08-24): 20 exceptions across 38 DCs (53%) -- exceeds 10% threshold.
+2026-08-24 15:20:25,454 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-08-24 15:20:25,880 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-24 15:21:03,055 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #875 (SE=ravi.roy@agrevolution.in @ 2026-08-24): 19 exceptions across 38 DCs (50%) -- exceeds 10% threshold.
+2026-08-25 05:03:02,360 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-25 05:03:04,037 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 05:03:10,338 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-25 05:03:10,678 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 05:03:27,117 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-25 05:03:27,625 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 05:03:35,961 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-25 05:03:36,352 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 05:03:47,741 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-25 05:03:48,169 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 05:42:23,642 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-25 05:42:23,643 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-25 05:42:23,745 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-25 05:42:24,103 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-25 05:42:24,103 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-25 05:42:27,349 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 108199 rows in 3.2s
+2026-08-25 05:42:27,350 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-25 05:42:28,604 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12881 rows in 1.3s
+2026-08-25 05:42:28,604 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-25 05:42:29,522 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31430 rows in 0.9s
+2026-08-25 05:42:29,522 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-25 05:44:23,810 ERROR django.request: Bad Gateway: /api/planning/state/Bihar/
+2026-08-25 05:44:43,278 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #876 (STATE=Bihar @ 2026-08-25): 3761 exceptions across 5249 DCs (72%) -- exceeds 10% threshold.
+2026-08-25 05:45:36,510 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #877 (STATE=Bihar @ 2026-08-26): 3784 exceptions across 5249 DCs (72%) -- exceeds 10% threshold.
+2026-08-25 05:46:36,839 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-25 05:46:36,841 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-25 05:46:36,939 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-25 05:46:37,297 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-25 05:46:37,297 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-25 05:46:46,404 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 108217 rows in 9.1s
+2026-08-25 05:46:46,404 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-25 05:46:48,384 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12881 rows in 2.0s
+2026-08-25 05:46:48,384 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-25 05:46:50,793 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31431 rows in 2.4s
+2026-08-25 05:46:50,793 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-25 05:47:22,846 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 108217 rows in 32.1s
+2026-08-25 05:47:22,847 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-25 05:47:29,655 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 82299 rows in 6.8s
+2026-08-25 05:47:29,655 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-25 05:47:31,154 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23261 rows in 1.5s
+2026-08-25 05:47:31,154 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-25 05:47:35,421 INFO se_daily_plan_agent:   4/6 Orders_3d: 41959 rows in 4.3s
+2026-08-25 05:47:35,422 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-25 05:47:38,463 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 71731 rows in 3.0s
+2026-08-25 05:47:38,464 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-25 05:47:41,585 INFO se_daily_plan_agent:   4/6 Payments_3f: 48642 rows in 3.1s
+2026-08-25 05:47:41,585 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-25 05:47:42,418 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 0.8s
+2026-08-25 05:47:42,418 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-25 05:47:42,452 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.0s
+2026-08-25 05:47:42,452 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-08-25 05:47:46,770 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7461 rows in 4.3s
+2026-08-25 05:47:46,770 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-25 05:47:48,466 INFO se_daily_plan_agent:   Supplemented 9060 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-08-25 05:47:48,469 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-25 05:47:51,226 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-25 05:48:08,829 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-25 05:48:32,680 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #878 (NODE=Kota @ 2026-08-25): 225 exceptions across 246 DCs (91%) -- exceeds 10% threshold.
+2026-08-25 05:48:49,819 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #879 (NODE=Ahmedabad @ 2026-08-25): 487 exceptions across 524 DCs (93%) -- exceeds 10% threshold.
+2026-08-25 05:49:06,938 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #880 (NODE=Ahmednagar @ 2026-08-25): 102 exceptions across 127 DCs (80%) -- exceeds 10% threshold.
+2026-08-25 05:49:22,586 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #881 (NODE=Akola @ 2026-08-25): 299 exceptions across 388 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 05:49:38,083 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #882 (NODE=Aligarh @ 2026-08-25): 293 exceptions across 340 DCs (86%) -- exceeds 10% threshold.
+2026-08-25 05:49:55,610 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #883 (NODE=Allahabad @ 2026-08-25): 122 exceptions across 159 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 05:50:15,058 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #884 (NODE=Alwar @ 2026-08-25): 59 exceptions across 73 DCs (81%) -- exceeds 10% threshold.
+2026-08-25 05:50:23,387 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #885 (NODE=Ambikapur @ 2026-08-25): 97 exceptions across 147 DCs (66%) -- exceeds 10% threshold.
+2026-08-25 05:50:42,984 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #886 (NODE=Amravati @ 2026-08-25): 179 exceptions across 257 DCs (70%) -- exceeds 10% threshold.
+2026-08-25 05:51:00,929 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #887 (NODE=Amroha @ 2026-08-25): 248 exceptions across 287 DCs (86%) -- exceeds 10% threshold.
+2026-08-25 05:51:18,629 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #888 (NODE=Arariya @ 2026-08-25): 139 exceptions across 219 DCs (63%) -- exceeds 10% threshold.
+2026-08-25 05:51:18,678 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Arrah failed: 34 DC(s) found for NODE='Arrah', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-25 05:51:35,520 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #889 (NODE=Bahraich @ 2026-08-25): 73 exceptions across 119 DCs (61%) -- exceeds 10% threshold.
+2026-08-25 05:51:54,166 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #890 (NODE=Ballia @ 2026-08-25): 61 exceptions across 108 DCs (56%) -- exceeds 10% threshold.
+2026-08-25 05:52:08,527 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #891 (NODE=Barabanki @ 2026-08-25): 74 exceptions across 116 DCs (64%) -- exceeds 10% threshold.
+2026-08-25 05:52:29,391 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #892 (NODE=Bareilly @ 2026-08-25): 233 exceptions across 272 DCs (86%) -- exceeds 10% threshold.
+2026-08-25 05:52:34,627 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Bareilly crashed: OperationalError: database is locked
+2026-08-25 05:52:36,812 ERROR django.request: Bad Gateway: /api/planning/state/Maharashtra/
+2026-08-25 05:52:47,270 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Begusarai crashed: OperationalError: database is locked
+2026-08-25 05:52:56,994 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Bettiah crashed: OperationalError: database is locked
+2026-08-25 05:52:57,184 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #892 (STATE=Maharashtra @ 2026-08-26): 2147 exceptions across 2801 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 05:53:14,189 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #893 (NODE=Bhagalpur @ 2026-08-25): 99 exceptions across 137 DCs (72%) -- exceeds 10% threshold.
+2026-08-25 05:53:32,270 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #894 (NODE=Bhawanipatna @ 2026-08-25): 79 exceptions across 104 DCs (76%) -- exceeds 10% threshold.
+2026-08-25 05:53:50,839 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #895 (NODE=Bhopal @ 2026-08-25): 283 exceptions across 368 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 05:54:09,185 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #896 (NODE=Bihar Sharif @ 2026-08-25): 166 exceptions across 229 DCs (72%) -- exceeds 10% threshold.
+2026-08-25 05:54:34,173 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #897 (NODE=Bilaspur @ 2026-08-25): 137 exceptions across 160 DCs (86%) -- exceeds 10% threshold.
+2026-08-25 05:54:51,452 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #898 (NODE=Bulandshahr @ 2026-08-25): 134 exceptions across 161 DCs (83%) -- exceeds 10% threshold.
+2026-08-25 05:55:11,647 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #899 (NODE=Burdwan @ 2026-08-25): 70 exceptions across 84 DCs (83%) -- exceeds 10% threshold.
+2026-08-25 05:55:34,086 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #900 (NODE=Buxar @ 2026-08-25): 69 exceptions across 105 DCs (66%) -- exceeds 10% threshold.
+2026-08-25 05:55:57,234 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #901 (NODE=CHHATRAPATI SAMBHAJINAGAR @ 2026-08-25): 109 exceptions across 175 DCs (62%) -- exceeds 10% threshold.
+2026-08-25 05:56:22,080 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #902 (NODE=Chhindwara @ 2026-08-25): 265 exceptions across 343 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 05:56:49,070 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #903 (NODE=Cooch Behar @ 2026-08-25): 166 exceptions across 208 DCs (80%) -- exceeds 10% threshold.
+2026-08-25 05:57:07,670 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #904 (NODE=Darbhanga @ 2026-08-25): 133 exceptions across 183 DCs (73%) -- exceeds 10% threshold.
+2026-08-25 05:57:07,731 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Dhar failed: 37 DC(s) found for NODE='Dhar', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-25 05:57:32,349 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 05:57:39,728 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #905 (NODE=Faizabad @ 2026-08-25): 146 exceptions across 189 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 05:57:41,644 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 05:57:58,108 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #906 (NODE=Farrukhabad @ 2026-08-25): 148 exceptions across 224 DCs (66%) -- exceeds 10% threshold.
+2026-08-25 05:58:21,133 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #907 (NODE=Ghazipur @ 2026-08-25): 233 exceptions across 284 DCs (82%) -- exceeds 10% threshold.
+2026-08-25 05:58:34,195 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 05:58:42,703 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #908 (NODE=Giridih @ 2026-08-25): 80 exceptions across 120 DCs (67%) -- exceeds 10% threshold.
+2026-08-25 05:58:46,967 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 05:58:47,910 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Giridih crashed: OperationalError: database is locked
+2026-08-25 05:58:58,145 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Gorakhpur crashed: OperationalError: database is locked
+2026-08-25 05:59:01,234 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #908 (SE=ssarkar@agrevolution.in @ 2026-08-26): 14 exceptions across 33 DCs (42%) -- exceeds 10% threshold.
+2026-08-25 05:59:06,175 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Gwalior crashed: OperationalError: database is locked
+2026-08-25 05:59:20,280 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #909 (NODE=Hapur @ 2026-08-25): 219 exceptions across 249 DCs (88%) -- exceeds 10% threshold.
+2026-08-25 05:59:37,483 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #910 (NODE=Hardoi @ 2026-08-25): 195 exceptions across 274 DCs (71%) -- exceeds 10% threshold.
+2026-08-25 06:00:00,711 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #911 (NODE=Hazaribagh @ 2026-08-25): 117 exceptions across 190 DCs (62%) -- exceeds 10% threshold.
+2026-08-25 06:00:25,679 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #912 (NODE=Head Office @ 2026-08-25): 227 exceptions across 293 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 06:01:02,192 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #913 (NODE=Hisar @ 2026-08-25): 335 exceptions across 411 DCs (82%) -- exceeds 10% threshold.
+2026-08-25 06:01:19,282 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #914 (NODE=Hooghly @ 2026-08-25): 104 exceptions across 105 DCs (99%) -- exceeds 10% threshold.
+2026-08-25 06:02:02,257 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #915 (NODE=Indore @ 2026-08-25): 519 exceptions across 562 DCs (92%) -- exceeds 10% threshold.
+2026-08-25 06:02:30,249 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #916 (NODE=Jabalpur @ 2026-08-25): 143 exceptions across 191 DCs (75%) -- exceeds 10% threshold.
+2026-08-25 06:02:35,489 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Jabalpur crashed: OperationalError: database is locked
+2026-08-25 06:02:49,084 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Jaipur crashed: OperationalError: database is locked
+2026-08-25 06:02:58,844 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Jaipur_Kota crashed: OperationalError: database is locked
+2026-08-25 06:02:59,128 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #916 (STATE=Maharashtra @ 2026-08-26): 2147 exceptions across 2801 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 06:03:18,919 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #917 (NODE=Jalgaon @ 2026-08-25): 139 exceptions across 200 DCs (70%) -- exceeds 10% threshold.
+2026-08-25 06:03:36,283 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #918 (NODE=Jalna @ 2026-08-25): 112 exceptions across 167 DCs (67%) -- exceeds 10% threshold.
+2026-08-25 06:03:59,845 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #919 (NODE=Jaunpur @ 2026-08-25): 58 exceptions across 97 DCs (60%) -- exceeds 10% threshold.
+2026-08-25 06:04:10,078 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #920 (NODE=Jodhpur @ 2026-08-25): 27 exceptions across 48 DCs (56%) -- exceeds 10% threshold.
+2026-08-25 06:04:32,085 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #921 (NODE=Kasganj @ 2026-08-25): 148 exceptions across 187 DCs (79%) -- exceeds 10% threshold.
+2026-08-25 06:04:54,880 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #922 (NODE=Katihar @ 2026-08-25): 47 exceptions across 82 DCs (57%) -- exceeds 10% threshold.
+2026-08-25 06:05:23,201 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #923 (NODE=Khagaria @ 2026-08-25): 37 exceptions across 81 DCs (46%) -- exceeds 10% threshold.
+2026-08-25 06:05:43,109 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #924 (NODE=Khandwa @ 2026-08-25): 130 exceptions across 195 DCs (67%) -- exceeds 10% threshold.
+2026-08-25 06:05:48,346 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Khandwa crashed: OperationalError: database is locked
+2026-08-25 06:05:48,408 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 06:05:55,710 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #924 (SE=ssarkar@agrevolution.in @ 2026-08-25): 14 exceptions across 33 DCs (42%) -- exceeds 10% threshold.
+2026-08-25 06:06:00,932 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 06:06:05,594 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 06:06:11,199 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 06:06:17,276 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #924 (NODE=Khargone @ 2026-08-25): 170 exceptions across 242 DCs (70%) -- exceeds 10% threshold.
+2026-08-25 06:06:27,049 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Kheri crashed: OperationalError: database is locked
+2026-08-25 06:06:30,903 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #925 (SE=ssarkar@agrevolution.in @ 2026-08-26): 14 exceptions across 33 DCs (42%) -- exceeds 10% threshold.
+2026-08-25 06:06:36,201 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 06:06:44,394 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #925 (NODE=Krishnanagar (HQ) @ 2026-08-25): 44 exceptions across 74 DCs (59%) -- exceeds 10% threshold.
+2026-08-25 06:06:48,688 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 06:07:07,148 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #926 (NODE=Kushinagar @ 2026-08-25): 173 exceptions across 203 DCs (85%) -- exceeds 10% threshold.
+2026-08-25 06:07:19,565 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-25 06:07:19,570 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-25 06:07:19,702 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-25 06:07:20,245 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-25 06:07:20,245 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-25 06:07:27,601 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #927 (NODE=Lakhisarai @ 2026-08-25): 45 exceptions across 77 DCs (58%) -- exceeds 10% threshold.
+2026-08-25 06:07:30,100 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 108309 rows in 9.9s
+2026-08-25 06:07:30,101 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-25 06:07:31,558 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12881 rows in 1.5s
+2026-08-25 06:07:31,558 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-25 06:07:34,091 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31434 rows in 2.5s
+2026-08-25 06:07:34,091 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-25 06:07:51,162 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #928 (NODE=Madhepura @ 2026-08-25): 196 exceptions across 269 DCs (73%) -- exceeds 10% threshold.
+2026-08-25 06:08:07,883 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 108309 rows in 33.8s
+2026-08-25 06:08:07,884 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-25 06:08:12,914 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 82322 rows in 5.0s
+2026-08-25 06:08:12,914 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-25 06:08:13,681 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23261 rows in 0.8s
+2026-08-25 06:08:13,682 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-25 06:08:17,423 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #929 (NODE=Malda @ 2026-08-25): 26 exceptions across 56 DCs (46%) -- exceeds 10% threshold.
+2026-08-25 06:08:18,260 INFO se_daily_plan_agent:   4/6 Orders_3d: 41969 rows in 4.6s
+2026-08-25 06:08:18,260 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-25 06:08:21,884 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 71736 rows in 3.6s
+2026-08-25 06:08:21,885 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-25 06:08:24,954 INFO se_daily_plan_agent:   4/6 Payments_3f: 48677 rows in 3.1s
+2026-08-25 06:08:24,955 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-25 06:08:25,391 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 0.4s
+2026-08-25 06:08:25,391 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-25 06:08:25,424 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.0s
+2026-08-25 06:08:25,425 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-08-25 06:08:26,751 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #930 (NODE=Mohania @ 2026-08-25): 25 exceptions across 52 DCs (48%) -- exceeds 10% threshold.
+2026-08-25 06:08:29,013 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7461 rows in 3.6s
+2026-08-25 06:08:29,013 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-25 06:08:30,060 INFO se_daily_plan_agent:   Supplemented 9060 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-08-25 06:08:30,064 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-25 06:08:34,309 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-25 06:08:46,081 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #931 (NODE=Motihari @ 2026-08-25): 221 exceptions across 268 DCs (82%) -- exceeds 10% threshold.
+2026-08-25 06:08:48,907 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-25 06:08:56,045 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Murshidabad crashed: OperationalError: database is locked
+2026-08-25 06:09:08,654 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Muzaffarpur crashed: OperationalError: database is locked
+2026-08-25 06:09:09,979 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #932 (SE=ssarkar@agrevolution.in @ 2026-08-26): 14 exceptions across 33 DCs (42%) -- exceeds 10% threshold.
+2026-08-25 06:09:23,069 ERROR django.request: Bad Gateway: /api/planning/se/ssarkar@agrevolution.in/
+2026-08-25 06:09:23,089 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Nabarangpur crashed: OperationalError: database is locked
+2026-08-25 06:09:33,822 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #933 (SE=ssarkar@agrevolution.in @ 2026-08-26): 14 exceptions across 33 DCs (42%) -- exceeds 10% threshold.
+2026-08-25 06:09:36,487 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Nashik crashed: OperationalError: database is locked
+2026-08-25 06:10:02,292 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #934 (NODE=Nawada @ 2026-08-25): 40 exceptions across 113 DCs (35%) -- exceeds 10% threshold.
+2026-08-25 06:10:10,652 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #935 (NODE=North 24 Parganas @ 2026-08-25): 157 exceptions across 170 DCs (92%) -- exceeds 10% threshold.
+2026-08-25 06:10:20,271 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #936 (NODE=Pune @ 2026-08-25): 531 exceptions across 572 DCs (93%) -- exceeds 10% threshold.
+2026-08-25 06:10:40,975 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #937 (NODE=Purnea @ 2026-08-25): 360 exceptions across 438 DCs (82%) -- exceeds 10% threshold.
+2026-08-25 06:10:46,183 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Purnea crashed: OperationalError: database is locked
+2026-08-25 06:11:01,859 ERROR django.request: Bad Gateway: /api/planning/state/Bihar/
+2026-08-25 06:11:03,063 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #937 (NODE=Raipur @ 2026-08-25): 242 exceptions across 281 DCs (86%) -- exceeds 10% threshold.
+2026-08-25 06:11:21,492 ERROR django.request: Bad Gateway: /api/planning/state/Bihar/
+2026-08-25 06:11:24,730 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #938 (NODE=Ranchi @ 2026-08-25): 174 exceptions across 258 DCs (67%) -- exceeds 10% threshold.
+2026-08-25 06:11:32,077 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #939 (NODE=Ratlam @ 2026-08-25): 49 exceptions across 60 DCs (82%) -- exceeds 10% threshold.
+2026-08-25 06:11:48,251 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #940 (NODE=Saharsa @ 2026-08-25): 63 exceptions across 147 DCs (43%) -- exceeds 10% threshold.
+2026-08-25 06:11:50,558 ERROR django.request: Bad Gateway: /api/planning/abm/E02190210/
+2026-08-25 06:12:05,251 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Samastipur crashed: OperationalError: database is locked
+2026-08-25 06:12:07,538 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #941 (ABM=E02190210 @ 2026-08-26): 111 exceptions across 195 DCs (57%) -- exceeds 10% threshold.
+2026-08-25 06:12:12,797 ERROR django.request: Bad Gateway: /api/planning/abm/E02190210/
+2026-08-25 06:12:28,532 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #941 (NODE=Sangli @ 2026-08-25): 90 exceptions across 105 DCs (86%) -- exceeds 10% threshold.
+2026-08-25 06:12:44,927 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #942 (NODE=Saran @ 2026-08-25): 121 exceptions across 184 DCs (66%) -- exceeds 10% threshold.
+2026-08-25 06:12:49,953 ERROR django.request: Bad Gateway: /api/planning/abm/E02190210/
+2026-08-25 06:13:02,940 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Sasaram crashed: OperationalError: database is locked
+2026-08-25 06:13:09,682 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #943 (ABM=E02190210 @ 2026-08-26): 111 exceptions across 195 DCs (57%) -- exceeds 10% threshold.
+2026-08-25 06:13:13,711 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Shahjahanpur crashed: OperationalError: database is locked
+2026-08-25 06:13:31,856 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #944 (NODE=Shajapur @ 2026-08-25): 95 exceptions across 136 DCs (70%) -- exceeds 10% threshold.
+2026-08-25 06:13:31,911 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Siliguri failed: 28 DC(s) found for NODE='Siliguri', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-25 06:13:44,723 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-08-25 06:13:51,293 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #945 (NODE=Sitamarhi @ 2026-08-25): 190 exceptions across 215 DCs (88%) -- exceeds 10% threshold.
+2026-08-25 06:13:53,805 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-08-25 06:14:08,157 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #946 (NODE=Sitapur @ 2026-08-25): 234 exceptions across 275 DCs (85%) -- exceeds 10% threshold.
+2026-08-25 06:14:24,825 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #947 (NODE=Siwan @ 2026-08-25): 107 exceptions across 171 DCs (63%) -- exceeds 10% threshold.
+2026-08-25 06:14:37,815 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-08-25 06:14:44,741 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #948 (NODE=Solapur @ 2026-08-25): 274 exceptions across 389 DCs (70%) -- exceeds 10% threshold.
+2026-08-25 06:14:45,236 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-08-25 06:15:01,751 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #949 (NODE=Sonbhadra @ 2026-08-25): 127 exceptions across 176 DCs (72%) -- exceeds 10% threshold.
+2026-08-25 06:15:05,602 ERROR django.request: Bad Gateway: /api/planning/abm/E02190210/
+2026-08-25 06:15:15,437 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Sri Ganganagar crashed: OperationalError: database is locked
+2026-08-25 06:15:15,477 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Ujjain failed: 69 DC(s) found for NODE='Ujjain', but none have an assigned SE (Unassigned_DC) -- nothing to plan.
+2026-08-25 06:15:21,250 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #950 (ABM=E02190210 @ 2026-08-26): 111 exceptions across 195 DCs (57%) -- exceeds 10% threshold.
+2026-08-25 06:15:26,273 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] ERROR: run_scheduled_tuff: scope NODE=Vaishali crashed: OperationalError: database is locked
+2026-08-25 06:15:45,751 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #951 (NODE=Varanasi @ 2026-08-25): 164 exceptions across 207 DCs (79%) -- exceeds 10% threshold.
+2026-08-25 06:16:04,011 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #952 (NODE=Washim @ 2026-08-25): 146 exceptions across 184 DCs (79%) -- exceeds 10% threshold.
+2026-08-25 06:26:42,148 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #953 (NODE=Bareilly @ 2026-08-25): 233 exceptions across 272 DCs (86%) -- exceeds 10% threshold.
+2026-08-25 06:27:06,332 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #954 (NODE=Begusarai @ 2026-08-25): 258 exceptions across 319 DCs (81%) -- exceeds 10% threshold.
+2026-08-25 06:27:25,515 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #955 (NODE=Bettiah @ 2026-08-25): 247 exceptions across 332 DCs (74%) -- exceeds 10% threshold.
+2026-08-25 06:27:44,570 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #956 (NODE=Giridih @ 2026-08-25): 80 exceptions across 120 DCs (67%) -- exceeds 10% threshold.
+2026-08-25 06:28:04,831 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #957 (NODE=Gorakhpur @ 2026-08-25): 164 exceptions across 210 DCs (78%) -- exceeds 10% threshold.
+2026-08-25 06:28:21,872 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #958 (NODE=Gwalior @ 2026-08-25): 118 exceptions across 153 DCs (77%) -- exceeds 10% threshold.
+2026-08-25 06:28:45,983 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #959 (NODE=Jabalpur @ 2026-08-25): 143 exceptions across 191 DCs (75%) -- exceeds 10% threshold.
+2026-08-25 06:29:11,271 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #960 (NODE=Jaipur @ 2026-08-25): 486 exceptions across 619 DCs (79%) -- exceeds 10% threshold.
+2026-08-25 06:29:21,635 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #961 (NODE=Jaipur_Kota @ 2026-08-25): 43 exceptions across 53 DCs (81%) -- exceeds 10% threshold.
+2026-08-25 06:29:36,752 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #962 (NODE=Khandwa @ 2026-08-25): 130 exceptions across 195 DCs (67%) -- exceeds 10% threshold.
+2026-08-25 06:29:53,559 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #963 (NODE=Kheri @ 2026-08-25): 40 exceptions across 80 DCs (50%) -- exceeds 10% threshold.
+2026-08-25 06:30:10,296 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #964 (NODE=Murshidabad @ 2026-08-25): 123 exceptions across 142 DCs (87%) -- exceeds 10% threshold.
+2026-08-25 06:30:27,568 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #965 (NODE=Muzaffarpur @ 2026-08-25): 331 exceptions across 425 DCs (78%) -- exceeds 10% threshold.
+2026-08-25 06:30:44,023 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #966 (NODE=Nabarangpur @ 2026-08-25): 82 exceptions across 110 DCs (75%) -- exceeds 10% threshold.
+2026-08-25 06:31:01,798 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #967 (NODE=Nashik @ 2026-08-25): 176 exceptions across 231 DCs (76%) -- exceeds 10% threshold.
+2026-08-25 06:31:30,879 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #968 (NODE=Purnea @ 2026-08-25): 360 exceptions across 438 DCs (82%) -- exceeds 10% threshold.
+2026-08-25 06:31:55,288 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #969 (NODE=Samastipur @ 2026-08-25): 259 exceptions across 329 DCs (79%) -- exceeds 10% threshold.
+2026-08-25 06:32:15,143 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #970 (NODE=Sasaram @ 2026-08-25): 192 exceptions across 233 DCs (82%) -- exceeds 10% threshold.
+2026-08-25 06:32:37,419 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #971 (NODE=Shahjahanpur @ 2026-08-25): 35 exceptions across 62 DCs (56%) -- exceeds 10% threshold.
+2026-08-25 06:33:11,232 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #972 (NODE=Sri Ganganagar @ 2026-08-25): 161 exceptions across 184 DCs (88%) -- exceeds 10% threshold.
+2026-08-25 06:33:33,825 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #973 (NODE=Vaishali @ 2026-08-25): 253 exceptions across 314 DCs (81%) -- exceeds 10% threshold.
