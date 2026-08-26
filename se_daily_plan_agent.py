@@ -3282,8 +3282,22 @@ def generate_se_daily_plan(
             ((_objective_gap(per_dc[obj]) if obj in per_dc else _objective_gap(bo_scores_by_objective.get(obj, {})), obj) for obj in matched),
             reverse=True,
         )
-        priority_score = sum(w * gap for w, (gap, _) in zip(weights, gap_by_obj))
-        pool.append((dc, [o for _, o in gap_by_obj], priority_score))
+        # Bug fixed 2026-08-26: contact-fatigue (8.7 -- >=2 attempts in the rolling
+        # window cuts priority by contact_fatigue_priority_cut, 30%) used to be computed
+        # ONLY inside _build_candidate_row(), after ranked_pool's order was already
+        # final -- it was stored as Priority_Multiplier and shown in Reason_Of_Visit
+        # ("contact-fatigue -30% ...") but never actually multiplied into the
+        # priority_score that determines ranking/selection (legacy greedy-fill's
+        # capacity-limited top-N, and the Routing Agent's priority_score_captured sum).
+        # A DC hitting the fatigue threshold could keep topping the ranking with its
+        # full, undiscounted score -- the exact "same DC hammered every day" outcome
+        # 8.7 exists to prevent. Computed once here, applied to priority_score, and
+        # threaded through as the single source of truth so _build_candidate_row's
+        # displayed multiplier can never drift from what actually affected ranking.
+        attempts = recent_attempts_by_dc.get(dc["DC_ID"], 0)
+        fatigue_multiplier = (1 - constants.contact_fatigue_priority_cut) if attempts >= constants.contact_fatigue_max_attempts else 1.0
+        priority_score = sum(w * gap for w, (gap, _) in zip(weights, gap_by_obj)) * fatigue_multiplier
+        pool.append((dc, [o for _, o in gap_by_obj], priority_score, fatigue_multiplier))
 
     ranked_pool = sorted(
         pool,
@@ -3294,10 +3308,9 @@ def generate_se_daily_plan(
     # Routing Agent path below, so the two never drift apart on what a candidate's
     # Purpose/Reason/financials/overdue-aging actually say. Pure per-DC transform, no
     # capacity state -- safe to call for every ranked_pool entry, not just selected ones.
-    def _build_candidate_row(dc: Dict[str, Any], matched: List[str]) -> DailyTaskRow:
+    def _build_candidate_row(dc: Dict[str, Any], matched: List[str], multiplier: float) -> DailyTaskRow:
         dc_id = dc["DC_ID"]
         attempts = recent_attempts_by_dc.get(dc_id, 0)
-        multiplier = (1 - constants.contact_fatigue_priority_cut) if attempts >= constants.contact_fatigue_max_attempts else 1.0
         fin = dc_financials.get(dc_id, {})
         club = dc_club_by_id.get(dc_id)
         credit_on_hold = bool(fin.get("Credit_On_Hold"))
@@ -3379,7 +3392,7 @@ def generate_se_daily_plan(
         call_minutes_used = field_minutes_used = 0
         credit_blocked_count = 0
 
-        for dc, matched, priority_score in ranked_pool:
+        for dc, matched, priority_score, fatigue_multiplier in ranked_pool:
             if len(rows) >= constants.max_daily_tasks:
                 break
             dc_id = dc["DC_ID"]
@@ -3390,7 +3403,7 @@ def generate_se_daily_plan(
                 break
             if call_minutes_used + field_minutes_used + duration > constants.total_capacity_min:
                 break
-            row = _build_candidate_row(dc, matched)
+            row = _build_candidate_row(dc, matched, fatigue_multiplier)
             if row.Credit_On_Hold:
                 credit_blocked_count += 1
             rows.append(row)
@@ -3410,8 +3423,8 @@ def generate_se_daily_plan(
         # 1-3), tagged with its Priority_Score so the router can rank/select/sequence
         # for real.
         candidates = [
-            {"row": _build_candidate_row(dc, matched), "dc": dc, "priority_score": priority_score, "matched": matched}
-            for dc, matched, priority_score in ranked_pool
+            {"row": _build_candidate_row(dc, matched, fatigue_multiplier), "dc": dc, "priority_score": priority_score, "matched": matched}
+            for dc, matched, priority_score, fatigue_multiplier in ranked_pool
         ]
         selector_result = route_selector(candidates, se_id, plan_date, punch_in_coords, constants, dc_by_id)
         sequenced = selector_result["Tasks"]
