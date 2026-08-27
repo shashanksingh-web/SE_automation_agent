@@ -97,7 +97,10 @@ def get_focus_product_campaign_targets(
 
     crop_districts / related_product_names: Step 3's inputs, same situation -- no
     confirmed source (Step 2A/2B output? a separate lookup?) exists for deriving them, so
-    they're required caller inputs here too; omitted means Step 3 is skipped and flagged.
+    they're required caller inputs here too. At least ONE of the two is required (not
+    both -- confirmed live 2026-08-27 that the API accepts crop_districts alone with an
+    empty related_product_names list); Step 3 is skipped and flagged only when NEITHER
+    is given.
 
     deadline_seconds: this function can make up to 4 sequential-ish live HTTP calls
     (Step 2A's two + 2B + 3), each individually timing out at 60s -- worst case ~240s
@@ -176,16 +179,27 @@ def get_focus_product_campaign_targets(
         except Exception as e:
             result["exceptions"].append({"source": "ProductCohort", "reason_code": "Step_2B_Failed", "detail": f"{type(e).__name__}: {e}"})
 
-    if not crop_districts or not related_product_names:
+    # Bug fixed 2026-08-27: this used to require BOTH crop_districts AND
+    # related_product_names (`not crop_districts or not related_product_names`), even
+    # though the CLI's own --help text for each flag independently reads "Step 3 input,
+    # omit to skip Step 3" -- implying either alone is enough. Confirmed live against the
+    # real API: crop_districts alone (empty related_product_names) returns a real 200
+    # with 341 DCs, genuine purchase history and related-product breakdowns -- the live
+    # API does NOT require both. Gate now only skips when NEITHER is given; whichever one
+    # is missing is passed through as [] (step3_dc_cohort's own signature expects a list,
+    # not None). The skip message also used to say "not given" even when one WAS given --
+    # now distinguishes "neither" from "only one," since that's a materially different
+    # situation for a caller debugging why Step 3 didn't run.
+    if not crop_districts and not related_product_names:
         result["exceptions"].append({
             "source": "ProductCohort", "reason_code": "Product_Cohort_Step3_Inputs_Not_Supplied",
-            "detail": "Step 3 skipped -- crop_districts/related_product_names not given and no confirmed source exists in this pipeline to derive them (see step3_dc_cohort's docstring)",
+            "detail": "Step 3 skipped -- neither crop_districts nor related_product_names given (at least one is required) and no confirmed source exists in this pipeline to derive them (see step3_dc_cohort's docstring)",
         })
     elif time.monotonic() >= deadline:
         _flag_deadline("Step 3")
     else:
         try:
-            result["Step_3"] = pc.step3_dc_cohort(material_id, node_id, crop_districts, related_product_names)
+            result["Step_3"] = pc.step3_dc_cohort(material_id, node_id, crop_districts or [], related_product_names or [])
         except Exception as e:
             result["exceptions"].append({"source": "ProductCohort", "reason_code": "Step_3_Failed", "detail": f"{type(e).__name__}: {e}"})
 

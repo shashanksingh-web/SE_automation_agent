@@ -386,7 +386,17 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
 
     cfg = get_pitch_config()
     used, skipped, tell_sentences = [], [], []
-    seen_labels = set()  # S3/S6/S7 all resolve to the same _tp_historical_purchase sentence
+    # S3/S6/S7 all resolve to the same _tp_historical_purchase sentence (actual_code
+    # "S3/S6/S7" regardless of which one triggered it) -- seen_labels maps that combined
+    # code to whichever individual code (e.g. "S3") first produced the sentence, so a
+    # later collision (e.g. "S6") can be recorded as merged into it rather than silently
+    # vanishing. Bug fixed 2026-08-27: a later collision used to just `continue`,
+    # dropping it from BOTH used and skipped -- pitch_config lists it as a real
+    # applicable source for some Purposes (e.g. "Promise To Pay / Collection" lists both
+    # S3 and S6), so it should always show up somewhere in the trace, never disappear
+    # with zero record either way. The pitch text itself was never affected (no
+    # duplicate sentence either way) -- this only restores the audit trail.
+    seen_labels: Dict[str, str] = {}
     for code in ordered_codes:
         builder = _TALKING_POINTS.get(code)
         label = cfg.data_source_labels.get(code, code)
@@ -402,8 +412,9 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
             continue
         sentence, actual_code = result
         if actual_code in seen_labels:
+            used.append(f"{code} {label} (same sentence as {seen_labels[actual_code]})")
             continue
-        seen_labels.add(actual_code)
+        seen_labels[actual_code] = code
         tell_sentences.append(sentence)
         used.append(f"{code} {label}")
 
