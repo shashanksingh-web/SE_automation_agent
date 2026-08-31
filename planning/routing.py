@@ -188,7 +188,14 @@ def generate_route_plans_for_se(
     non_empty_sets = {s for s in stop_sets.values() if s}
     max_stops_used = max((len(s) for s in stop_sets.values()), default=0)
     pool_had_room_to_differ = len(filtered) > max_stops_used
-    plans_converged = pool_had_room_to_differ and len(non_empty_sets) == 1 and max_stops_used > 0
+    # all_three_produced_stops guards against a real, confirmed case: Plan A's 3 models
+    # can legitimately disagree on FEASIBILITY itself (e.g. Distance-Min/Balanced both
+    # infeasible with 0 stops while Priority-Max succeeds) -- that collapses
+    # non_empty_sets to size 1 too, but it is NOT "3 models independently agreeing," it's
+    # 2 of 3 failing outright. Without this guard, that case would be mislabeled
+    # Plans_Converged; it now correctly falls through to the generic GR-R7 branch below.
+    all_three_produced_stops = all(len(s) > 0 for s in stop_sets.values())
+    plans_converged = pool_had_room_to_differ and len(non_empty_sets) == 1 and all_three_produced_stops
     if plans_converged:
         family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
         converged_note = (
