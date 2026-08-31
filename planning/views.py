@@ -34,6 +34,22 @@ def _focus_product_kwargs_from_get(request) -> dict:
     }
 
 
+def _routing_plan_choice_from_get(request) -> "str | None":
+    """Shared by _generate_and_respond/tuff -- ?routing_plan=A|B (case-insensitive),
+    mirroring activate_tuff/generate_se_plan's --routing-plan CLI flag (2026-08-31 fix:
+    the API previously had no way to request Plan B at all, silently always running
+    Plan A). None (param omitted) is passed straight through as routing_plan_choice=None,
+    same as the CLI's own "omit under cron/scripting to default to Plan A" behavior --
+    the API is never interactive, so there's no routing_plan_asker equivalent here."""
+    raw = request.GET.get("routing_plan")
+    if not raw:
+        return None
+    choice = raw.strip().upper()
+    if choice not in ("A", "B"):
+        raise ValueError(f"routing_plan must be 'A' or 'B', got {raw!r}")
+    return choice
+
+
 def _serialize_club_detail(club_detail: dict):
     """se_daily_plan_agent.normalize_dc_club()'s raw per-DC dict -> the API's PascalCase
     Club_Detail shape -- shared by DailyTask's own field (see _serialize_task) and
@@ -143,10 +159,13 @@ def _generate_and_respond(request, scope_type: str, scope_value: str):
     plan_date = request.GET.get("date")
     try:
         focus_product_kwargs = _focus_product_kwargs_from_get(request)
-    except ProductCohortError as e:
+        routing_plan_choice = _routing_plan_choice_from_get(request)
+    except (ProductCohortError, ValueError) as e:
         return JsonResponse({"error": str(e)}, status=422)
     try:
-        plan_run = generate_plan_for_scope(scope_type, scope_value, plan_date, **focus_product_kwargs)
+        plan_run = generate_plan_for_scope(
+            scope_type, scope_value, plan_date, routing_plan_choice=routing_plan_choice, **focus_product_kwargs,
+        )
     except PlanningError as e:
         return JsonResponse({"error": str(e)}, status=422)
     except Exception as e:  # Metabase/network errors etc. -- surface, don't swallow
@@ -212,22 +231,26 @@ def normalize(request):
 
 @require_GET
 def tuff(request, scope_type: str, scope_value: str):
-    """GET /api/planning/tuff/<scope_type>/<scope_value>/?date=YYYY-MM-DD&force_normalization=true&skip_normalization=true
+    """GET /api/planning/tuff/<scope_type>/<scope_value>/?date=YYYY-MM-DD&force_normalization=true&skip_normalization=true&routing_plan=A|B
     -- Agent TUFF: Step 1 (Data Normalization, once-per-day) + Step 2 (SE Daily Task +
     Pitching + Routing) in one call, mirroring `manage.py activate_tuff`. Response
     combines Step 1's outcome (Normalization) with the same PlanRun shape the scope
-    endpoints (se_plan/state_plan/...) return."""
+    endpoints (se_plan/state_plan/...) return. routing_plan (2026-08-31 fix): omit for
+    Plan A (default, unattended-safe), pass B to run the Beat Planning / Cluster-Based
+    Model instead -- see _routing_plan_choice_from_get."""
     plan_date = request.GET.get("date")
     force_normalization = request.GET.get("force_normalization", "").lower() in ("1", "true", "yes")
     skip_normalization = request.GET.get("skip_normalization", "").lower() in ("1", "true", "yes")
     try:
         focus_product_kwargs = _focus_product_kwargs_from_get(request)
-    except ProductCohortError as e:
+        routing_plan_choice = _routing_plan_choice_from_get(request)
+    except (ProductCohortError, ValueError) as e:
         return JsonResponse({"error": str(e)}, status=422)
     try:
         plan_run, normalization_info = activate_tuff_scope(
             scope_type, scope_value, plan_date,
             force_normalization=force_normalization, skip_normalization=skip_normalization,
+            routing_plan_choice=routing_plan_choice,
             **focus_product_kwargs,
         )
     except PlanningError as e:
