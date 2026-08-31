@@ -17,6 +17,7 @@ RoutePlan/RouteStop row directly.
 from __future__ import annotations
 
 import sys
+from datetime import date as _date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
@@ -26,6 +27,28 @@ sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 from .models import PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
+
+# Beat_Planning_Routing_Agent_Cluster_Model.xlsx, Sheet 11 "Route Distinction / Beat
+# Cycle Rule", Model A (Repeat-Avoidance): the doc's own recommended cool-down window
+# when layered under Model B (Fixed Rotation, not yet built -- see PLAN_B_COOLDOWN_DAYS
+# usage below). Plan-B-scoped only (Sheet 11 lives in the Beat Planning workbook, not
+# the Plan A config sheet) -- confirmed with the user 2026-08-31.
+PLAN_B_COOLDOWN_DAYS = 2
+
+
+def _cooling_down_dc_ids(se_id: str, plan_date: str, window_days: int = PLAN_B_COOLDOWN_DAYS) -> set:
+    """DC_IDs this SE actually visited (synced to their default-selected RoutePlan) on
+    any of the window_days calendar days immediately before plan_date, across any
+    plan_type -- starvation risk is about real visit history, not which model picked it.
+    No new schema needed: RouteStop/RoutePlan already carry everything this needs."""
+    plan_date_obj = plan_date if isinstance(plan_date, _date) else datetime.strptime(plan_date, "%Y-%m-%d").date()
+    window_start = plan_date_obj - timedelta(days=window_days)
+    return set(
+        RouteStop.objects.filter(
+            route_plan__se_id=se_id, route_plan__is_default_selected=True,
+            route_plan__plan_date__gte=window_start, route_plan__plan_date__lt=plan_date_obj,
+        ).values_list("dc_id", flat=True)
+    )
 
 
 def generate_route_plans_for_se(
@@ -84,8 +107,17 @@ def generate_route_plans_for_se(
     # -- apply_dc_exclusion_rules() upstream should already exclude too-recent DCs from
     # the ranked pool entirely, but this is the same redundant safety check, not a
     # substitute for it.
+    #
+    # Sheet 11 Model A (Repeat-Avoidance, Plan B only): a DC visited on this SE's actual
+    # selected route in the last PLAN_B_COOLDOWN_DAYS days is excluded from ranking this
+    # cycle too, converting the previously-only-soft recency-decay nudge (Section 2) into
+    # a real guarantee that the same DCs don't get picked every single cycle, starving
+    # everything else assigned to this SE. cooled_out is kept separate from pre_dropped
+    # so the escape hatch below can still reach into it.
+    cooling_down_dc_ids = _cooling_down_dc_ids(se_id, plan_date) if plan_choice == "B" else set()
     pre_dropped: List[Dict[str, str]] = []
     filtered: List[Dict[str, Any]] = []
+    cooled_out: List[Dict[str, Any]] = []
     for c in candidates:
         dc = c["dc"]
         if dc.get("Latitude") is None or dc.get("Longitude") is None:
@@ -98,7 +130,19 @@ def generate_route_plans_for_se(
         if days_since is not None and days_since < constants.min_days_since_last_visit:
             pre_dropped.append({"dc_id": dc["DC_ID"], "reason": "Visited_Too_Recently"})
             continue
+        if dc["DC_ID"] in cooling_down_dc_ids:
+            cooled_out.append(c)
+            continue
         filtered.append(c)
+
+    # Escape hatch (Sheet 11 Model A's own wording): if the cool-down would leave the
+    # day's route empty, waive it for the single highest-scoring candidate it excluded
+    # rather than silently producing nothing.
+    if not filtered and cooled_out:
+        rescued = max(cooled_out, key=lambda c: c["priority_score"])
+        filtered.append(rescued)
+        cooled_out.remove(rescued)
+    pre_dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Cooling_Down_Repeat_Avoidance"} for c in cooled_out]
 
     if plan_choice == "B":
         # 3 routes, same greedy budget-constrained selection, ranked by a different
