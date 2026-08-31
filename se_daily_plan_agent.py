@@ -3087,8 +3087,8 @@ def build_route_balanced(
 #     pretended to be live.
 # =====================================================================================
 
-PLAN_B_MAX_DAILY_DISTANCE_KM = 80.0    # Section 5 Constraints -- optimization budget, narrow hard-filter role at Stage 1 only (Section 3e)
-PLAN_B_MAX_DAILY_TRAVEL_MINUTES = 180.0  # Section 5 -- genuinely hard ceiling (source doc's own word), unlike Plan A's advisory 80km/1600km figures
+PLAN_B_MAX_DAILY_DISTANCE_KM = 80.0    # Section 5 Constraints -- standard-case budget; Stage 3's conditional ceiling check (Sheets 3/5/10) reclassifies a cluster exceeding this as Exceptional (BO Rule) instead of dropping it
+PLAN_B_MAX_DAILY_TRAVEL_MINUTES = 180.0  # Section 5 -- hard ceiling for the standard case only; soft/informational once a cluster is reclassified Exceptional (Sheet 10)
 PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM = PLAN_B_MAX_DAILY_DISTANCE_KM * 0.45  # Section 3.2: "no more than ~40-50% of the 80km budget just to traverse internally" -- midpoint of that stated range
 PLAN_B_TARGET_CLUSTER_SIZE = 6          # not numerically specified by the workbook ("comparable count of BOs per km2, until BO-count-per-cluster converges within a target band") -- a mid-sized daily-beat count, flagged as a chosen default, not a confirmed figure
 PLAN_B_RECENCY_DECAY_RATE = 1.0 / 30.0  # Edge Case #2/#11: bounded, smooth decay, full cycle within ~30 days
@@ -3109,8 +3109,9 @@ def _cluster_candidates_by_density(
     cluster) or the next absorption would push the cluster's own max-pairwise intra-
     cluster distance past max_intra_cluster_km (distance normalization -- Section 3.2).
     A candidate with no usable coordinates becomes its own singleton cluster (Edge Case
-    "Isolated / outlier BO" is handled one level up, at Stage 3's hard filter -- this
-    function only partitions, it doesn't judge whether a cluster is worth visiting)."""
+    "Isolated / outlier BO" is handled one level up, at Stage 3's conditional ceiling
+    check -- this function only partitions, it doesn't judge whether a cluster is worth
+    visiting or standard-vs-Exceptional)."""
     with_coords = [c for c in candidates if None not in _candidate_coords(c)]
     without_coords = [c for c in candidates if None in _candidate_coords(c)]
 
@@ -3205,10 +3206,14 @@ def _cumulative_bo_score(cluster: List[Dict[str, Any]], plan_date: str, potentia
     return total
 
 
+PLAN_B_RANKING_CRITERIA = ("efficiency", "score_max", "distance_min")
+
+
 def build_route_cluster_based(
     candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
     avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
     potential_weight_by_dc: Optional[Dict[str, float]] = None,
+    ranking_criterion: str = "efficiency",
 ) -> Dict[str, Any]:
     """Plan B, main entry point -- Stages 1-3 of Beat_Planning_Routing_Agent_Cluster_
     Model.xlsx, verbatim. Returns the same result-dict shape as the 3 Plan A builders
@@ -3218,21 +3223,44 @@ def build_route_cluster_based(
     "clusters_evaluated" (count) for an honest audit trail of what Stage 3 actually
     chose between.
 
+    ranking_criterion: the workbook's Illustrative Example sheet (its "3-Route
+    Comparison Summary", confirmed 2026-08-31 -- initially missed on first read, then
+    caught and fixed) runs the SAME greedy, budget-constrained selection logic 3 times,
+    each time ranking candidate clusters by a different criterion, mirroring Plan A's
+    own 3-model structure (Priority-Max/Distance-Min/Balanced) rather than offering
+    only one route:
+      "efficiency" (default, Route 1 -- Efficiency-Balanced): Score-per-km, descending.
+        The workbook's own recommended default.
+      "score_max" (Route 2 -- Score-Maximizing): raw Cumulative BO Score, descending --
+        chases the single highest-value clusters regardless of distance efficiency; may
+        under-use the budget or crowd out smaller high-efficiency clusters.
+      "distance_min" (Route 3 -- Distance-Minimizing): raw closed-tour distance,
+        ascending -- covers the most ground for the least travel, at the cost of
+        leaving higher-value-but-farther clusters unvisited.
+    All 3 share every other rule below unchanged; only Step 2's ranking key (and the
+    matching key used by Step 5's individual-BO fallback) changes.
+
     Stage 3's ordered criteria, applied exactly as the workbook specifies (its own
-    Section 3, "Route Selection Criteria (Applied in Order)"):
-      1. Hard filter -- drop any cluster whose own max-pairwise intra-cluster distance
-         alone exceeds the full 80km budget (it cannot be completed even in isolation).
-      2. Rank by efficiency -- Score-per-km = CBS / cluster's own closed-tour distance
-         (computed via Clarke-Wright + 2-opt + or-opt from Origin_Point, same
-         sequencing heuristics Models 2/3 already use), descending.
+    Section 3, "Route Selection Criteria (Applied in Order)", updated 2026-08-31 to the
+    Conditional Ceiling Model -- Sheets 3/5/9/10):
+      1. Conditional ceiling check -- a cluster whose own closed-tour distance/time
+         alone exceeds 80km/180min is reclassified Exceptional and routed via the BO
+         Rule (Sheet 10, see below) in place of Steps 2-4, never dropped.
+      2. Rank by ranking_criterion (see above), descending for efficiency/score_max,
+         ascending for distance_min -- cluster's own closed-tour distance/time computed
+         via Clarke-Wright + 2-opt + or-opt from Origin_Point, same sequencing
+         heuristics Models 2/3 already use.
       3. Greedy accumulation -- add clusters in rank order until the next one would
          push cumulative distance past 80km or cumulative time past 180min.
-      4. Tie-break on equal score-per-km -- (a) lower total distance, (b) higher
+      4. Tie-break on an equal primary rank -- (a) lower total distance, (b) higher
          recency urgency (proxied by the cluster's own mean Days_Since_Last_Visit,
          None treated as maximally urgent), (c) higher mean potential_weight.
       5. Partial-budget fallback -- if budget remains but no further whole cluster
-         fits, fall back to individual-BO selection (by the same score-per-km metric)
-         from the unselected remainder, within whatever budget is left."""
+         fits, fall back to individual-BO selection (ranked by the same
+         ranking_criterion) from the unselected remainder, within whatever budget is
+         left."""
+    if ranking_criterion not in PLAN_B_RANKING_CRITERIA:
+        raise ValueError(f"ranking_criterion must be one of {PLAN_B_RANKING_CRITERIA}, got {ranking_criterion!r}")
     dropped: List[Dict[str, str]] = []
     with_coords = [c for c in candidates if None not in _candidate_coords(c)]
     without_coords = [c for c in candidates if None in _candidate_coords(c)]
@@ -3269,29 +3297,93 @@ def build_route_cluster_based(
             "score_per_km": score_per_km, "mean_recency_urgency": mean_recency_urgency, "mean_potential": mean_potential,
         })
 
-    # Step 1: hard filter -- a cluster whose own closed-tour distance alone already
-    # exceeds the full daily budget can never be completed, even visited in isolation.
-    hard_filtered = []
+    # Step 1 (rewritten 2026-08-31, updated workbook -- Sheets 3/5/9/10, "Conditional
+    # Ceiling Model"): a cluster whose own closed-tour distance/time alone exceeds the
+    # 80km/180min ceiling is no longer dropped -- it's reclassified "Exceptional" and
+    # STILL gets a mandatory route, sequenced by the BO Rule (Sheet 10) instead of
+    # Score-per-km efficiency. The workbook's own "DC" (with multiple "BOs" inside it)
+    # maps directly onto this function's "cluster" (with multiple candidate DCs inside
+    # it) -- every other reference in this codebase already uses DC_ID/DC_Name for the
+    # individual outlet, matching the workbook's "BO," so Sheet 10's hierarchy is simply
+    # this function's cluster/candidate hierarchy under different names.
+    standard, exceptional = [], []
     for sc in scored_clusters:
-        if sc["metrics"]["total_distance_km"] > PLAN_B_MAX_DAILY_DISTANCE_KM:
-            dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Cluster_Exceeds_Daily_Budget"} for c in sc["cluster"]]
+        m = sc["metrics"]
+        if m["total_distance_km"] > PLAN_B_MAX_DAILY_DISTANCE_KM or m["total_travel_min"] > PLAN_B_MAX_DAILY_TRAVEL_MINUTES:
+            exceptional.append(sc)
         else:
-            hard_filtered.append(sc)
+            standard.append(sc)
 
-    if not hard_filtered:
+    if exceptional:
+        # BO Rule (Sheet 10, Steps 1-4): strict priority-tier sequencing, not distance
+        # minimization -- Clarke-Wright/2-opt/or-opt are Score-per-km's tools and are
+        # deliberately NOT used here, since they'd optimize away exactly the
+        # tier-first guarantee the BO Rule exists to provide. This codebase has no
+        # separate discrete "BO1..BO5" field per DC (the workbook's own tier concept) --
+        # priority_score IS already "the confirmed 0.40/0.35/0.25-weighted BO1-BO5 tier
+        # score" (see _cumulative_bo_score's docstring), so it's reused directly as the
+        # tier-ordering signal rather than inventing a second, redundant tiering scheme.
+        # Recency/distance tie-breaks per Sheet 10 Step 2; distance tie-break uses each
+        # candidate's straight-line distance from Origin_Point as a stable static proxy
+        # for "nearest," since true nearest-to-previous-stop depends on a sequence this
+        # sort is still deciding.
+        def _bo_rule_key(c: Dict[str, Any]) -> Tuple[float, float, float]:
+            days_since = c["dc"].get("Days_Since_Last_Visit")
+            recency = PLAN_B_NEW_BO_RECENCY_WEIGHT if days_since is None else min(1.0 + days_since * PLAN_B_RECENCY_DECAY_RATE, PLAN_B_RECENCY_DECAY_CAP)
+            dist_from_origin = circuity_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0
+            return (-c["priority_score"], -recency, dist_from_origin)
+
+        # Multiple exceptional clusters can't all fit one SE's one working day (each
+        # already exceeds the FULL daily budget alone) -- cover the single most
+        # valuable one (highest CBS) this cycle; the rest defer to a future cycle,
+        # same "recency decay eventually forces a visit" logic Edge Case #2 already
+        # relies on for starvation prevention, not a new mechanism.
+        chosen = max(exceptional, key=lambda sc: sc["cbs"])
+        for sc in exceptional:
+            if sc is not chosen:
+                dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Exceptional_DC_Deferred_Lower_Priority"} for c in sc["cluster"]]
+        for sc in standard:
+            dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Standard_Cluster_Deferred_Exceptional_DC_Prioritized"} for c in sc["cluster"]]
+
+        bo_rule_order = sorted(chosen["cluster"], key=_bo_rule_key)
+        metrics = _route_metrics(bo_rule_order, origin, avg_speed_kmph)
+        exceeds = metrics["total_distance_km"] > PLAN_B_MAX_DAILY_DISTANCE_KM or metrics["total_travel_min"] > PLAN_B_MAX_DAILY_TRAVEL_MINUTES
+        return {
+            "stops": metrics["stops"], "dropped": dropped,
+            "total_distance_km": metrics["total_distance_km"], "total_travel_min": metrics["total_travel_min"],
+            "total_visit_min": metrics["total_visit_min"], "priority_score_captured": metrics["priority_score_captured"],
+            "feasible": True,  # BO Rule routes are never infeasible by design (Sheet 10) -- the ceiling is informational only here
+            "infeasibility_reason": (
+                f"Exceptional_DC_BO_Rule: this cluster's own travel ({metrics['total_distance_km']}km/{metrics['total_travel_min']}min) "
+                f"exceeds the standard 80km/180min ceiling -- sequenced by strict BO-tier priority (BO Rule, Beat Planning Sheet 10) "
+                f"instead of Score-per-km efficiency; ceiling shown for visibility only, not enforced" if exceeds else ""
+            ),
+            "clusters_evaluated": len(scored_clusters),
+            "is_exceptional_dc": True,
+        }
+
+    if not standard:
         return {
             "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
-            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
-            "infeasibility_reason": "Cluster_Exceeds_Daily_Budget: every cluster's own closed-tour distance exceeds the 80km daily budget in isolation",
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True,
+            "infeasibility_reason": "" if not candidates else "No candidate had usable geo-coordinates",
             "clusters_evaluated": len(scored_clusters),
         }
 
-    # Step 2: rank by Score-per-km, descending. Step 4 tie-break inline via the sort key
-    # (lower distance -> higher recency urgency -> higher potential, all as tie-breaks
-    # only -- score_per_km remains primary).
+    # Step 2: rank by ranking_criterion. "efficiency" (Route 1, default) ranks by
+    # Score-per-km descending; "score_max" (Route 2) by raw CBS descending, ignoring
+    # distance efficiency; "distance_min" (Route 3) by raw closed-tour distance
+    # ascending, ignoring value. Step 4's tie-break (lower distance -> higher recency
+    # urgency -> higher potential) applies identically after whichever primary key.
+    if ranking_criterion == "score_max":
+        primary_key = lambda sc: -sc["cbs"]
+    elif ranking_criterion == "distance_min":
+        primary_key = lambda sc: sc["metrics"]["total_distance_km"]
+    else:
+        primary_key = lambda sc: -sc["score_per_km"]
     ranked = sorted(
-        hard_filtered,
-        key=lambda sc: (-sc["score_per_km"], sc["metrics"]["total_distance_km"], -sc["mean_recency_urgency"], -sc["mean_potential"]),
+        standard,
+        key=lambda sc: (primary_key(sc), sc["metrics"]["total_distance_km"], -sc["mean_recency_urgency"], -sc["mean_potential"]),
     )
 
     # Step 3: greedy accumulation under the 80km / 180min budget.
@@ -3308,17 +3400,21 @@ def build_route_cluster_based(
             leftover.append(sc)
 
     # Step 5: partial-budget fallback -- individual-BO selection from whatever didn't
-    # make it in as a whole cluster, ranked the same way (per-candidate score-per-km),
+    # make it in as a whole cluster, ranked by the SAME ranking_criterion as Step 2,
     # squeezed into whatever budget is left.
     fallback_stops: List[Dict[str, Any]] = []
     loose_candidates = [c for sc in leftover for c in sc["cluster"]]
     if loose_candidates and (remaining_km > 1e-6 or remaining_min > 1e-6):
-        def _solo_score_per_km(c: Dict[str, Any]) -> float:
+        def _solo_rank_key(c: Dict[str, Any]) -> float:
             leg_km = circuity_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0
             round_trip_km = leg_km * 2
-            return c["priority_score"] / round_trip_km if round_trip_km > 1e-6 else c["priority_score"]
+            if ranking_criterion == "score_max":
+                return -c["priority_score"]
+            if ranking_criterion == "distance_min":
+                return round_trip_km
+            return -(c["priority_score"] / round_trip_km) if round_trip_km > 1e-6 else -c["priority_score"]
 
-        for c in sorted(loose_candidates, key=_solo_score_per_km, reverse=True):
+        for c in sorted(loose_candidates, key=_solo_rank_key):
             trial_order = fallback_stops + [c]
             trial_metrics = _route_metrics(trial_order, origin, avg_speed_kmph)
             if trial_metrics["total_distance_km"] <= (PLAN_B_MAX_DAILY_DISTANCE_KM - sum(sc["metrics"]["total_distance_km"] for sc in selected)) and \

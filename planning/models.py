@@ -361,7 +361,16 @@ class RoutePlan(models.Model):
         # make_routing_plan_asker()) -- the source doc itself states the exact Plan A ->
         # Plan B auto-trigger condition is "not yet confirmed," so this never fires
         # silently as a fallback.
-        CLUSTER_BASED = "CLUSTER_BASED", "Cluster-Based (Plan B)"
+        # 2026-08-31: workbook's own Sheet 7 "3-Route Comparison Summary" (unchanged by
+        # today's Conditional Ceiling update, confirmed present in both the old and new
+        # workbook) runs Plan B's SAME selection logic 3 times, once per ranking
+        # criterion, exactly mirroring Plan A's Models 1-3 -- R5.1's "minimum 3 per
+        # SE/day" applies to Plan B too, not just Plan A. CLUSTER_BASED is kept as the
+        # Route 1/Efficiency-Balanced label (17 rows already persisted under this name
+        # before the 3-route fix) rather than renamed, so no data migration is needed.
+        CLUSTER_BASED = "CLUSTER_BASED", "Cluster-Based Efficiency (Plan B, Route 1)"
+        CLUSTER_SCOREMAX = "CLUSTER_SCOREMAX", "Cluster-Based Score-Max (Plan B, Route 2)"
+        CLUSTER_DISTMIN = "CLUSTER_DISTMIN", "Cluster-Based Distance-Min (Plan B, Route 3)"
 
     plan_run = models.ForeignKey(PlanRun, related_name="route_plans", on_delete=models.CASCADE)
     se_id = models.CharField(max_length=64)

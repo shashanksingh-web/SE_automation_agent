@@ -52,11 +52,14 @@ def generate_route_plans_for_se(
     plan_choice: "A" (default) runs the existing Models 1-3 (Priority-Max/Distance-Min/
     Balanced) exactly as before. "B" runs Plan B instead -- the Beat Planning / Cluster-
     Based Model (Beat_Planning_Routing_Agent_Cluster_Model.xlsx, confirmed 2026-08-28,
-    see se_daily_plan_agent.build_route_cluster_based) -- ONE RoutePlan, not three,
-    since Plan B is a single alternate strategy, not a family of 3 the way Plan A is.
-    Chosen explicitly per call (see planning.services.make_routing_plan_asker) --
-    never auto-selected, since the source doc itself states the exact Plan A -> Plan B
-    trigger condition is "not yet confirmed."
+    see se_daily_plan_agent.build_route_cluster_based) -- THREE RoutePlans (2026-08-31
+    fix: the workbook's own Sheet 7 "3-Route Comparison Summary" runs Plan B's same
+    selection logic 3 times, once per ranking criterion -- Efficiency-Balanced/
+    Score-Maximizing/Distance-Minimizing -- mirroring Plan A's Models 1-3, per R5.1's
+    "minimum 3 per SE/day"; a prior version of this docstring wrongly claimed Plan B
+    only ever produces one RoutePlan). Chosen explicitly per call (see
+    planning.services.make_routing_plan_asker) -- never auto-selected, since the source
+    doc itself states the exact Plan A -> Plan B trigger condition is "not yet confirmed."
 
     Returns {"Tasks": [DailyTaskRow...], "Sequencing_Basis": str, "Travel_Cap_Exceeded":
     bool, "exceptions": [{"source", "reason_code", "detail"}, ...]} -- the first three
@@ -98,7 +101,15 @@ def generate_route_plans_for_se(
         filtered.append(c)
 
     if plan_choice == "B":
-        model_results = {RoutePlan.PlanType.CLUSTER_BASED: agent.build_route_cluster_based(filtered, origin, constants)}
+        # 3 routes, same greedy budget-constrained selection, ranked by a different
+        # criterion each time -- Sheet 7's "3-Route Comparison Summary" (Route 1
+        # Efficiency-Balanced default, Route 2 Score-Maximizing, Route 3
+        # Distance-Minimizing), mirroring Plan A's Models 1-3 below.
+        model_results = {
+            RoutePlan.PlanType.CLUSTER_BASED: agent.build_route_cluster_based(filtered, origin, constants, ranking_criterion="efficiency"),
+            RoutePlan.PlanType.CLUSTER_SCOREMAX: agent.build_route_cluster_based(filtered, origin, constants, ranking_criterion="score_max"),
+            RoutePlan.PlanType.CLUSTER_DISTMIN: agent.build_route_cluster_based(filtered, origin, constants, ranking_criterion="distance_min"),
+        }
         default_plan_type = RoutePlan.PlanType.CLUSTER_BASED
     else:
         model_results = {
@@ -108,18 +119,18 @@ def generate_route_plans_for_se(
         }
         default_plan_type = RoutePlan.PlanType.PRIORITY_MAX
 
-    # GR-R6 -- flag (don't silently pretend) when the 3 Plan A models converge on
-    # materially the same stop set instead of genuinely offering 3 distinct choices --
-    # expected and fine for a thin candidate pool, but worth surfacing, not hiding.
-    # Doesn't apply to Plan B, which only ever produces one RoutePlan.
-    if plan_choice != "B":
-        stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
-        distinct_sets = {s for s in stop_sets.values() if s}
-        if len(distinct_sets) < 3 and distinct_sets:
-            exceptions.append({
-                "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
-                "detail": f"{who} @ {plan_date}: only {len(distinct_sets)} genuinely distinct stop set(s) across Models 1-3 (candidate pool too small/uniform for real variety)",
-            })
+    # GR-R6 -- flag (don't silently pretend) when the 3 models (either family -- Plan A's
+    # Models 1-3, or Plan B's 2026-08-31 3-route fix) converge on materially the same
+    # stop set instead of genuinely offering 3 distinct choices -- expected and fine for
+    # a thin candidate pool, but worth surfacing, not hiding.
+    stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
+    distinct_sets = {s for s in stop_sets.values() if s}
+    if len(distinct_sets) < 3 and distinct_sets:
+        family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
+        exceptions.append({
+            "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
+            "detail": f"{who} @ {plan_date}: only {len(distinct_sets)} genuinely distinct stop set(s) across {family} (candidate pool too small/uniform for real variety)",
+        })
 
     default_tasks: List[Any] = []
     default_basis = "routing_agent"
@@ -158,8 +169,14 @@ def generate_route_plans_for_se(
         ])
 
         if result.get("infeasibility_reason"):
+            # Plan B's Exceptional-DC/BO-Rule path (see se_daily_plan_agent.
+            # build_route_cluster_based) sets infeasibility_reason as an informational
+            # ceiling-breach note with feasible=True -- it is by-design, not a failure,
+            # so it gets its own reason_code rather than being lumped in with genuine
+            # Travel_Floor_Not_Met infeasibility (which always has feasible=False).
+            reason_code = "Exceptional_DC_BO_Rule" if result.get("is_exceptional_dc") else "Travel_Floor_Not_Met"
             exceptions.append({
-                "source": "RoutingAgent", "reason_code": "Travel_Floor_Not_Met",
+                "source": "RoutingAgent", "reason_code": reason_code,
                 "detail": f"{who} @ {plan_date} ({plan_type}): {result['infeasibility_reason']}",
             })
 
