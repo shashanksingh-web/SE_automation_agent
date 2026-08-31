@@ -119,24 +119,62 @@ def generate_route_plans_for_se(
         }
         default_plan_type = RoutePlan.PlanType.PRIORITY_MAX
 
-    # GR-R6 -- flag (don't silently pretend) when the 3 models (either family -- Plan A's
-    # Models 1-3, or Plan B's 2026-08-31 3-route fix) converge on materially the same
-    # stop set instead of genuinely offering 3 distinct choices -- expected and fine for
-    # a thin candidate pool, but worth surfacing, not hiding.
+    # GR-R7 (Routing_Agent_Configuration_Sheet_v8, "Never generate fewer than 3 feasible
+    # algorithm-generated plans without flagging why") + GR-R10 ("Plan distinctness",
+    # 2026-08-31 addition) -- flag when the 3 models (either family -- Plan A's Models
+    # 1-3, or Plan B's 3-route fix) converge on materially the same stop set/sequence
+    # instead of genuinely offering 3 distinct choices. v8 splits this into two
+    # genuinely different causes, distinguished by whether the candidate pool actually
+    # had room to differ (more eligible candidates existed than any single plan used):
+    #   GR-R7: the pool itself was too small/thin -- every plan had to use essentially
+    #     everything available, so there was no real selection to differ over. Expected,
+    #     not a defect -- still flagged, never silently hidden.
+    #   GR-R10: the pool WAS large enough that the 3 models could plausibly have
+    #     differed, yet all 3 nonetheless produced an IDENTICAL stop-set in an IDENTICAL
+    #     sequence. A different visit ORDER of the same stops still counts as distinct
+    #     (that's Model 2/Distance-Min's whole purpose) -- only full (stop-set AND
+    #     sequence) agreement across all 3 triggers this. Per R5.6's failure behavior,
+    #     the SE should see this as one real route with an explanatory note, not 3
+    #     duplicate-looking alternatives -- since no SE-facing app exists in this repo
+    #     yet (see this function's own docstring), that "one route, not three" framing is
+    #     surfaced here as a note appended to the persisted infeasibility_reason of the 2
+    #     duplicate plans below, not by suppressing their RoutePlan rows outright (GR-R12
+    #     still requires every model's own output stay logged).
     stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
-    distinct_sets = {s for s in stop_sets.values() if s}
-    if len(distinct_sets) < 3 and distinct_sets:
+    non_empty_sets = {s for s in stop_sets.values() if s}
+    max_stops_used = max((len(s) for s in stop_sets.values()), default=0)
+    pool_had_room_to_differ = len(filtered) > max_stops_used
+    plans_converged = pool_had_room_to_differ and len(non_empty_sets) == 1 and max_stops_used > 0
+    if plans_converged:
         family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
+        converged_note = (
+            f"Plans_Converged (GR-R10): all 3 {family} independently produced the identical stop-set and "
+            f"sequence despite {len(filtered)} eligible candidates being available ({max_stops_used} used) -- "
+            f"this is one genuine route, not 3 distinct alternatives."
+        )
+        exceptions.append({"source": "RoutingAgent", "reason_code": "Plans_Converged", "detail": f"{who} @ {plan_date}: {converged_note}"})
+    elif len(non_empty_sets) < 3 and non_empty_sets:
+        family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
+        converged_note = None
         exceptions.append({
             "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
-            "detail": f"{who} @ {plan_date}: only {len(distinct_sets)} genuinely distinct stop set(s) across {family} (candidate pool too small/uniform for real variety)",
+            "detail": f"{who} @ {plan_date}: only {len(non_empty_sets)} genuinely distinct stop set(s) across {family} ({len(filtered)} eligible candidates -- pool too small/uniform for real variety)",
         })
+    else:
+        converged_note = None
 
     default_tasks: List[Any] = []
     default_basis = "routing_agent"
     default_cap_exceeded = False
 
     for plan_type, result in model_results.items():
+        own_reason = result.get("infeasibility_reason", "")
+        if plan_type != default_plan_type and converged_note:
+            # The default plan already carries the full converged_note via the
+            # exceptions list above; the 2 duplicate plans get it here directly on their
+            # own row so a reader looking at just this RoutePlan (not the exceptions
+            # list) still sees why it's a duplicate, not a 3rd real alternative.
+            own_reason = f"{own_reason} | {converged_note}" if own_reason else converged_note
         route_plan = RoutePlan.objects.create(
             plan_run=plan_run, se_id=se_id, se_name=se_email, plan_date=plan_date,
             plan_type=plan_type, origin_lat=origin[0], origin_lon=origin[1], origin_basis=origin_basis,
@@ -144,12 +182,13 @@ def generate_route_plans_for_se(
             total_visit_minutes=result["total_visit_min"],
             total_minutes=result["total_travel_min"] + result["total_visit_min"],
             priority_score_captured=result["priority_score_captured"],
-            feasible=result["feasible"], infeasibility_reason=result.get("infeasibility_reason", ""),
+            feasible=result["feasible"], infeasibility_reason=own_reason,
             is_default_selected=(plan_type == default_plan_type),
-            # GR-R10 audit trail (see RoutePlan.avg_speed_kmph_used/alpha_used docstring)
-            # -- none of the 3 model builders above are called with an explicit
-            # avg_speed_kmph override, so R3_2_DEFAULT_AVG_SPEED_KMPH is what every plan
-            # actually used; alpha_used only exists in BALANCED's own result dict.
+            # Speed/alpha assumption audit trail (see RoutePlan.avg_speed_kmph_used/
+            # alpha_used docstring) -- none of the 3 model builders above are called
+            # with an explicit avg_speed_kmph override, so R3_2_DEFAULT_AVG_SPEED_KMPH is
+            # what every plan actually used; alpha_used only exists in BALANCED's own
+            # result dict.
             avg_speed_kmph_used=agent.R3_2_DEFAULT_AVG_SPEED_KMPH,
             alpha_used=result.get("alpha_used"),
         )
@@ -295,7 +334,7 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             "total_visit_minutes": r.total_visit_minutes,
             "total_minutes": r.total_minutes,
             "priority_score_captured": r.priority_score_captured,
-            # GR-R10 audit trail -- the ops assumptions behind the numbers above.
+            # Speed/alpha assumption audit trail -- the ops assumptions behind the numbers above.
             "avg_speed_kmph_used": r.avg_speed_kmph_used,
             "alpha_used": r.alpha_used,
             "feasible": r.feasible,

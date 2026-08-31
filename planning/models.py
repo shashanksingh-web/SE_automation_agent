@@ -401,7 +401,7 @@ class RoutePlan(models.Model):
     total_minutes = models.FloatField(blank=True, null=True)
     priority_score_captured = models.FloatField(blank=True, null=True)
 
-    # GR-R10 audit trail -- these two ops assumptions feed directly into the numbers
+    # Speed/alpha assumption audit trail -- these two ops assumptions feed directly into the numbers
     # above (travel time/priority, and therefore feasibility) but weren't persisted
     # anywhere, so a later re-run with a different assumption was unauditable against
     # this one. avg_speed_kmph_used applies to all 3 models; alpha_used only to BALANCED
