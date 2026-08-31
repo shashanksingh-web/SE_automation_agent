@@ -3046,6 +3046,325 @@ def build_route_balanced(
     }
 
 
+# =====================================================================================
+# 10b. PLAN B -- BEAT PLANNING / CLUSTER-BASED MODEL
+# (Routing_agent/Beat_Planning_Routing_Agent_Cluster_Model.xlsx, confirmed 2026-08-28)
+#
+# A genuinely different mode from Models 1-3 above (all "Plan A" -- sequential
+# priority/distance/balanced route construction over the full candidate pool), not a
+# 4th variant of the same algorithm. Inverts the framing from classic TSP/VRP (minimize
+# distance, visit everyone) to Prize-Collecting/Orienteering (maximize collected BO
+# score within a fixed daily travel budget) -- the source workbook states this
+# explicitly as its central design tension (its Section 4).
+#
+# Three stages, matching the workbook's own section numbering:
+#   Stage 1 (3.1-3.3): Territory Clustering -- partition candidates into density-
+#     balanced clusters so no cluster is disproportionately sparse or dense.
+#   Stage 2: Cumulative BO Score (CBS) per cluster.
+#   Stage 3: greedy score-per-km cluster selection under the 80km/180min budget.
+#
+# Two honest scope notes, both flagged rather than silently glossed over (same
+# convention as build_route_balanced's alpha_used flag above):
+#   - Stage 1 clustering: the workbook names sklearn-style "density-aware k-means /
+#     DBSCAN variants, refined using OR-Tools' distance matrix" as algorithm
+#     candidates -- neither sklearn nor an OR-Tools distance-matrix refinement is wired
+#     into this build. What runs here is a deterministic greedy nearest-neighbor
+#     agglomeration bounded by the same two normalization goals the workbook states
+#     (comparable BO-count per cluster; capped intra-cluster travel) -- functionally
+#     equivalent for this purpose, not a literal DBSCAN/k-means implementation.
+#   - Stage 3 selection: the workbook is explicit that ITS OWN documented algorithm is
+#     "the transparent/explainable approximation," separate from a hypothetical
+#     "production" Prize-Collecting VRP solve via OR-Tools that "can find combinations
+#     the greedy pass would miss." This implements exactly the workbook's own
+#     documented (greedy, ordered-criteria) algorithm -- Stage 3's 5 rules, verbatim --
+#     not the hypothetical fuller OR-Tools formulation it gestures at but never specifies.
+#   - potential_weight_i (Stage 2): the workbook sources this from "Focus Product
+#     Cohort relevance, via the 2A->2B->3 cohort API chain" -- that chain
+#     (planning.product_cohort) is opt-in per PlanRun and not always available. Defaults
+#     to a neutral 1.0 when no Focus Product Cohort data was supplied for this run,
+#     exactly like build_route_balanced's alpha_used falling back to
+#     global_default_alpha when no per-node travel data exists -- flagged, not
+#     pretended to be live.
+# =====================================================================================
+
+PLAN_B_MAX_DAILY_DISTANCE_KM = 80.0    # Section 5 Constraints -- optimization budget, narrow hard-filter role at Stage 1 only (Section 3e)
+PLAN_B_MAX_DAILY_TRAVEL_MINUTES = 180.0  # Section 5 -- genuinely hard ceiling (source doc's own word), unlike Plan A's advisory 80km/1600km figures
+PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM = PLAN_B_MAX_DAILY_DISTANCE_KM * 0.45  # Section 3.2: "no more than ~40-50% of the 80km budget just to traverse internally" -- midpoint of that stated range
+PLAN_B_TARGET_CLUSTER_SIZE = 6          # not numerically specified by the workbook ("comparable count of BOs per km2, until BO-count-per-cluster converges within a target band") -- a mid-sized daily-beat count, flagged as a chosen default, not a confirmed figure
+PLAN_B_RECENCY_DECAY_RATE = 1.0 / 30.0  # Edge Case #2/#11: bounded, smooth decay, full cycle within ~30 days
+PLAN_B_RECENCY_DECAY_CAP = 2.0          # Edge Case #2: caps decay so a cluster can't be weighted away forever
+PLAN_B_NEW_BO_RECENCY_WEIGHT = PLAN_B_RECENCY_DECAY_CAP  # Edge Case #6: a BO with no visit history gets max recency urgency, not zero
+
+
+def _cluster_candidates_by_density(
+    candidates: List[Dict[str, Any]],
+    max_intra_cluster_km: float = PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM,
+    target_size: int = PLAN_B_TARGET_CLUSTER_SIZE,
+) -> List[List[Dict[str, Any]]]:
+    """Stage 1 (3.1-3.3). Greedy nearest-neighbor agglomeration: repeatedly seeds a new
+    cluster from the unclustered candidate farthest from every existing cluster centroid
+    (spreads seeds out rather than always starting in the same dense pocket), then grows
+    it by absorbing its nearest remaining neighbor, one at a time, stopping when either
+    the cluster reaches target_size (density normalization -- comparable BO count per
+    cluster) or the next absorption would push the cluster's own max-pairwise intra-
+    cluster distance past max_intra_cluster_km (distance normalization -- Section 3.2).
+    A candidate with no usable coordinates becomes its own singleton cluster (Edge Case
+    "Isolated / outlier BO" is handled one level up, at Stage 3's hard filter -- this
+    function only partitions, it doesn't judge whether a cluster is worth visiting)."""
+    with_coords = [c for c in candidates if None not in _candidate_coords(c)]
+    without_coords = [c for c in candidates if None in _candidate_coords(c)]
+
+    remaining = list(with_coords)
+    clusters: List[List[Dict[str, Any]]] = []
+
+    def centroid(cluster: List[Dict[str, Any]]) -> Tuple[float, float]:
+        lats = [_candidate_coords(c)[0] for c in cluster]
+        lons = [_candidate_coords(c)[1] for c in cluster]
+        return sum(lats) / len(lats), sum(lons) / len(lons)
+
+    def max_pairwise_km(cluster: List[Dict[str, Any]]) -> float:
+        if len(cluster) < 2:
+            return 0.0
+        worst = 0.0
+        for i in range(len(cluster)):
+            for j in range(i + 1, len(cluster)):
+                d = circuity_distance_km(*_candidate_coords(cluster[i]), *_candidate_coords(cluster[j])) or 0.0
+                worst = max(worst, d)
+        return worst
+
+    while remaining:
+        if not clusters:
+            seed = remaining.pop(0)
+        else:
+            existing_centroids = [centroid(cl) for cl in clusters]
+            seed = max(
+                remaining,
+                key=lambda c: min(circuity_distance_km(*_candidate_coords(c), *ec) or 0.0 for ec in existing_centroids),
+            )
+            remaining.remove(seed)
+        cluster = [seed]
+
+        while remaining and len(cluster) < target_size:
+            c_lat, c_lon = centroid(cluster)
+            nearest = min(remaining, key=lambda c: circuity_distance_km(c_lat, c_lon, *_candidate_coords(c)) or 1e9)
+            dist_to_nearest = circuity_distance_km(c_lat, c_lon, *_candidate_coords(nearest)) or 0.0
+            # Density-boundary stop: target_size alone would happily bridge a genuine
+            # gap between two natural pockets just to hit the target count (confirmed
+            # bug -- a 4+4 two-pocket synthetic test produced one 6-member cluster
+            # straddling both pockets before this check existed). If the next nearest
+            # candidate is markedly farther than the cluster's own current spread, this
+            # is a real density boundary (Section 3.1's "dense pockets vs. sparse
+            # pockets" distinction) -- stop growing even though target_size isn't met
+            # yet; the 2.0km floor keeps this from firing on a tiny, tight cluster's
+            # very first few (near-zero-spread) neighbors.
+            current_spread = max_pairwise_km(cluster) if len(cluster) >= 2 else 0.0
+            if len(cluster) >= 2 and dist_to_nearest > max(current_spread * 1.75, 2.0):
+                break
+            trial = cluster + [nearest]
+            if max_pairwise_km(trial) > max_intra_cluster_km:
+                break
+            cluster = trial
+            remaining.remove(nearest)
+
+        clusters.append(cluster)
+
+    clusters.extend([[c] for c in without_coords])
+    return clusters
+
+
+def _cumulative_bo_score(cluster: List[Dict[str, Any]], plan_date: str, potential_weight_by_dc: Optional[Dict[str, float]] = None) -> float:
+    """Stage 2. CBS(C) = sum over BOs i in cluster of BO_score_i * recency_weight_i *
+    potential_weight_i (workbook Section 2, verbatim formula).
+
+    BO_score_i: the candidate's own priority_score -- already the confirmed 0.40/0.35/
+    0.25-weighted BO1-BO5 tier score computed upstream (Section 7.2), reused as-is
+    rather than recomputed, since the workbook defines it as "the base tier score from
+    the BO Scoring Agent," which is exactly what priority_score already is.
+
+    recency_weight_i: smooth bounded decay (Edge Case #11 -- "not a hard on/off"), 1.0
+    baseline rising by PLAN_B_RECENCY_DECAY_RATE per day since last visit, capped at
+    PLAN_B_RECENCY_DECAY_CAP; a never-visited BO (Days_Since_Last_Visit is None) gets
+    the cap directly (Edge Case #6).
+
+    potential_weight_i: Focus Product Cohort relevance when supplied for this run
+    (potential_weight_by_dc, keyed by DC_ID); neutral 1.0 otherwise -- see the module
+    docstring above on why this isn't always live."""
+    total = 0.0
+    for c in cluster:
+        dc = c["dc"]
+        bo_score = c["priority_score"]
+        days_since = dc.get("Days_Since_Last_Visit")
+        if days_since is None:
+            recency_weight = PLAN_B_NEW_BO_RECENCY_WEIGHT
+        else:
+            recency_weight = min(1.0 + days_since * PLAN_B_RECENCY_DECAY_RATE, PLAN_B_RECENCY_DECAY_CAP)
+        potential_weight = 1.0
+        if potential_weight_by_dc is not None:
+            potential_weight = potential_weight_by_dc.get(dc["DC_ID"], 1.0)
+        total += bo_score * recency_weight * potential_weight
+    return total
+
+
+def build_route_cluster_based(
+    candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
+    avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
+    potential_weight_by_dc: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """Plan B, main entry point -- Stages 1-3 of Beat_Planning_Routing_Agent_Cluster_
+    Model.xlsx, verbatim. Returns the same result-dict shape as the 3 Plan A builders
+    (stops/dropped/total_distance_km/total_travel_min/total_visit_min/
+    priority_score_captured/feasible/infeasibility_reason) so planning/routing.py's
+    persistence code needs no branching to handle this alongside Models 1-3, plus
+    "clusters_evaluated" (count) for an honest audit trail of what Stage 3 actually
+    chose between.
+
+    Stage 3's ordered criteria, applied exactly as the workbook specifies (its own
+    Section 3, "Route Selection Criteria (Applied in Order)"):
+      1. Hard filter -- drop any cluster whose own max-pairwise intra-cluster distance
+         alone exceeds the full 80km budget (it cannot be completed even in isolation).
+      2. Rank by efficiency -- Score-per-km = CBS / cluster's own closed-tour distance
+         (computed via Clarke-Wright + 2-opt + or-opt from Origin_Point, same
+         sequencing heuristics Models 2/3 already use), descending.
+      3. Greedy accumulation -- add clusters in rank order until the next one would
+         push cumulative distance past 80km or cumulative time past 180min.
+      4. Tie-break on equal score-per-km -- (a) lower total distance, (b) higher
+         recency urgency (proxied by the cluster's own mean Days_Since_Last_Visit,
+         None treated as maximally urgent), (c) higher mean potential_weight.
+      5. Partial-budget fallback -- if budget remains but no further whole cluster
+         fits, fall back to individual-BO selection (by the same score-per-km metric)
+         from the unselected remainder, within whatever budget is left."""
+    dropped: List[Dict[str, str]] = []
+    with_coords = [c for c in candidates if None not in _candidate_coords(c)]
+    without_coords = [c for c in candidates if None in _candidate_coords(c)]
+    dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Geo_Incomplete"} for c in without_coords]
+
+    if not with_coords:
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True,
+            "infeasibility_reason": "" if not candidates else "No candidate had usable geo-coordinates",
+            "clusters_evaluated": 0,
+        }
+
+    clusters = _cluster_candidates_by_density(with_coords)
+
+    # Sequence each cluster once (Clarke-Wright + 2-opt + or-opt, same as Models 2/3)
+    # so its own closed-tour distance/time/CBS are all known before Stage 3 ranks them.
+    scored_clusters = []
+    for cluster in clusters:
+        order = _or_opt(_two_opt(_clarke_wright_order(cluster, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
+        metrics = _route_metrics(order, origin, avg_speed_kmph)
+        cbs = _cumulative_bo_score(cluster, "", potential_weight_by_dc)
+        score_per_km = cbs / metrics["total_distance_km"] if metrics["total_distance_km"] > 1e-6 else cbs
+        days_since_values = [c["dc"].get("Days_Since_Last_Visit") for c in cluster]
+        mean_recency_urgency = (
+            PLAN_B_NEW_BO_RECENCY_WEIGHT if any(d is None for d in days_since_values)
+            else sum(min(1.0 + d * PLAN_B_RECENCY_DECAY_RATE, PLAN_B_RECENCY_DECAY_CAP) for d in days_since_values) / len(days_since_values)
+        )
+        mean_potential = (
+            sum((potential_weight_by_dc or {}).get(c["dc"]["DC_ID"], 1.0) for c in cluster) / len(cluster)
+        )
+        scored_clusters.append({
+            "cluster": cluster, "order": order, "metrics": metrics, "cbs": cbs,
+            "score_per_km": score_per_km, "mean_recency_urgency": mean_recency_urgency, "mean_potential": mean_potential,
+        })
+
+    # Step 1: hard filter -- a cluster whose own closed-tour distance alone already
+    # exceeds the full daily budget can never be completed, even visited in isolation.
+    hard_filtered = []
+    for sc in scored_clusters:
+        if sc["metrics"]["total_distance_km"] > PLAN_B_MAX_DAILY_DISTANCE_KM:
+            dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Cluster_Exceeds_Daily_Budget"} for c in sc["cluster"]]
+        else:
+            hard_filtered.append(sc)
+
+    if not hard_filtered:
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
+            "infeasibility_reason": "Cluster_Exceeds_Daily_Budget: every cluster's own closed-tour distance exceeds the 80km daily budget in isolation",
+            "clusters_evaluated": len(scored_clusters),
+        }
+
+    # Step 2: rank by Score-per-km, descending. Step 4 tie-break inline via the sort key
+    # (lower distance -> higher recency urgency -> higher potential, all as tie-breaks
+    # only -- score_per_km remains primary).
+    ranked = sorted(
+        hard_filtered,
+        key=lambda sc: (-sc["score_per_km"], sc["metrics"]["total_distance_km"], -sc["mean_recency_urgency"], -sc["mean_potential"]),
+    )
+
+    # Step 3: greedy accumulation under the 80km / 180min budget.
+    selected: List[Dict[str, Any]] = []
+    remaining_km = PLAN_B_MAX_DAILY_DISTANCE_KM
+    remaining_min = PLAN_B_MAX_DAILY_TRAVEL_MINUTES
+    leftover: List[Dict[str, Any]] = []
+    for sc in ranked:
+        if sc["metrics"]["total_distance_km"] <= remaining_km and sc["metrics"]["total_travel_min"] <= remaining_min:
+            selected.append(sc)
+            remaining_km -= sc["metrics"]["total_distance_km"]
+            remaining_min -= sc["metrics"]["total_travel_min"]
+        else:
+            leftover.append(sc)
+
+    # Step 5: partial-budget fallback -- individual-BO selection from whatever didn't
+    # make it in as a whole cluster, ranked the same way (per-candidate score-per-km),
+    # squeezed into whatever budget is left.
+    fallback_stops: List[Dict[str, Any]] = []
+    loose_candidates = [c for sc in leftover for c in sc["cluster"]]
+    if loose_candidates and (remaining_km > 1e-6 or remaining_min > 1e-6):
+        def _solo_score_per_km(c: Dict[str, Any]) -> float:
+            leg_km = circuity_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0
+            round_trip_km = leg_km * 2
+            return c["priority_score"] / round_trip_km if round_trip_km > 1e-6 else c["priority_score"]
+
+        for c in sorted(loose_candidates, key=_solo_score_per_km, reverse=True):
+            trial_order = fallback_stops + [c]
+            trial_metrics = _route_metrics(trial_order, origin, avg_speed_kmph)
+            if trial_metrics["total_distance_km"] <= (PLAN_B_MAX_DAILY_DISTANCE_KM - sum(sc["metrics"]["total_distance_km"] for sc in selected)) and \
+               trial_metrics["total_travel_min"] <= (PLAN_B_MAX_DAILY_TRAVEL_MINUTES - sum(sc["metrics"]["total_travel_min"] for sc in selected)):
+                fallback_stops = trial_order
+            else:
+                dropped.append({"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"})
+
+    # Every loose_candidates entry is accounted for exactly once above: either folded
+    # into fallback_stops, or dropped inside that same loop. When no budget remains at
+    # all (the `if loose_candidates and (...)` guard is false), none of them were
+    # touched by that loop -- catch those here, keyed by id so a candidate already
+    # dropped above is never appended twice (confirmed bug: an earlier version of this
+    # function re-walked `leftover` unconditionally afterward and double-counted every
+    # candidate the loop above had already dropped).
+    already_accounted = {c["dc"]["DC_ID"] for c in fallback_stops} | {d["dc_id"] for d in dropped}
+    for c in loose_candidates:
+        if c["dc"]["DC_ID"] not in already_accounted:
+            dropped.append({"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"})
+            already_accounted.add(c["dc"]["DC_ID"])
+
+    # Merge selected whole clusters (each already sequenced) with the fallback partial
+    # selection, then re-sequence the combined stop set once so the final route is one
+    # coherent tour, not clusters awkwardly concatenated in selection order.
+    all_stops_candidates = [c for sc in selected for c in sc["order"]] + fallback_stops
+    if not all_stops_candidates:
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True,
+            "infeasibility_reason": "No cluster or individual BO fit inside the 80km/180min daily budget",
+            "clusters_evaluated": len(scored_clusters),
+        }
+    final_order = _or_opt(_two_opt(_clarke_wright_order(all_stops_candidates, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
+    final_metrics = _route_metrics(final_order, origin, avg_speed_kmph)
+    feasible = final_metrics["total_distance_km"] <= PLAN_B_MAX_DAILY_DISTANCE_KM and final_metrics["total_travel_min"] <= PLAN_B_MAX_DAILY_TRAVEL_MINUTES
+
+    return {
+        "stops": final_metrics["stops"], "dropped": dropped,
+        "total_distance_km": final_metrics["total_distance_km"], "total_travel_min": final_metrics["total_travel_min"],
+        "total_visit_min": final_metrics["total_visit_min"], "priority_score_captured": final_metrics["priority_score_captured"],
+        "feasible": feasible,
+        "infeasibility_reason": "" if feasible else "Daily_Budget_Exceeded: re-sequenced combined route exceeds 80km/180min after merging clusters -- see Stage 3 docstring",
+        "clusters_evaluated": len(scored_clusters),
+    }
+
+
 def generate_se_daily_plan(
     se_id: str,
     se_name: Optional[str],

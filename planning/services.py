@@ -955,6 +955,30 @@ def make_farmer_meeting_asker(stdout, style) -> Optional[Callable[[str, Dict[str
     return ask
 
 
+def make_routing_plan_asker(stdout, style) -> Optional[Callable[[], str]]:
+    """Builds an interactive Plan A / Plan B confirmation prompt for CLI commands
+    (activate_tuff/generate_se_plan) -- wired 2026-08-28 per direct instruction: when the
+    Routing Agent activates, ask which plan to run rather than silently auto-selecting.
+    This is a deliberate choice, not a stand-in for a real fallback rule -- the source
+    doc (SE_DC_Data_Normalization_Agent_Prompt.docx, Section 3e) states explicitly that
+    "the exact Plan A -> Plan B trigger condition" is "not yet confirmed," so an
+    automatic trigger would be guessing at an unconfirmed rule. Asking is the honest
+    interim behavior until that condition is specified. Same isatty-gated pattern as
+    make_farmer_meeting_asker() immediately above -- returns None (no asking, defaults
+    to Plan A) when stdin isn't a real TTY, never blocks/EOFErrors under cron/scripting."""
+    if not sys.stdin.isatty():
+        return None
+
+    def ask() -> str:
+        stdout.write(style.WARNING("\n  Routing Agent: which plan should generate today's routes?"))
+        stdout.write("    Plan A -- Priority-Max / Distance-Min / Balanced (Models 1-3, existing default)")
+        stdout.write("    Plan B -- Beat Planning / Cluster-Based Model (density clustering + BO-score maximization)")
+        answer = input("  Choice [A/b]: ").strip().upper()
+        return "B" if answer == "B" else "A"
+
+    return ask
+
+
 @transaction.atomic
 def generate_plan_for_scope(
     scope_type: str, scope_value: str, plan_date: Optional[str] = None,
@@ -966,6 +990,8 @@ def generate_plan_for_scope(
     focus_product_season_weeks: Optional[Dict[str, int]] = None,
     focus_product_crop_districts: Optional[List[str]] = None,
     focus_product_related_products: Optional[List[str]] = None,
+    routing_plan_asker: Optional[Callable[[], str]] = None,
+    routing_plan_choice: Optional[str] = None,
 ) -> PlanRun:
     """The single entry point every endpoint calls. Resolves scope -> DCs -> SEs, pulls
     live Sources 1/3/4 data scoped to just those DCs/SEs (not a full pipeline run), calls
@@ -991,11 +1017,20 @@ def generate_plan_for_scope(
     focus_product_material_id is the only required one to trigger it at all;
     focus_product_node_id defaults to scope_value when scope_type == NODE (the natural
     case), and is otherwise required explicitly -- there's no confirmed mapping from the
-    other scope types (SE/ABM/RBM/BLOCK/DISTRICT/STATE) to a single Product Cohort node."""
+    other scope types (SE/ABM/RBM/BLOCK/DISTRICT/STATE) to a single Product Cohort node.
+
+    routing_plan_asker / routing_plan_choice: which Routing Agent mode to run for every
+    SE in this scope -- see make_routing_plan_asker(). routing_plan_choice ("A" or "B")
+    is an explicit override, same precedence pattern as farmer_meeting_confirmed_emails
+    above -- takes priority over routing_plan_asker. When neither is supplied (the
+    run_scheduled_tuff/HTTP-API case), defaults to "A" -- Plan A stays the safe,
+    unattended default; Plan B only ever runs when a human chose it, explicitly or
+    interactively, never silently."""
     started_at = timezone.now()
     plan_date = plan_date or timezone.now().date().isoformat()
     constants = agent.BusinessConstants()
     client = agent.get_client()
+    resolved_routing_plan = routing_plan_choice or (routing_plan_asker() if routing_plan_asker else None) or "A"
 
     geo_mapping_cache: Dict[str, agent.Table] = {}
     dc_master = load_dc_master()
@@ -1566,6 +1601,7 @@ def generate_plan_for_scope(
                 origin, origin_basis = None, "waiting_for_today"
             result = routing.generate_route_plans_for_se(
                 plan_run, str(_uid), _email, plan_date_, candidates, origin, origin_basis, constants_,
+                plan_choice=resolved_routing_plan,
             )
             run_exceptions.extend(result["exceptions"])
             return result
@@ -2076,6 +2112,8 @@ def activate_tuff_scope(
     focus_product_season_weeks: Optional[Dict[str, int]] = None,
     focus_product_crop_districts: Optional[List[str]] = None,
     focus_product_related_products: Optional[List[str]] = None,
+    routing_plan_asker: Optional[Callable[[], str]] = None,
+    routing_plan_choice: Optional[str] = None,
 ) -> Tuple[PlanRun, Dict[str, Any]]:
     """Agent TUFF's full two-step flow as a single reusable call -- Step 1 (Data
     Normalization, once-per-day, see run_normalization_step) then Step 2
@@ -2096,5 +2134,6 @@ def activate_tuff_scope(
         focus_product_material_id=focus_product_material_id, focus_product_node_id=focus_product_node_id,
         focus_product_years=focus_product_years, focus_product_season_weeks=focus_product_season_weeks,
         focus_product_crop_districts=focus_product_crop_districts, focus_product_related_products=focus_product_related_products,
+        routing_plan_asker=routing_plan_asker, routing_plan_choice=routing_plan_choice,
     )
     return plan_run, normalization_info

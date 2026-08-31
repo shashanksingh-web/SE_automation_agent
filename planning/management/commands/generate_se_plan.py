@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from planning.models import PlanRun
 from planning.product_cohort import ProductCohortError, build_season_weeks, split_csv
 from planning.reporting import summary_lines, table_lines
-from planning.services import PlanningError, generate_plan_for_scope, make_farmer_meeting_asker
+from planning.services import PlanningError, generate_plan_for_scope, make_farmer_meeting_asker, make_routing_plan_asker
 from planning.views import _serialize_plan_run
 
 
@@ -44,6 +44,12 @@ class Command(BaseCommand):
         parser.add_argument("--focus-product-outer-weeks", default="1-52", help="Step 2B seed window, default 1-52")
         parser.add_argument("--focus-product-crop-districts", help="comma-separated -- Step 3 input, omit to skip Step 3")
         parser.add_argument("--focus-product-related-products", help="comma-separated product names -- Step 3 input, omit to skip Step 3")
+        parser.add_argument(
+            "--routing-plan", choices=["A", "B"], default=None,
+            help="Which Routing Agent mode to run: A = Priority-Max/Distance-Min/Balanced (Models 1-3, default), "
+                 "B = Beat Planning / Cluster-Based Model (Plan B). Omit in an interactive terminal to be asked; "
+                 "omit under cron/scripting to default to Plan A (no auto-fallback -- see make_routing_plan_asker).",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -63,6 +69,8 @@ class Command(BaseCommand):
                 focus_product_years=options["focus_product_years"], focus_product_season_weeks=season_weeks,
                 focus_product_crop_districts=split_csv(options["focus_product_crop_districts"]),
                 focus_product_related_products=split_csv(options["focus_product_related_products"]),
+                routing_plan_asker=make_routing_plan_asker(self.stdout, self.style),
+                routing_plan_choice=options["routing_plan"],
             )
         except PlanningError as e:
             raise CommandError(str(e))

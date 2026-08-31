@@ -37,16 +37,26 @@ def generate_route_plans_for_se(
     origin: Optional[Tuple[float, float]],
     origin_basis: str,
     constants: "agent.BusinessConstants",
+    plan_choice: str = "A",
 ) -> Dict[str, Any]:
     """candidates: the exact shape generate_se_daily_plan()'s route_selector branch
     builds -- [{"row": DailyTaskRow, "dc": dict, "priority_score": float, "matched":
     [str]}, ...], UNFILTERED (every Ranked_Pool entry, no capacity trimming yet -- that's
-    this function's job, via the 3 model builders).
+    this function's job, via the model builders).
 
     origin: resolved by the caller (planning/services.py, per R0.4) -- None means no
     punch-in exists at all yet for this SE, in which case this function defers entirely
     (no RoutePlan rows persisted, empty Tasks returned) rather than guessing an
     Origin_Point, matching R0.4's own "waits for today's real punch-in instead" rule.
+
+    plan_choice: "A" (default) runs the existing Models 1-3 (Priority-Max/Distance-Min/
+    Balanced) exactly as before. "B" runs Plan B instead -- the Beat Planning / Cluster-
+    Based Model (Beat_Planning_Routing_Agent_Cluster_Model.xlsx, confirmed 2026-08-28,
+    see se_daily_plan_agent.build_route_cluster_based) -- ONE RoutePlan, not three,
+    since Plan B is a single alternate strategy, not a family of 3 the way Plan A is.
+    Chosen explicitly per call (see planning.services.make_routing_plan_asker) --
+    never auto-selected, since the source doc itself states the exact Plan A -> Plan B
+    trigger condition is "not yet confirmed."
 
     Returns {"Tasks": [DailyTaskRow...], "Sequencing_Basis": str, "Travel_Cap_Exceeded":
     bool, "exceptions": [{"source", "reason_code", "detail"}, ...]} -- the first three
@@ -87,22 +97,29 @@ def generate_route_plans_for_se(
             continue
         filtered.append(c)
 
-    model_results = {
-        RoutePlan.PlanType.PRIORITY_MAX: agent.build_route_priority_max(filtered, origin, constants),
-        RoutePlan.PlanType.DISTANCE_MIN: agent.build_route_distance_min(filtered, origin, constants),
-        RoutePlan.PlanType.BALANCED: agent.build_route_balanced(filtered, origin, constants),
-    }
+    if plan_choice == "B":
+        model_results = {RoutePlan.PlanType.CLUSTER_BASED: agent.build_route_cluster_based(filtered, origin, constants)}
+        default_plan_type = RoutePlan.PlanType.CLUSTER_BASED
+    else:
+        model_results = {
+            RoutePlan.PlanType.PRIORITY_MAX: agent.build_route_priority_max(filtered, origin, constants),
+            RoutePlan.PlanType.DISTANCE_MIN: agent.build_route_distance_min(filtered, origin, constants),
+            RoutePlan.PlanType.BALANCED: agent.build_route_balanced(filtered, origin, constants),
+        }
+        default_plan_type = RoutePlan.PlanType.PRIORITY_MAX
 
-    # GR-R6 -- flag (don't silently pretend) when the 3 models converge on materially
-    # the same stop set instead of genuinely offering 3 distinct choices -- expected and
-    # fine for a thin candidate pool, but worth surfacing, not hiding.
-    stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
-    distinct_sets = {s for s in stop_sets.values() if s}
-    if len(distinct_sets) < 3 and distinct_sets:
-        exceptions.append({
-            "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
-            "detail": f"{who} @ {plan_date}: only {len(distinct_sets)} genuinely distinct stop set(s) across Models 1-3 (candidate pool too small/uniform for real variety)",
-        })
+    # GR-R6 -- flag (don't silently pretend) when the 3 Plan A models converge on
+    # materially the same stop set instead of genuinely offering 3 distinct choices --
+    # expected and fine for a thin candidate pool, but worth surfacing, not hiding.
+    # Doesn't apply to Plan B, which only ever produces one RoutePlan.
+    if plan_choice != "B":
+        stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
+        distinct_sets = {s for s in stop_sets.values() if s}
+        if len(distinct_sets) < 3 and distinct_sets:
+            exceptions.append({
+                "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
+                "detail": f"{who} @ {plan_date}: only {len(distinct_sets)} genuinely distinct stop set(s) across Models 1-3 (candidate pool too small/uniform for real variety)",
+            })
 
     default_tasks: List[Any] = []
     default_basis = "routing_agent"
@@ -117,7 +134,7 @@ def generate_route_plans_for_se(
             total_minutes=result["total_travel_min"] + result["total_visit_min"],
             priority_score_captured=result["priority_score_captured"],
             feasible=result["feasible"], infeasibility_reason=result.get("infeasibility_reason", ""),
-            is_default_selected=(plan_type == RoutePlan.PlanType.PRIORITY_MAX),
+            is_default_selected=(plan_type == default_plan_type),
             # GR-R10 audit trail (see RoutePlan.avg_speed_kmph_used/alpha_used docstring)
             # -- none of the 3 model builders above are called with an explicit
             # avg_speed_kmph override, so R3_2_DEFAULT_AVG_SPEED_KMPH is what every plan
@@ -146,7 +163,7 @@ def generate_route_plans_for_se(
                 "detail": f"{who} @ {plan_date} ({plan_type}): {result['infeasibility_reason']}",
             })
 
-        if plan_type == RoutePlan.PlanType.PRIORITY_MAX:
+        if plan_type == default_plan_type:
             default_tasks = [s["row"] for s in result["stops"]]
             cumulative_km = 0.0
             for i, r in enumerate(default_tasks, start=1):
@@ -158,7 +175,7 @@ def generate_route_plans_for_se(
                 # column. RouteStop.distance_from_prev_km (above) keeps the real per-leg
                 # figure for the new multi-plan schema.
                 r.Distance_Km = round(cumulative_km, 2)
-            default_basis = f"routing_agent_priority_max_{origin_basis}"
+            default_basis = f"routing_agent_{'cluster_based' if plan_choice == 'B' else 'priority_max'}_{origin_basis}"
             default_cap_exceeded = not result["feasible"]
 
     return {"Tasks": default_tasks, "Sequencing_Basis": default_basis, "Travel_Cap_Exceeded": default_cap_exceeded, "exceptions": exceptions}

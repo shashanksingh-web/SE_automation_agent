@@ -353,6 +353,15 @@ class RoutePlan(models.Model):
         DISTANCE_MIN = "DISTANCE_MIN", "Distance-Min (Model 2)"
         BALANCED = "BALANCED", "Balanced (Model 3)"
         SE_OVERRIDE = "SE_OVERRIDE", "SE Self-Override (Model 4)"  # not generated yet, reserved
+        # Plan B (Beat_Planning_Routing_Agent_Cluster_Model.xlsx, confirmed 2026-08-28) --
+        # a genuinely different mode from Models 1-3 above (all "Plan A"), not a 4th
+        # variant of the same algorithm: density-balanced territory clustering ->
+        # cumulative BO score per cluster -> greedy score-per-km cluster selection under
+        # an 80km/180min budget. Generated only when explicitly chosen (see
+        # make_routing_plan_asker()) -- the source doc itself states the exact Plan A ->
+        # Plan B auto-trigger condition is "not yet confirmed," so this never fires
+        # silently as a fallback.
+        CLUSTER_BASED = "CLUSTER_BASED", "Cluster-Based (Plan B)"
 
     plan_run = models.ForeignKey(PlanRun, related_name="route_plans", on_delete=models.CASCADE)
     se_id = models.CharField(max_length=64)
