@@ -3258,9 +3258,20 @@ def build_route_cluster_based(
       5. Partial-budget fallback -- if budget remains but no further whole cluster
          fits, fall back to individual-BO selection (ranked by the same
          ranking_criterion) from the unselected remainder, within whatever budget is
-         left."""
+         left.
+      6. max_daily_tasks cap (2026-08-31, 8.10 reused as Sheet 10 Step 3's own "defined
+         maximum operational cap"): after budget-based selection, the stop count is
+         trimmed to constants.max_daily_tasks (5 by default, floored at 1), keeping the
+         highest-ranked (by ranking_criterion, i.e. distance-and-BO-scoring) candidates
+         across the whole merged set. Applies identically to the Exceptional/BO Rule
+         path above (there, _bo_rule_key's tier-first order decides who's kept)."""
     if ranking_criterion not in PLAN_B_RANKING_CRITERIA:
         raise ValueError(f"ranking_criterion must be one of {PLAN_B_RANKING_CRITERIA}, got {ranking_criterion!r}")
+    # 8.10's max_daily_tasks (5, config-driven) reused here as Sheet 10 Step 3's own
+    # "defined maximum operational cap" (previously unimplemented -- the BO Rule would
+    # visit every BO in the chosen cluster regardless of count) -- floored at 1 so a
+    # misconfigured 0 can never zero out a whole day's route.
+    task_cap = max(1, constants.max_daily_tasks)
     dropped: List[Dict[str, str]] = []
     with_coords = [c for c in candidates if None not in _candidate_coords(c)]
     without_coords = [c for c in candidates if None in _candidate_coords(c)]
@@ -3346,6 +3357,13 @@ def build_route_cluster_based(
             dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Standard_Cluster_Deferred_Exceptional_DC_Prioritized"} for c in sc["cluster"]]
 
         bo_rule_order = sorted(chosen["cluster"], key=_bo_rule_key)
+        # Sheet 10 Step 3's "defined maximum operational cap" -- _bo_rule_key already
+        # sorted tier-first (then recency, then nearest-distance), so trimming to the
+        # front here keeps exactly the highest-tier/most-urgent/closest BOs and drops
+        # the rest, matching "according to distance and bo scoring."
+        if len(bo_rule_order) > task_cap:
+            dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Exceptional_DC_Daily_Task_Cap"} for c in bo_rule_order[task_cap:]]
+            bo_rule_order = bo_rule_order[:task_cap]
         metrics = _route_metrics(bo_rule_order, origin, avg_speed_kmph)
         exceeds = metrics["total_distance_km"] > PLAN_B_MAX_DAILY_DISTANCE_KM or metrics["total_travel_min"] > PLAN_B_MAX_DAILY_TRAVEL_MINUTES
         return {
@@ -3386,6 +3404,18 @@ def build_route_cluster_based(
         key=lambda sc: (primary_key(sc), sc["metrics"]["total_distance_km"], -sc["mean_recency_urgency"], -sc["mean_potential"]),
     )
 
+    # Per-candidate version of the same ranking_criterion -- shared by Step 5's
+    # individual-BO fallback and the final max_daily_tasks cap below, so "according to
+    # distance and bo scoring" means the identical thing in both places.
+    def _candidate_rank_key(c: Dict[str, Any]) -> float:
+        leg_km = circuity_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0
+        round_trip_km = leg_km * 2
+        if ranking_criterion == "score_max":
+            return -c["priority_score"]
+        if ranking_criterion == "distance_min":
+            return round_trip_km
+        return -(c["priority_score"] / round_trip_km) if round_trip_km > 1e-6 else -c["priority_score"]
+
     # Step 3: greedy accumulation under the 80km / 180min budget.
     selected: List[Dict[str, Any]] = []
     remaining_km = PLAN_B_MAX_DAILY_DISTANCE_KM
@@ -3405,16 +3435,7 @@ def build_route_cluster_based(
     fallback_stops: List[Dict[str, Any]] = []
     loose_candidates = [c for sc in leftover for c in sc["cluster"]]
     if loose_candidates and (remaining_km > 1e-6 or remaining_min > 1e-6):
-        def _solo_rank_key(c: Dict[str, Any]) -> float:
-            leg_km = circuity_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0
-            round_trip_km = leg_km * 2
-            if ranking_criterion == "score_max":
-                return -c["priority_score"]
-            if ranking_criterion == "distance_min":
-                return round_trip_km
-            return -(c["priority_score"] / round_trip_km) if round_trip_km > 1e-6 else -c["priority_score"]
-
-        for c in sorted(loose_candidates, key=_solo_rank_key):
+        for c in sorted(loose_candidates, key=_candidate_rank_key):
             trial_order = fallback_stops + [c]
             trial_metrics = _route_metrics(trial_order, origin, avg_speed_kmph)
             if trial_metrics["total_distance_km"] <= (PLAN_B_MAX_DAILY_DISTANCE_KM - sum(sc["metrics"]["total_distance_km"] for sc in selected)) and \
@@ -3447,6 +3468,16 @@ def build_route_cluster_based(
             "infeasibility_reason": "No cluster or individual BO fit inside the 80km/180min daily budget",
             "clusters_evaluated": len(scored_clusters),
         }
+    # max_daily_tasks cap (8.10) -- the budget alone doesn't bound stop COUNT, only
+    # distance/time, so a tight cluster of many nearby/small-visit-duration DCs could
+    # otherwise exceed it. Trims to the task_cap highest-ranked (by the same
+    # ranking_criterion, i.e. distance-and-BO-scoring) candidates across the whole
+    # merged set, not per-cluster, so a candidate's own priority always wins over which
+    # whole cluster it happened to be selected as part of.
+    if len(all_stops_candidates) > task_cap:
+        all_stops_candidates = sorted(all_stops_candidates, key=_candidate_rank_key)
+        dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Daily_Task_Cap_Exceeded"} for c in all_stops_candidates[task_cap:]]
+        all_stops_candidates = all_stops_candidates[:task_cap]
     final_order = _or_opt(_two_opt(_clarke_wright_order(all_stops_candidates, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
     final_metrics = _route_metrics(final_order, origin, avg_speed_kmph)
     feasible = final_metrics["total_distance_km"] <= PLAN_B_MAX_DAILY_DISTANCE_KM and final_metrics["total_travel_min"] <= PLAN_B_MAX_DAILY_TRAVEL_MINUTES
