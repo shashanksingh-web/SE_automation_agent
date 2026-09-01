@@ -157,6 +157,7 @@ def _serialize_plan_run(plan_run: PlanRun) -> dict:
 @require_GET
 def _generate_and_respond(request, scope_type: str, scope_value: str):
     plan_date = request.GET.get("date")
+    enable_rotation = request.GET.get("rotation", "").lower() in ("1", "true", "yes")
     try:
         focus_product_kwargs = _focus_product_kwargs_from_get(request)
         routing_plan_choice = _routing_plan_choice_from_get(request)
@@ -164,7 +165,8 @@ def _generate_and_respond(request, scope_type: str, scope_value: str):
         return JsonResponse({"error": str(e)}, status=422)
     try:
         plan_run = generate_plan_for_scope(
-            scope_type, scope_value, plan_date, routing_plan_choice=routing_plan_choice, **focus_product_kwargs,
+            scope_type, scope_value, plan_date, routing_plan_choice=routing_plan_choice,
+            enable_rotation=enable_rotation, **focus_product_kwargs,
         )
     except PlanningError as e:
         return JsonResponse({"error": str(e)}, status=422)
@@ -231,16 +233,19 @@ def normalize(request):
 
 @require_GET
 def tuff(request, scope_type: str, scope_value: str):
-    """GET /api/planning/tuff/<scope_type>/<scope_value>/?date=YYYY-MM-DD&force_normalization=true&skip_normalization=true&routing_plan=A|B
+    """GET /api/planning/tuff/<scope_type>/<scope_value>/?date=YYYY-MM-DD&force_normalization=true&skip_normalization=true&routing_plan=A|B&rotation=true
     -- Agent TUFF: Step 1 (Data Normalization, once-per-day) + Step 2 (SE Daily Task +
     Pitching + Routing) in one call, mirroring `manage.py activate_tuff`. Response
     combines Step 1's outcome (Normalization) with the same PlanRun shape the scope
     endpoints (se_plan/state_plan/...) return. routing_plan (2026-08-31 fix): omit for
     Plan A (default, unattended-safe), pass B to run the Beat Planning / Cluster-Based
-    Model instead -- see _routing_plan_choice_from_get."""
+    Model instead -- see _routing_plan_choice_from_get. rotation (Plan B only, Sheet 11
+    Model B "Fixed Rotation"): off by default, pass true to restrict each SE to today's
+    persisted beat-zone -- see planning.routing.generate_route_plans_for_se."""
     plan_date = request.GET.get("date")
     force_normalization = request.GET.get("force_normalization", "").lower() in ("1", "true", "yes")
     skip_normalization = request.GET.get("skip_normalization", "").lower() in ("1", "true", "yes")
+    enable_rotation = request.GET.get("rotation", "").lower() in ("1", "true", "yes")
     try:
         focus_product_kwargs = _focus_product_kwargs_from_get(request)
         routing_plan_choice = _routing_plan_choice_from_get(request)
@@ -250,7 +255,7 @@ def tuff(request, scope_type: str, scope_value: str):
         plan_run, normalization_info = activate_tuff_scope(
             scope_type, scope_value, plan_date,
             force_normalization=force_normalization, skip_normalization=skip_normalization,
-            routing_plan_choice=routing_plan_choice,
+            routing_plan_choice=routing_plan_choice, enable_rotation=enable_rotation,
             **focus_product_kwargs,
         )
     except PlanningError as e:

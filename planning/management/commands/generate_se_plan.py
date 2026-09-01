@@ -50,6 +50,12 @@ class Command(BaseCommand):
                  "B = Beat Planning / Cluster-Based Model (Plan B). Omit in an interactive terminal to be asked; "
                  "omit under cron/scripting to default to Plan A (no auto-fallback -- see make_routing_plan_asker).",
         )
+        parser.add_argument(
+            "--enable-rotation", action="store_true",
+            help="Plan B only -- Fixed Rotation (Beat_Planning_Routing_Agent_Cluster_Model.xlsx Sheet 11 Model B). "
+                 "Restricts each SE to whichever persisted beat-zone is on for this date before the usual "
+                 "ranking/budget logic runs. Off by default (no effect on Plan A or on Plan B without this flag).",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -71,6 +77,7 @@ class Command(BaseCommand):
                 focus_product_related_products=split_csv(options["focus_product_related_products"]),
                 routing_plan_asker=make_routing_plan_asker(self.stdout, self.style),
                 routing_plan_choice=options["routing_plan"],
+                enable_rotation=options["enable_rotation"],
             )
         except PlanningError as e:
             raise CommandError(str(e))

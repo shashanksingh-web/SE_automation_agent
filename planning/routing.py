@@ -26,13 +26,18 @@ from django.db.models import Q
 sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
-from .models import PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
+from .models import BeatZoneAssignment, PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
+
+
+def _parse_plan_date(plan_date) -> _date:
+    return plan_date if isinstance(plan_date, _date) else datetime.strptime(plan_date, "%Y-%m-%d").date()
+
 
 # Beat_Planning_Routing_Agent_Cluster_Model.xlsx, Sheet 11 "Route Distinction / Beat
 # Cycle Rule", Model A (Repeat-Avoidance): the doc's own recommended cool-down window
-# when layered under Model B (Fixed Rotation, not yet built -- see PLAN_B_COOLDOWN_DAYS
-# usage below). Plan-B-scoped only (Sheet 11 lives in the Beat Planning workbook, not
-# the Plan A config sheet) -- confirmed with the user 2026-08-31.
+# when layered under Model B (Fixed Rotation, see _get_or_assign_zones below). Plan-B-
+# scoped only (Sheet 11 lives in the Beat Planning workbook, not the Plan A config
+# sheet) -- confirmed with the user 2026-08-31.
 PLAN_B_COOLDOWN_DAYS = 2
 
 
@@ -41,7 +46,7 @@ def _cooling_down_dc_ids(se_id: str, plan_date: str, window_days: int = PLAN_B_C
     any of the window_days calendar days immediately before plan_date, across any
     plan_type -- starvation risk is about real visit history, not which model picked it.
     No new schema needed: RouteStop/RoutePlan already carry everything this needs."""
-    plan_date_obj = plan_date if isinstance(plan_date, _date) else datetime.strptime(plan_date, "%Y-%m-%d").date()
+    plan_date_obj = _parse_plan_date(plan_date)
     window_start = plan_date_obj - timedelta(days=window_days)
     return set(
         RouteStop.objects.filter(
@@ -49,6 +54,78 @@ def _cooling_down_dc_ids(se_id: str, plan_date: str, window_days: int = PLAN_B_C
             route_plan__plan_date__gte=window_start, route_plan__plan_date__lt=plan_date_obj,
         ).values_list("dc_id", flat=True)
     )
+
+
+def _get_or_assign_zones(se_id: str, candidates: List[Dict[str, Any]], plan_date) -> Dict[str, int]:
+    """Sheet 11 Model B (Fixed Rotation): {dc_id: zone_index} for this SE, geography-only
+    (no priority_score involved, per the sheet's own "drawn up front from geography/
+    density... not from daily scores"). Bootstraps a fresh assignment the first time this
+    SE needs one, reusing the exact same density-clustering Stage 1 already uses
+    (se_daily_plan_agent._cluster_candidates_by_density, which never actually touches
+    priority_score internally -- confirmed by reading it, not assumed) -- anchor_date is
+    set to plan_date (this call's own day = cycle day 0), then persisted. After that,
+    EXISTING assignments are never reclustered or reshuffled (that would break the whole
+    point of a predictable cadence) -- only a genuinely new dc_id gets added, to whichever
+    existing zone's centroid it's nearest to (using each zone's stored lat/lon, not
+    today's live candidate coordinates, so this works even on a day most of that zone's
+    other members aren't in the current Ranked_Pool at all)."""
+    with_coords = [c for c in candidates if c["dc"].get("Latitude") is not None and c["dc"].get("Longitude") is not None]
+    if not with_coords:
+        return {}
+
+    existing = list(BeatZoneAssignment.objects.filter(se_id=se_id))
+    if not existing:
+        plan_date_obj = _parse_plan_date(plan_date)
+        clusters = agent._cluster_candidates_by_density(with_coords)
+        rows = [
+            BeatZoneAssignment(
+                se_id=se_id, dc_id=c["dc"]["DC_ID"], zone_index=zi, num_zones=len(clusters),
+                anchor_date=plan_date_obj, latitude=c["dc"]["Latitude"], longitude=c["dc"]["Longitude"],
+            )
+            for zi, cluster in enumerate(clusters) for c in cluster
+        ]
+        BeatZoneAssignment.objects.bulk_create(rows, ignore_conflicts=True)
+        return {r.dc_id: r.zone_index for r in rows}
+
+    zone_by_dc = {e.dc_id: e.zone_index for e in existing}
+    unzoned = [c for c in with_coords if c["dc"]["DC_ID"] not in zone_by_dc]
+    if unzoned:
+        # Nearest-centroid assignment: mean lat/lon of each existing zone's members
+        # (already-persisted coordinates), not a fresh reclustering.
+        zone_points: Dict[int, List[Tuple[float, float]]] = {}
+        for e in existing:
+            zone_points.setdefault(e.zone_index, []).append((e.latitude, e.longitude))
+        zone_centroids = {
+            zi: (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+            for zi, pts in zone_points.items()
+        }
+        new_rows = []
+        for c in unzoned:
+            lat, lon = c["dc"]["Latitude"], c["dc"]["Longitude"]
+            nearest_zone = min(
+                zone_centroids,
+                key=lambda zi: agent.circuity_distance_km(lat, lon, *zone_centroids[zi]) or 1e18,
+            )
+            zone_by_dc[c["dc"]["DC_ID"]] = nearest_zone
+            new_rows.append(BeatZoneAssignment(
+                se_id=se_id, dc_id=c["dc"]["DC_ID"], zone_index=nearest_zone,
+                num_zones=existing[0].num_zones, anchor_date=existing[0].anchor_date,
+                latitude=lat, longitude=lon,
+            ))
+        BeatZoneAssignment.objects.bulk_create(new_rows, ignore_conflicts=True)
+
+    return zone_by_dc
+
+
+def _today_zone_index(se_id: str, plan_date) -> Optional[Tuple[int, int]]:
+    """Returns (zone_index_today, num_zones) for this SE, or None if no zone assignment
+    exists yet (caller is responsible for bootstrapping via _get_or_assign_zones first)."""
+    row = BeatZoneAssignment.objects.filter(se_id=se_id).first()
+    if row is None:
+        return None
+    plan_date_obj = _parse_plan_date(plan_date)
+    days_since_anchor = (plan_date_obj - row.anchor_date).days
+    return days_since_anchor % row.num_zones, row.num_zones
 
 
 def generate_route_plans_for_se(
@@ -61,6 +138,7 @@ def generate_route_plans_for_se(
     origin_basis: str,
     constants: "agent.BusinessConstants",
     plan_choice: str = "A",
+    enable_rotation: bool = False,
 ) -> Dict[str, Any]:
     """candidates: the exact shape generate_se_daily_plan()'s route_selector branch
     builds -- [{"row": DailyTaskRow, "dc": dict, "priority_score": float, "matched":
@@ -83,6 +161,15 @@ def generate_route_plans_for_se(
     only ever produces one RoutePlan). Chosen explicitly per call (see
     planning.services.make_routing_plan_asker) -- never auto-selected, since the source
     doc itself states the exact Plan A -> Plan B trigger condition is "not yet confirmed."
+
+    enable_rotation: opt-in, Plan B only (Beat_Planning_Routing_Agent_Cluster_Model.xlsx
+    Sheet 11 Model B, "Fixed Rotation") -- False (default) leaves today's behavior
+    unchanged. When True, this SE's candidates are first restricted to whichever
+    persisted beat-zone (see _get_or_assign_zones/_today_zone_index) is "on" for
+    plan_date, before any of the usual ranking/budget logic runs inside that zone. Off by
+    default since it's a real behavior change (a DC outside today's zone is invisible
+    this cycle even if it would otherwise rank #1) that should only ever be explicitly
+    requested, same posture as plan_choice itself.
 
     Returns {"Tasks": [DailyTaskRow...], "Sequencing_Basis": str, "Travel_Cap_Exceeded":
     bool, "exceptions": [{"source", "reason_code", "detail"}, ...]} -- the first three
@@ -115,6 +202,17 @@ def generate_route_plans_for_se(
     # everything else assigned to this SE. cooled_out is kept separate from pre_dropped
     # so the escape hatch below can still reach into it.
     cooling_down_dc_ids = _cooling_down_dc_ids(se_id, plan_date) if plan_choice == "B" else set()
+    # Sheet 11 Model B (Fixed Rotation, Plan B only, opt-in via enable_rotation):
+    # bootstraps/extends this SE's persisted zone assignment, then restricts candidates
+    # to whichever zone is "on" today -- structural, not reactive (no escape hatch here,
+    # unlike Model A's; an occasionally-thin zone-day is the documented trade-off for a
+    # real coverage guarantee, not a bug to route around).
+    today_zone = None
+    zone_by_dc: Dict[str, int] = {}
+    if enable_rotation and plan_choice == "B":
+        zone_by_dc = _get_or_assign_zones(se_id, candidates, plan_date)
+        zone_info = _today_zone_index(se_id, plan_date)
+        today_zone = zone_info[0] if zone_info else None
     pre_dropped: List[Dict[str, str]] = []
     filtered: List[Dict[str, Any]] = []
     cooled_out: List[Dict[str, Any]] = []
@@ -129,6 +227,9 @@ def generate_route_plans_for_se(
         days_since = dc.get("Days_Since_Last_Visit")
         if days_since is not None and days_since < constants.min_days_since_last_visit:
             pre_dropped.append({"dc_id": dc["DC_ID"], "reason": "Visited_Too_Recently"})
+            continue
+        if today_zone is not None and zone_by_dc.get(dc["DC_ID"]) != today_zone:
+            pre_dropped.append({"dc_id": dc["DC_ID"], "reason": "Rotation_Zone_Not_Today"})
             continue
         if dc["DC_ID"] in cooling_down_dc_ids:
             cooled_out.append(c)

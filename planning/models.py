@@ -496,3 +496,38 @@ class RouteDroppedDC(models.Model):
 
     def __str__(self):
         return f"{self.route_plan_id} dropped {self.dc_id}: {self.reason}"
+
+
+class BeatZoneAssignment(models.Model):
+    """Beat_Planning_Routing_Agent_Cluster_Model.xlsx, Sheet 11 Model B (Fixed Rotation):
+    a stable, persisted DC -> zone_index mapping per SE, drawn from geography/density
+    (not daily scores, per the sheet's own wording) -- the missing piece Repeat-Avoidance
+    (Model A, see planning.routing._cooling_down_dc_ids) can't provide: a DC that never
+    wins the daily ranking has zero cooldown history to block, so it can go permanently
+    unvisited under Model A alone (confirmed live, 2026-09-01 -- several DCs on a real
+    SE's Ranked_Pool were dropped in 5/5 consecutive Plan B runs). Zones are recomputed
+    only when explicitly asked (opt-in --enable-rotation / ?rotation=true), never
+    silently reshuffled, since a changing rotation would break the whole point of a
+    predictable cadence -- see planning.routing._get_or_assign_zone."""
+
+    se_id = models.CharField(max_length=64)
+    dc_id = models.CharField(max_length=32)
+    zone_index = models.IntegerField()
+    # Denormalized (not looked up live from today's candidate pool) so a newly-appearing
+    # DC can be assigned to its nearest EXISTING zone centroid even on a day when most of
+    # that zone's other members aren't in the current Ranked_Pool at all.
+    latitude = models.FloatField()
+    longitude = models.FloatField()
+    # Redundant across every row for the same se_id (by design, not normalized into a
+    # separate config table) -- num_zones/anchor_date together define "which zone is on
+    # today" (zone_index_today = (plan_date - anchor_date).days % num_zones), and every
+    # row needs both to be self-sufficient for that lookup without a second query.
+    num_zones = models.IntegerField()
+    anchor_date = models.DateField()
+    computed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("se_id", "dc_id")]
+
+    def __str__(self):
+        return f"{self.se_id}:{self.dc_id} -> zone {self.zone_index}/{self.num_zones}"

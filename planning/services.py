@@ -992,6 +992,7 @@ def generate_plan_for_scope(
     focus_product_related_products: Optional[List[str]] = None,
     routing_plan_asker: Optional[Callable[[], str]] = None,
     routing_plan_choice: Optional[str] = None,
+    enable_rotation: bool = False,
 ) -> PlanRun:
     """The single entry point every endpoint calls. Resolves scope -> DCs -> SEs, pulls
     live Sources 1/3/4 data scoped to just those DCs/SEs (not a full pipeline run), calls
@@ -1025,7 +1026,11 @@ def generate_plan_for_scope(
     above -- takes priority over routing_plan_asker. When neither is supplied (the
     run_scheduled_tuff/HTTP-API case), defaults to "A" -- Plan A stays the safe,
     unattended default; Plan B only ever runs when a human chose it, explicitly or
-    interactively, never silently."""
+    interactively, never silently.
+
+    enable_rotation: opt-in, Plan B only (Beat_Planning_Routing_Agent_Cluster_Model.xlsx
+    Sheet 11 Model B, "Fixed Rotation") -- see planning.routing.generate_route_plans_for_se's
+    own docstring. False by default, same never-silent posture as routing_plan_choice."""
     started_at = timezone.now()
     plan_date = plan_date or timezone.now().date().isoformat()
     constants = agent.BusinessConstants()
@@ -1601,7 +1606,7 @@ def generate_plan_for_scope(
                 origin, origin_basis = None, "waiting_for_today"
             result = routing.generate_route_plans_for_se(
                 plan_run, str(_uid), _email, plan_date_, candidates, origin, origin_basis, constants_,
-                plan_choice=resolved_routing_plan,
+                plan_choice=resolved_routing_plan, enable_rotation=enable_rotation,
             )
             run_exceptions.extend(result["exceptions"])
             return result
@@ -2114,6 +2119,7 @@ def activate_tuff_scope(
     focus_product_related_products: Optional[List[str]] = None,
     routing_plan_asker: Optional[Callable[[], str]] = None,
     routing_plan_choice: Optional[str] = None,
+    enable_rotation: bool = False,
 ) -> Tuple[PlanRun, Dict[str, Any]]:
     """Agent TUFF's full two-step flow as a single reusable call -- Step 1 (Data
     Normalization, once-per-day, see run_normalization_step) then Step 2
@@ -2134,6 +2140,6 @@ def activate_tuff_scope(
         focus_product_material_id=focus_product_material_id, focus_product_node_id=focus_product_node_id,
         focus_product_years=focus_product_years, focus_product_season_weeks=focus_product_season_weeks,
         focus_product_crop_districts=focus_product_crop_districts, focus_product_related_products=focus_product_related_products,
-        routing_plan_asker=routing_plan_asker, routing_plan_choice=routing_plan_choice,
+        routing_plan_asker=routing_plan_asker, routing_plan_choice=routing_plan_choice, enable_rotation=enable_rotation,
     )
     return plan_run, normalization_info
