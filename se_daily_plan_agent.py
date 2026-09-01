@@ -1493,11 +1493,17 @@ WHERE {_lookback_clause('sap_order_date')}
 # total_outstanding/total_overdue map directly to the old current_os/current_od; the
 # aging split here (current_month_os/os_1_to_90/os_90_plus) is coarser-grained than the
 # old os_60/overdue_in_7_days but from fresh, reliable data instead of stale text fields.
+# is_active filter added 2026-09-01 (explicit user request) -- dc_datamart's own
+# is_active/is_blocked are varchar columns storing literal 'true'/'false' strings, not a
+# real boolean type (confirmed live). Only ~30% of rows (7,197/23,536) are is_active=
+# 'true'; the other 70% were previously pulled indiscriminately. Excluded DCs simply
+# don't get a dc_financials entry (honest-degrade -- Present_Outstanding/Overdue read as
+# None downstream, never fabricated), same pattern as every other optional field here.
 SQL_OUTSTANDING_3D = """
 SELECT sap_partner_id AS dc_id, total_outstanding, total_overdue, current_month_os,
        os_1_to_90, os_90_plus, weighted_avg_repayment_days, last_invoice_date, is_mismatch
 FROM dc_datamart
-WHERE sap_partner_id IS NOT NULL
+WHERE sap_partner_id IS NOT NULL AND is_active = 'true'
 """
 
 # Full 23-column schema confirmed (supersedes the earlier 2-column partial view).
