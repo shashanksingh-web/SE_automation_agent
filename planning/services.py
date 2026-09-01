@@ -1704,11 +1704,12 @@ def generate_plan_for_scope(
                 # ABM/BLOCK/DISTRICT scopes). Unfiltered pull, matched to dc_ids in
                 # Python. Routed through geo_mapping_cache -- an ABM/BLOCK/DISTRICT scoped
                 # run already fetched this exact full-table query in resolve_scope_dcs(),
-                # so this reuses it instead of hitting Redshift a second time. Known
-                # limitation carried over from SQL_GEO_MAPPING_1C's own is_dc=true filter
-                # (a previously-identified bug class in a sibling query, _sql_geo()) -- a
-                # DC missing here just means S1 gets skipped for it, same honest-degrade
-                # path as any other missing source.
+                # so this reuses it instead of hitting Redshift a second time.
+                # SQL_GEO_MAPPING_1C's own is_dc=true filter (the same bug class already
+                # fixed in this file's own _sql_geo() on 2026-08-06) was fixed at the
+                # source on 2026-09-01 -- a DC missing here now only means it's genuinely
+                # inactive (active='true' still applies) or absent from
+                # input_partner_details entirely, not silently is_dc=false.
                 geo_mapping = _resolve_geo_mapping(client, geo_mapping_cache)
                 block_by_dc = {row["dc_id"]: row["block"] for row in geo_mapping if row.get("block")}
                 task_blocks = {block_by_dc[d] for d in task_dc_ids if d in block_by_dc}

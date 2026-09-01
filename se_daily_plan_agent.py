@@ -1404,6 +1404,17 @@ JOIN users_user u ON u.id = p.user_id
 WHERE {_lookback_clause('p.plan_execution_date')}
 """
 
+# is_dc=true dropped from this filter (2026-09-01) -- the exact same filter was already
+# confirmed buggy and removed from the sibling scoped query, planning/services.py's
+# _sql_geo(), on 2026-08-06: several real DCs (per DC_Master/Source 2, already a
+# confirmed DC) carry real lat_2/long_2 here but is_dc=false, so this filter was
+# silently discarding usable geo data -- that fix took a Jaipur test's Distance
+# coverage from 0/30 to 25/30 tasks. This network-wide query has no dc_ids scope to
+# fall back on the way _sql_geo() does, so `active='true'` stays (never identified as
+# part of the same bug), but `is_dc` was never a real signal of DC-ness here to begin
+# with -- Source 2 (DC_RAnk.csv/DC_Master) is what actually decides which
+# sap_partner_ids are real DCs, this table is only ever used for coordinates/roster
+# fields once that's already established.
 SQL_GEO_MAPPING_1C = """
 WITH se_map AS (
     SELECT DISTINCT
@@ -1426,7 +1437,7 @@ SELECT
     ipd.node_name AS node, ipd.block_name AS block, ipd.district_name AS district, ipd.state_name AS state
 FROM input_partner_details ipd
 LEFT JOIN se_map sm ON sm.sales_rep_email = ipd.sales_rep_email
-WHERE ipd.is_dc = true AND ipd.active = 'true'
+WHERE ipd.active = 'true'
 """
 
 SQL_ATTENDANCE_3A = f"""
@@ -2035,17 +2046,36 @@ def normalize_liquidation(raw: Table, exc: Exceptions) -> Table:
 # =====================================================================================
 
 def run_cross_source_checks(dc_master: Table, geo_mapping: Table, exc: Exceptions) -> None:
-    """Geo hierarchy consistency + dual DC-active-status check (Section 5)."""
-    geo_by_dc = {g["DC_ID"]: g for g in geo_mapping if g.get("DC_ID")}
+    """Geo hierarchy consistency + dual DC-active-status check (Section 5).
+
+    FIXED 2026-09-01: geo_mapping is SQL_GEO_MAPPING_1C's raw, unnormalized result table
+    (no normalize_geo_mapping() step exists -- this codebase has never had one), so its
+    keys are the literal lowercase SQL aliases (dc_id/node/latitude/longitude), not the
+    PascalCase DC_ID/Node/Latitude this function had always looked up instead. That
+    meant geo_by_dc was silently an EMPTY dict and every single DC hit the `geo is None`
+    branch, for this function's entire existence -- confirmed live: DC_Master's own
+    normalize_dc_master() sets "Latitude": None with the comment "filled from
+    Geo_Mapping_Normalized (1c) join" (this function), which never actually happened,
+    so every DC_RAnk.csv-sourced DC (not live-supplemented) has had null coordinates in
+    the standalone CLI's own output this whole time. The Django/API path is unaffected
+    -- planning/services.py's _sql_geo() already used the correct lowercase keys
+    independently. Node/Block/District/State cross-checks below were equally dead."""
+    geo_by_dc = {g["dc_id"]: g for g in geo_mapping if g.get("dc_id")}
     for dc in dc_master:
         geo = geo_by_dc.get(dc["DC_ID"])
         if geo is None:
+            # A DC with zero matching geo_mapping row is a genuinely different, worse
+            # case than Geo_Incomplete below (a row that exists but has null lat/long) --
+            # previously silently skipped entirely, giving this DC neither check. Flagged
+            # separately (2026-09-01) so it isn't indistinguishable from "no geo issue at
+            # all" in the Exceptions_Report.
+            exc.flag(dc["DC_ID"], "Source1c", "Geo_Mapping_Missing", "In-scope DC has no matching geo_mapping row at all (not just missing lat/long)")
             continue
-        if dc.get("Node") and geo.get("Node") and str(dc["Node"]).strip().lower() != str(geo["Node"]).strip().lower():
-            exc.flag(dc["DC_ID"], "CrossSource", "Geo_Mapping_Conflict", f"Node '{dc['Node']}' vs canonical '{geo['Node']}' (1c)")
+        if dc.get("Node") and geo.get("node") and str(dc["Node"]).strip().lower() != str(geo["node"]).strip().lower():
+            exc.flag(dc["DC_ID"], "CrossSource", "Geo_Mapping_Conflict", f"Node '{dc['Node']}' vs canonical '{geo['node']}' (1c)")
         else:
             exc.ok("Geo_Hierarchy_Consistency")
-        dc["Latitude"], dc["Longitude"] = geo.get("Latitude"), geo.get("Longitude")
+        dc["Latitude"], dc["Longitude"] = parse_number(geo.get("latitude")), parse_number(geo.get("longitude"))
         if dc["Latitude"] is None or dc["Longitude"] is None:
             exc.flag(dc["DC_ID"], "Source2", "Geo_Incomplete", "In-scope DC missing resolvable lat/long")
         else:
