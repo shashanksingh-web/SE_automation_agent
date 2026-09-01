@@ -258,10 +258,29 @@ def generate_route_plans_for_se(
         # criterion each time -- Sheet 7's "3-Route Comparison Summary" (Route 1
         # Efficiency-Balanced default, Route 2 Score-Maximizing, Route 3
         # Distance-Minimizing), mirroring Plan A's Models 1-3 below.
+        #
+        # Built sequentially, not independently (2026-09-01, explicit user request:
+        # "force 3 different routes even if 2 are worse") -- each later route is told
+        # every earlier route's own stop-set via exclude_stop_sets, so a dominant
+        # Exceptional-DC cluster (which previously made all 3 collapse to the identical
+        # BO Rule route regardless of ranking_criterion, since Steps 2-4 never ran) now
+        # surfaces the next-best genuinely different alternative instead. Route 1
+        # (efficiency, the default) is computed first, unconstrained -- its own pick is
+        # never sacrificed for the sake of Route 2/3's distinctness.
+        exclude_stop_sets: List[Tuple[str, ...]] = []
+
+        def _build_plan_b_route(ranking_criterion: str) -> Dict[str, Any]:
+            result = agent.build_route_cluster_based(
+                filtered, origin, constants, ranking_criterion=ranking_criterion,
+                exclude_stop_sets=list(exclude_stop_sets),
+            )
+            exclude_stop_sets.append(tuple(s["row"].DC_ID for s in result["stops"]))
+            return result
+
         model_results = {
-            RoutePlan.PlanType.CLUSTER_BASED: agent.build_route_cluster_based(filtered, origin, constants, ranking_criterion="efficiency"),
-            RoutePlan.PlanType.CLUSTER_SCOREMAX: agent.build_route_cluster_based(filtered, origin, constants, ranking_criterion="score_max"),
-            RoutePlan.PlanType.CLUSTER_DISTMIN: agent.build_route_cluster_based(filtered, origin, constants, ranking_criterion="distance_min"),
+            RoutePlan.PlanType.CLUSTER_BASED: _build_plan_b_route("efficiency"),
+            RoutePlan.PlanType.CLUSTER_SCOREMAX: _build_plan_b_route("score_max"),
+            RoutePlan.PlanType.CLUSTER_DISTMIN: _build_plan_b_route("distance_min"),
         }
         default_plan_type = RoutePlan.PlanType.CLUSTER_BASED
     else:
