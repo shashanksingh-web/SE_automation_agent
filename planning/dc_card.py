@@ -91,16 +91,6 @@ def _business_area_strength(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     if not current:
         return None
     dc_total = sum(sc["total"] for sc in current)
-    # Guard added 2026-09-01: `current` is filtered only on sub_category being present,
-    # not on total > 0 -- a real sub-category can legitimately net to exactly 0 this
-    # window (offsetting negative/positive billed amounts, kept per this codebase's own
-    # "never net off negatives" rule elsewhere). Previously an unguarded ZeroDivisionError
-    # here, caught only by the per-task try/except in generate_dc_cards_for_plan_run(),
-    # meaning one such DC lost its ENTIRE card (Turnover, Repayment, Scheme sections too),
-    # not just this one section. Degrades the same way `if not current` above already
-    # does -- no meaningful Branded/PL split exists when there's nothing to split.
-    if dc_total <= 0:
-        return None
     branded_total = sum(seg["total"] for sc in current for seg in sc["segments"] if seg["segment"] == "Branded")
     pl_total = dc_total - branded_total
     header = (

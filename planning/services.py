@@ -882,12 +882,6 @@ def _sql_visit_outcomes(dc_ids: List[str], se_user_ids: List[int], plan_date: st
 
 
 def _sql_order_outcomes(dc_ids: List[str], plan_date: str) -> str:
-    # status='processed' added 2026-09-01 -- every other order query in this file
-    # applies this filter (SQL_ORDERS_3D's own note: "the only status that should count
-    # as a real order"), but this one didn't, so a cancelled/draft order could still mark
-    # a task PARTIAL in reconcile_outcomes.py even though no real outcome happened --
-    # directly inflates ObjectiveCompletionStats.completion_rate_30d, which feeds BO1/
-    # BO3's adaptive weight_multiplier.
     return f"""
     SELECT dc_id, amount_total, created_at
     FROM (
@@ -895,7 +889,7 @@ def _sql_order_outcomes(dc_ids: List[str], plan_date: str) -> str:
                ROW_NUMBER() OVER (PARTITION BY cc.partner_id ORDER BY o.amount_total DESC) AS rn
         FROM sale_orderrequest o
         JOIN customer_management_customer cc ON cc.id = o.partner_id
-        WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND o.status = 'processed'
+        WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
           AND o.created_at >= DATE '{plan_date}' AND o.created_at <= DATE '{plan_date}' + INTERVAL '2 days'
     ) ranked
     WHERE rn = 1
@@ -1058,7 +1052,7 @@ def generate_plan_for_scope(
 
     config_drift_exc = agent.Exceptions(agent.utc_now_iso())
     agent.check_business_constants_against_config(constants, load_config_rows(), config_drift_exc)
-    run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in config_drift_exc.rows)
+    run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in config_drift_exc.rows)
 
     if not se_emails:
         client.close()
@@ -1139,7 +1133,7 @@ def generate_plan_for_scope(
 
         fin_exc = agent.Exceptions(agent.utc_now_iso())
         _, dc_financials = agent.normalize_sales_transactions([], outstanding_raw, orders_raw, fin_exc)
-        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in fin_exc.rows)
+        run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in fin_exc.rows)
 
         # Feedback loop, Tier 2 (adaptive weighting) -- dc_id -> owning SE's user_id, so
         # a DC's BO score can be weighted by ITS SE's trailing-30d completion rate for
@@ -1471,7 +1465,7 @@ def generate_plan_for_scope(
             _, last_payment_by_dc = agent.normalize_payments(payments_raw, pay_exc)
         except Exception as e:
             run_exceptions.append({"source": "payments_paymenttransaction", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
-        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in pay_exc.rows)
+        run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in pay_exc.rows)
 
         club_exc = agent.Exceptions(agent.utc_now_iso())
         try:
@@ -1481,7 +1475,7 @@ def generate_plan_for_scope(
             dc_club_by_id = {row["DC_ID"]: row for row in club_rows}
         except Exception as e:
             run_exceptions.append({"source": "dc_mapping_club_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
-        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in club_exc.rows)
+        run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in club_exc.rows)
 
         try:
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_punch_in(uids, plan_date)):
@@ -1515,7 +1509,7 @@ def generate_plan_for_scope(
 
     excl_exc = agent.Exceptions(agent.utc_now_iso())
     agent.apply_dc_exclusion_rules(scoped_dcs, excl_exc, constants, last_visit_by_dc, plan_date)
-    run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in excl_exc.rows)
+    run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in excl_exc.rows)
     for dc in scoped_dcs:
         lat_lon = geo_by_dc.get(dc["DC_ID"])
         dc["Latitude"], dc["Longitude"] = lat_lon if lat_lon else (None, None)
@@ -1710,12 +1704,11 @@ def generate_plan_for_scope(
                 # ABM/BLOCK/DISTRICT scopes). Unfiltered pull, matched to dc_ids in
                 # Python. Routed through geo_mapping_cache -- an ABM/BLOCK/DISTRICT scoped
                 # run already fetched this exact full-table query in resolve_scope_dcs(),
-                # so this reuses it instead of hitting Redshift a second time.
-                # SQL_GEO_MAPPING_1C's own is_dc=true filter (the same bug class already
-                # fixed in this file's own _sql_geo() on 2026-08-06) was fixed at the
-                # source on 2026-09-01 -- a DC missing here now only means it's genuinely
-                # inactive (active='true' still applies) or absent from
-                # input_partner_details entirely, not silently is_dc=false.
+                # so this reuses it instead of hitting Redshift a second time. Known
+                # limitation carried over from SQL_GEO_MAPPING_1C's own is_dc=true filter
+                # (a previously-identified bug class in a sibling query, _sql_geo()) -- a
+                # DC missing here just means S1 gets skipped for it, same honest-degrade
+                # path as any other missing source.
                 geo_mapping = _resolve_geo_mapping(client, geo_mapping_cache)
                 block_by_dc = {row["dc_id"]: row["block"] for row in geo_mapping if row.get("block")}
                 task_blocks = {block_by_dc[d] for d in task_dc_ids if d in block_by_dc}
@@ -1971,7 +1964,7 @@ def generate_plan_for_scope(
                 from .pitching import generate_pitches_for_plan_run
                 _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc)
                 run_exceptions.extend({
-                    "record_id": f["dc_id"], "source": "PitchingAgent", "reason_code": "Pitch_Generation_Failed",
+                    "source": "PitchingAgent", "reason_code": "Pitch_Generation_Failed",
                     "detail": f"DC {f['dc_id']}: {f['detail']}",
                 } for f in pitch_failures)
 
@@ -1983,7 +1976,7 @@ def generate_plan_for_scope(
                     from .dc_card import generate_dc_cards_for_plan_run
                     _, card_failures = generate_dc_cards_for_plan_run(plan_run, extra_data_by_dc)
                     run_exceptions.extend({
-                        "record_id": f["dc_id"], "source": "DCCardAgent", "reason_code": "DC_Card_Generation_Failed",
+                        "source": "DCCardAgent", "reason_code": "DC_Card_Generation_Failed",
                         "detail": f"DC {f['dc_id']}: {f['detail']}",
                     } for f in card_failures)
                 except Exception as e:
