@@ -1496,14 +1496,18 @@ WHERE {_lookback_clause('sap_order_date')}
 # is_active filter added 2026-09-01 (explicit user request) -- dc_datamart's own
 # is_active/is_blocked are varchar columns storing literal 'true'/'false' strings, not a
 # real boolean type (confirmed live). Only ~30% of rows (7,197/23,536) are is_active=
-# 'true'; the other 70% were previously pulled indiscriminately. Excluded DCs simply
-# don't get a dc_financials entry (honest-degrade -- Present_Outstanding/Overdue read as
-# None downstream, never fabricated), same pattern as every other optional field here.
+# 'true'. is_active is pulled as a column (not filtered in SQL) so
+# normalize_sales_transactions() can flag DC_Datamart_Inactive_Outstanding_Unavailable
+# for each excluded DC instead of silently omitting it -- this codebase's own
+# convention (every data gap gets a real Exceptions_Report entry, never just a silent
+# blank field), confirmed after a 2026-09-01 review found ~22% of currently-eligible
+# (Rank<=6000) DCs lose Outstanding/Overdue coverage from this filter.
 SQL_OUTSTANDING_3D = """
 SELECT sap_partner_id AS dc_id, total_outstanding, total_overdue, current_month_os,
-       os_1_to_90, os_90_plus, weighted_avg_repayment_days, last_invoice_date, is_mismatch
+       os_1_to_90, os_90_plus, weighted_avg_repayment_days, last_invoice_date, is_mismatch,
+       is_active
 FROM dc_datamart
-WHERE sap_partner_id IS NOT NULL AND is_active = 'true'
+WHERE sap_partner_id IS NOT NULL
 """
 
 # Full 23-column schema confirmed (supersedes the earlier 2-column partial view).
@@ -1785,6 +1789,18 @@ def normalize_sales_transactions(
     for row in outstanding_raw:
         dc_id = normalize_id(row.get("dc_id"))
         if not dc_id:
+            continue
+        # is_active filter (2026-09-01): a DC not marked active in dc_datamart gets no
+        # dc_financials entry -- flagged explicitly rather than just silently omitted, so
+        # the ~22% of otherwise-eligible (Rank<=6000) DCs this affects show up in
+        # Exceptions_Report instead of just a blank Present_Outstanding/Overdue column
+        # with no explanation.
+        if str(row.get("is_active")).lower() != "true":
+            exc.flag(
+                dc_id, "dc_datamart", "DC_Datamart_Inactive_Outstanding_Unavailable",
+                f"DC {dc_id}: dc_datamart marks this DC is_active={row.get('is_active')!r} -- "
+                f"Present_Outstanding/Overdue/aging data withheld, not fabricated",
+            )
             continue
         fin = dc_financials.setdefault(dc_id, {})
         fin["Current_Outstanding"] = parse_number(row.get("total_outstanding"))

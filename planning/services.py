@@ -136,13 +136,16 @@ def _sql_outstanding(dc_ids: List[str]) -> str:
     # is confirmed absent from every database on this cluster -- see
     # se_daily_plan_agent.SQL_OUTSTANDING_3D for the full finding. Already keyed by
     # sap_partner_id directly, no customer_management_customer bridge needed.
-    # is_active filter mirrors SQL_OUTSTANDING_3D's own 2026-09-01 addition -- keep the
-    # two in sync, same as every other scoped/network-wide query pair in this file.
+    # is_active mirrors SQL_OUTSTANDING_3D's own 2026-09-01 addition -- pulled as a
+    # column, not filtered in SQL, so agent.normalize_sales_transactions() (shared by
+    # both this scoped path and the network-wide one) can flag
+    # DC_Datamart_Inactive_Outstanding_Unavailable per DC instead of silently omitting it.
     return f"""
     SELECT sap_partner_id AS dc_id, total_outstanding, total_overdue, current_month_os,
-           os_1_to_90, os_90_plus, weighted_avg_repayment_days, last_invoice_date, is_mismatch
+           os_1_to_90, os_90_plus, weighted_avg_repayment_days, last_invoice_date, is_mismatch,
+           is_active
     FROM dc_datamart
-    WHERE sap_partner_id IN ({_sql_list(dc_ids)}) AND is_active = 'true'
+    WHERE sap_partner_id IN ({_sql_list(dc_ids)})
     """
 
 
