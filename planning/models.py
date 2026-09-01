@@ -517,7 +517,11 @@ class BeatZoneAssignment(models.Model):
     reshuffle the very cadence this table exists to make predictable -- worth a manual
     reset (delete this SE's rows) if that drift becomes a real problem."""
 
-    se_id = models.CharField(max_length=64)
+    # Indexed -- every query filters by se_id (see _get_or_assign_zones/_today_zone_index),
+    # some (e.g. _today_zone_index's .first()) never touch dc_id at all, so the
+    # unique_together(se_id, dc_id) index's leftmost-prefix support isn't guaranteed to
+    # get chosen for every one of them; an explicit single-column index removes the doubt.
+    se_id = models.CharField(max_length=64, db_index=True)
     dc_id = models.CharField(max_length=32)
     zone_index = models.IntegerField()
     # Denormalized (not looked up live from today's candidate pool) so a newly-appearing
