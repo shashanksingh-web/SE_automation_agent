@@ -508,7 +508,14 @@ class BeatZoneAssignment(models.Model):
     SE's Ranked_Pool were dropped in 5/5 consecutive Plan B runs). Zones are recomputed
     only when explicitly asked (opt-in --enable-rotation / ?rotation=true), never
     silently reshuffled, since a changing rotation would break the whole point of a
-    predictable cadence -- see planning.routing._get_or_assign_zone."""
+    predictable cadence -- see planning.routing._get_or_assign_zones. Known limitation:
+    zones are never re-clustered after bootstrap, only ever extended (a new DC joins its
+    nearest EXISTING zone) -- if an SE's DC portfolio drifts substantially over time
+    (new territory added far from every existing zone), that new territory gets folded
+    into whichever zone is least-far rather than forming its own, and zone geography can
+    gradually get less coherent. Not fixed automatically since a silent re-cluster would
+    reshuffle the very cadence this table exists to make predictable -- worth a manual
+    reset (delete this SE's rows) if that drift becomes a real problem."""
 
     se_id = models.CharField(max_length=64)
     dc_id = models.CharField(max_length=32)

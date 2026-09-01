@@ -85,7 +85,12 @@ def _get_or_assign_zones(se_id: str, candidates: List[Dict[str, Any]], plan_date
             for zi, cluster in enumerate(clusters) for c in cluster
         ]
         BeatZoneAssignment.objects.bulk_create(rows, ignore_conflicts=True)
-        return {r.dc_id: r.zone_index for r in rows}
+        # Re-read rather than trust `rows`: if a genuinely concurrent call bootstrapped
+        # this se_id first, ignore_conflicts=True silently drops OUR rows, and `rows`
+        # would then describe a clustering that was never actually persisted -- always
+        # return what the DB actually has, so this call's own filtering can't disagree
+        # with what a concurrent call already committed.
+        return {e.dc_id: e.zone_index for e in BeatZoneAssignment.objects.filter(se_id=se_id)}
 
     zone_by_dc = {e.dc_id: e.zone_index for e in existing}
     unzoned = [c for c in with_coords if c["dc"]["DC_ID"] not in zone_by_dc]
@@ -113,6 +118,9 @@ def _get_or_assign_zones(se_id: str, candidates: List[Dict[str, Any]], plan_date
                 latitude=lat, longitude=lon,
             ))
         BeatZoneAssignment.objects.bulk_create(new_rows, ignore_conflicts=True)
+        # Same re-read-don't-trust-local-state reasoning as the bootstrap branch above --
+        # a concurrent call could have already zoned one of these dc_ids differently.
+        return {e.dc_id: e.zone_index for e in BeatZoneAssignment.objects.filter(se_id=se_id)}
 
     return zone_by_dc
 
