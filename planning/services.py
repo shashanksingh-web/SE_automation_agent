@@ -1058,7 +1058,7 @@ def generate_plan_for_scope(
 
     config_drift_exc = agent.Exceptions(agent.utc_now_iso())
     agent.check_business_constants_against_config(constants, load_config_rows(), config_drift_exc)
-    run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in config_drift_exc.rows)
+    run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in config_drift_exc.rows)
 
     if not se_emails:
         client.close()
@@ -1139,7 +1139,7 @@ def generate_plan_for_scope(
 
         fin_exc = agent.Exceptions(agent.utc_now_iso())
         _, dc_financials = agent.normalize_sales_transactions([], outstanding_raw, orders_raw, fin_exc)
-        run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in fin_exc.rows)
+        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in fin_exc.rows)
 
         # Feedback loop, Tier 2 (adaptive weighting) -- dc_id -> owning SE's user_id, so
         # a DC's BO score can be weighted by ITS SE's trailing-30d completion rate for
@@ -1471,7 +1471,7 @@ def generate_plan_for_scope(
             _, last_payment_by_dc = agent.normalize_payments(payments_raw, pay_exc)
         except Exception as e:
             run_exceptions.append({"source": "payments_paymenttransaction", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
-        run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in pay_exc.rows)
+        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in pay_exc.rows)
 
         club_exc = agent.Exceptions(agent.utc_now_iso())
         try:
@@ -1481,7 +1481,7 @@ def generate_plan_for_scope(
             dc_club_by_id = {row["DC_ID"]: row for row in club_rows}
         except Exception as e:
             run_exceptions.append({"source": "dc_mapping_club_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
-        run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in club_exc.rows)
+        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in club_exc.rows)
 
         try:
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_punch_in(uids, plan_date)):
@@ -1515,7 +1515,7 @@ def generate_plan_for_scope(
 
     excl_exc = agent.Exceptions(agent.utc_now_iso())
     agent.apply_dc_exclusion_rules(scoped_dcs, excl_exc, constants, last_visit_by_dc, plan_date)
-    run_exceptions.extend({"source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in excl_exc.rows)
+    run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in excl_exc.rows)
     for dc in scoped_dcs:
         lat_lon = geo_by_dc.get(dc["DC_ID"])
         dc["Latitude"], dc["Longitude"] = lat_lon if lat_lon else (None, None)
@@ -1971,7 +1971,7 @@ def generate_plan_for_scope(
                 from .pitching import generate_pitches_for_plan_run
                 _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc)
                 run_exceptions.extend({
-                    "source": "PitchingAgent", "reason_code": "Pitch_Generation_Failed",
+                    "record_id": f["dc_id"], "source": "PitchingAgent", "reason_code": "Pitch_Generation_Failed",
                     "detail": f"DC {f['dc_id']}: {f['detail']}",
                 } for f in pitch_failures)
 
@@ -1983,7 +1983,7 @@ def generate_plan_for_scope(
                     from .dc_card import generate_dc_cards_for_plan_run
                     _, card_failures = generate_dc_cards_for_plan_run(plan_run, extra_data_by_dc)
                     run_exceptions.extend({
-                        "source": "DCCardAgent", "reason_code": "DC_Card_Generation_Failed",
+                        "record_id": f["dc_id"], "source": "DCCardAgent", "reason_code": "DC_Card_Generation_Failed",
                         "detail": f"DC {f['dc_id']}: {f['detail']}",
                     } for f in card_failures)
                 except Exception as e:
