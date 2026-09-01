@@ -2376,3 +2376,266 @@
 2026-08-25 06:32:37,419 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #971 (NODE=Shahjahanpur @ 2026-08-25): 35 exceptions across 62 DCs (56%) -- exceeds 10% threshold.
 2026-08-25 06:33:11,232 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #972 (NODE=Sri Ganganagar @ 2026-08-25): 161 exceptions across 184 DCs (88%) -- exceeds 10% threshold.
 2026-08-25 06:33:33,825 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #973 (NODE=Vaishali @ 2026-08-25): 253 exceptions across 314 DCs (81%) -- exceeds 10% threshold.
+2026-08-25 06:45:21,228 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 06:46:37,110 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #974 (STATE=Bihar @ 2026-08-25): 3756 exceptions across 5249 DCs (72%) -- exceeds 10% threshold.
+2026-08-25 06:46:51,365 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 06:57:43,168 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 07:04:47,972 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #975 (STATE=Bihar @ 2026-08-25): 3757 exceptions across 5249 DCs (72%) -- exceeds 10% threshold.
+2026-08-25 07:46:55,297 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 07:52:35,138 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 10:31:10,127 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-25 10:35:57,482 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #976 (STATE=Bihar @ 2026-08-26): 3787 exceptions across 5249 DCs (72%) -- exceeds 10% threshold.
+2026-08-26 06:49:30,668 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #977 (NODE=Jaipur @ 2026-08-27): 488 exceptions across 619 DCs (79%) -- exceeds 10% threshold.
+2026-08-26 07:12:01,547 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #978 (SE=ravi.roy@agrevolution.in @ 2026-08-26): 18 exceptions across 38 DCs (47%) -- exceeds 10% threshold.
+2026-08-27 05:08:49,934 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-27 05:08:49,936 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-27 05:08:50,036 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-27 05:08:50,396 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-27 05:08:50,396 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-27 05:08:53,619 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 107917 rows in 3.2s
+2026-08-27 05:08:53,619 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-27 05:08:55,680 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12883 rows in 2.1s
+2026-08-27 05:08:55,680 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-27 05:08:56,486 INFO se_daily_plan_agent:   4/6 Attendance_3a: 31339 rows in 0.8s
+2026-08-27 05:08:56,486 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-27 05:09:42,957 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 107917 rows in 46.5s
+2026-08-27 05:09:42,958 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-27 05:09:50,939 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 81052 rows in 8.0s
+2026-08-27 05:09:50,940 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-27 05:09:52,485 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23261 rows in 1.5s
+2026-08-27 05:09:52,485 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-27 05:09:59,915 INFO se_daily_plan_agent:   4/6 Orders_3d: 41029 rows in 7.4s
+2026-08-27 05:09:59,916 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-27 05:10:06,557 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 71455 rows in 6.6s
+2026-08-27 05:10:06,558 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-27 05:10:11,526 INFO se_daily_plan_agent:   4/6 Payments_3f: 48818 rows in 5.0s
+2026-08-27 05:10:11,527 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-27 05:10:13,001 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 1.5s
+2026-08-27 05:10:13,002 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-27 05:10:13,133 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.1s
+2026-08-27 05:10:13,133 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-08-27 05:10:16,556 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7475 rows in 3.4s
+2026-08-27 05:10:16,556 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-27 05:10:18,794 INFO se_daily_plan_agent:   Supplemented 9074 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-08-27 05:10:18,797 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-27 05:10:21,908 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-27 05:10:38,548 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-27 05:11:01,244 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #979 (ABM=E02190267 @ 2026-08-27): 162 exceptions across 254 DCs (64%) -- exceeds 10% threshold.
+2026-08-27 05:15:04,755 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #980 (SE=praveen.rai@agrevolution.in @ 2026-08-27): 66 exceptions across 92 DCs (72%) -- exceeds 10% threshold.
+2026-08-27 18:43:47,444 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #981 (SE=sarvoday.gautam@agrevolution.in @ 2026-08-27): 41 exceptions across 82 DCs (50%) -- exceeds 10% threshold.
+2026-08-27 18:44:15,002 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #982 (SE=sarvoday.gautam@agrevolution.in @ 2026-08-27): 41 exceptions across 82 DCs (50%) -- exceeds 10% threshold.
+2026-08-27 18:46:54,415 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #986 (NODE=Chhindwara @ 2026-08-27): 267 exceptions across 344 DCs (78%) -- exceeds 10% threshold.
+2026-08-27 18:47:31,550 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #987 (NODE=Chhindwara @ 2026-08-27): 267 exceptions across 344 DCs (78%) -- exceeds 10% threshold.
+2026-08-27 18:48:11,207 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #988 (SE=praveen.rai@agrevolution.in @ 2026-08-27): 65 exceptions across 92 DCs (71%) -- exceeds 10% threshold.
+2026-08-27 18:50:22,971 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #989 (NODE=Jaipur @ 2026-08-29): 490 exceptions across 619 DCs (79%) -- exceeds 10% threshold.
+2026-08-27 18:52:08,828 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #990 (NODE=Jaipur @ 2026-08-29): 484 exceptions across 619 DCs (78%) -- exceeds 10% threshold.
+2026-08-31 06:56:27,385 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 07:00:33,768 WARNING django.request: Not Found: /
+2026-08-31 07:36:10,473 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #991 (SE=brajb@agrevolution.in @ 2026-08-31): 172 exceptions across 180 DCs (96%) -- exceeds 10% threshold.
+2026-08-31 07:36:46,103 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #992 (SE=pravin.kumar@agrevolution.in @ 2026-08-31): 17 exceptions across 15 DCs (113%) -- exceeds 10% threshold.
+2026-08-31 07:37:47,440 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #993 (SE=susheel.kumar@agrevolution.in @ 2026-08-31): 19 exceptions across 38 DCs (50%) -- exceeds 10% threshold.
+2026-08-31 07:38:04,295 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #994 (SE=nitesh.tiwari@agrevolution.in @ 2026-08-31): 92 exceptions across 88 DCs (105%) -- exceeds 10% threshold.
+2026-08-31 07:38:26,540 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #995 (SE=bhartenduk@agrevolution.in @ 2026-08-31): 152 exceptions across 149 DCs (102%) -- exceeds 10% threshold.
+2026-08-31 07:53:18,598 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #996 (SE=susheel.kumar@agrevolution.in @ 2026-08-31): 17 exceptions across 38 DCs (45%) -- exceeds 10% threshold.
+2026-08-31 07:56:38,743 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #997 (SE=susheel.kumar@agrevolution.in @ 2026-08-31): 19 exceptions across 38 DCs (50%) -- exceeds 10% threshold.
+2026-08-31 07:57:09,094 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #998 (SE=pravin.kumar@agrevolution.in @ 2026-08-31): 17 exceptions across 15 DCs (113%) -- exceeds 10% threshold.
+2026-08-31 07:57:09,158 WARNING django.request: Unprocessable Content: /api/planning/tuff/SE/pravin.kumar@agrevolution.in/
+2026-08-31 08:07:30,298 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 08:08:17,039 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #999 (SE=abdul.munsif@agrevolution.in @ 2026-08-31): 47 exceptions across 61 DCs (77%) -- exceeds 10% threshold.
+2026-08-31 08:09:05,903 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-31 08:09:06,373 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 08:09:16,709 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-31 08:09:17,043 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 08:09:24,936 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-31 08:09:25,549 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 08:09:29,163 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-31 08:09:29,601 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 08:09:37,913 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-31 08:09:38,242 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 08:09:49,675 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-08-31 08:09:50,096 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 08:10:07,918 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-08-31 08:10:07,921 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-08-31 08:10:08,060 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-08-31 08:10:08,622 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-08-31 08:10:08,622 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-08-31 08:10:24,524 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1000 (SE=abdul.munsif@agrevolution.in @ 2026-08-31): 47 exceptions across 61 DCs (77%) -- exceeds 10% threshold.
+2026-08-31 08:10:28,353 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 106310 rows in 19.7s
+2026-08-31 08:10:28,353 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-08-31 08:10:32,197 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12885 rows in 3.8s
+2026-08-31 08:10:32,198 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-08-31 08:10:38,631 INFO se_daily_plan_agent:   4/6 Attendance_3a: 30718 rows in 6.4s
+2026-08-31 08:10:38,631 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-08-31 08:11:50,711 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1001 (SE=susheel.kumar@agrevolution.in @ 2026-08-31): 19 exceptions across 38 DCs (50%) -- exceeds 10% threshold.
+2026-08-31 08:12:05,364 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 106310 rows in 86.7s
+2026-08-31 08:12:05,364 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-08-31 08:12:16,566 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 77307 rows in 11.2s
+2026-08-31 08:12:16,566 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-08-31 08:12:18,343 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23327 rows in 1.8s
+2026-08-31 08:12:18,343 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-08-31 08:12:21,903 INFO se_daily_plan_agent:   4/6 Orders_3d: 38819 rows in 3.6s
+2026-08-31 08:12:21,904 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-08-31 08:12:23,484 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1002 (SE=abdul.munsif@agrevolution.in @ 2026-08-31): 46 exceptions across 61 DCs (75%) -- exceeds 10% threshold.
+2026-08-31 08:12:28,266 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 66887 rows in 6.4s
+2026-08-31 08:12:28,266 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-08-31 08:12:31,699 INFO se_daily_plan_agent:   4/6 Payments_3f: 47347 rows in 3.4s
+2026-08-31 08:12:31,699 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-08-31 08:12:34,182 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 2.5s
+2026-08-31 08:12:34,182 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-08-31 08:12:34,212 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.0s
+2026-08-31 08:12:34,212 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-08-31 08:12:41,274 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7491 rows in 7.1s
+2026-08-31 08:12:41,275 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-08-31 08:12:43,923 INFO se_daily_plan_agent:   Supplemented 9087 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-08-31 08:12:43,926 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-08-31 08:12:48,456 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-08-31 08:13:08,011 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-08-31 08:13:28,943 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1003 (SE=abdul.munsif@agrevolution.in @ 2026-08-31): 47 exceptions across 61 DCs (77%) -- exceeds 10% threshold.
+2026-08-31 09:49:19,483 WARNING se_daily_plan_agent: Redshift connection to dev died mid-run
+2026-08-31 09:49:19,483 WARNING se_daily_plan_agent: Redshift query on dev failed (attempt 1), retrying in 2s: could not receive data from server: Operation timed out
+SSL SYSCALL error: Operation timed out
+
+2026-08-31 09:49:27,737 WARNING se_daily_plan_agent: Redshift connection to input_backend_db died mid-run
+2026-08-31 09:49:27,737 WARNING se_daily_plan_agent: Redshift query on input_backend_db failed (attempt 1), retrying in 2s: could not receive data from server: Operation timed out
+SSL SYSCALL error: Operation timed out
+
+2026-08-31 09:49:36,694 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1004 (SE=abdul.munsif@agrevolution.in @ 2026-08-31): 46 exceptions across 61 DCs (75%) -- exceeds 10% threshold.
+2026-08-31 09:50:46,749 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1005 (ABM=E02211681 @ 2026-09-01): 60 exceptions across 88 DCs (68%) -- exceeds 10% threshold.
+2026-08-31 10:30:13,387 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-31 10:30:14,239 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 10:30:24,636 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-31 10:30:25,029 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 10:30:33,352 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-31 10:30:33,746 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 10:30:39,016 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-08-31 10:30:39,334 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 10:32:28,807 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1006 (SE=susheel.kumar@agrevolution.in @ 2026-08-31): 19 exceptions across 38 DCs (50%) -- exceeds 10% threshold.
+2026-08-31 10:34:03,947 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-31 10:34:04,294 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 10:34:18,702 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-31 10:34:19,030 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-08-31 10:35:39,553 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1007 (SE=susheel.kumar@agrevolution.in @ 2026-08-31): 19 exceptions across 38 DCs (50%) -- exceeds 10% threshold.
+2026-08-31 10:38:59,634 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-08-31 10:38:59,967 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:39:15,063 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-09-01 04:39:15,481 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:39:36,957 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-09-01 04:39:37,363 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:40:16,087 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-01 04:40:16,400 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:40:35,843 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-01 04:40:36,155 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:40:56,609 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-01 04:40:56,919 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:41:04,186 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-01 04:41:04,497 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:41:16,857 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-01 04:41:17,171 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:44:18,346 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-01 04:44:18,751 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:44:25,035 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-01 04:44:25,352 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:44:32,683 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-01 04:44:32,989 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:44:39,267 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-01 04:44:39,578 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:44:42,824 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-01 04:44:43,143 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:45:18,991 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-09-01 04:45:19,325 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:45:31,729 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-09-01 04:45:32,054 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 04:45:50,962 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-09-01 04:45:50,963 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-09-01 04:45:51,063 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-09-01 04:45:51,426 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-09-01 04:45:51,426 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-09-01 04:45:54,333 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 105697 rows in 2.9s
+2026-09-01 04:45:54,333 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-09-01 04:45:55,887 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12885 rows in 1.6s
+2026-09-01 04:45:55,887 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-09-01 04:45:56,979 INFO se_daily_plan_agent:   4/6 Attendance_3a: 30604 rows in 1.1s
+2026-09-01 04:45:56,980 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-09-01 04:46:28,440 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 105697 rows in 31.5s
+2026-09-01 04:46:28,440 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-09-01 04:46:35,253 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 78168 rows in 6.8s
+2026-09-01 04:46:35,253 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-09-01 04:46:35,912 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23327 rows in 0.7s
+2026-09-01 04:46:35,912 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-09-01 04:46:40,102 INFO se_daily_plan_agent:   4/6 Orders_3d: 38945 rows in 4.2s
+2026-09-01 04:46:40,102 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-09-01 04:46:44,089 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 68279 rows in 4.0s
+2026-09-01 04:46:44,089 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-09-01 04:46:47,058 INFO se_daily_plan_agent:   4/6 Payments_3f: 47721 rows in 3.0s
+2026-09-01 04:46:47,059 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-09-01 04:46:47,420 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 0.4s
+2026-09-01 04:46:47,420 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-09-01 04:46:47,650 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.2s
+2026-09-01 04:46:47,650 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-09-01 04:46:52,252 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7508 rows in 4.6s
+2026-09-01 04:46:52,252 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-09-01 04:46:52,837 INFO se_daily_plan_agent:   Supplemented 9088 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-09-01 04:46:52,840 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-09-01 04:46:55,816 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-09-01 04:47:19,314 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-09-01 04:47:35,656 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1008 (SE=susheel.kumar@agrevolution.in @ 2026-09-01): 20 exceptions across 38 DCs (53%) -- exceeds 10% threshold.
+2026-09-01 04:47:57,006 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1009 (SE=susheel.kumar@agrevolution.in @ 2026-09-01): 20 exceptions across 38 DCs (53%) -- exceeds 10% threshold.
+2026-09-01 05:12:26,574 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-01 05:12:27,164 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:12:33,457 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-01 05:12:33,946 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:12:40,220 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-09-01 05:12:40,538 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:14:12,064 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-09-01 05:14:12,397 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:15:33,064 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1010 (SE=susheel.kumar@agrevolution.in @ 2026-09-01): 20 exceptions across 38 DCs (53%) -- exceeds 10% threshold.
+2026-09-01 05:34:30,553 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-09-01 05:34:30,555 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-09-01 05:34:30,668 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-09-01 05:34:31,033 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-09-01 05:34:31,033 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-09-01 05:34:32,660 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1011 (SE=abdul.munsif@agrevolution.in @ 2026-09-01): 44 exceptions across 61 DCs (72%) -- exceeds 10% threshold.
+2026-09-01 05:34:34,925 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 105833 rows in 3.9s
+2026-09-01 05:34:34,926 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-09-01 05:34:38,193 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12885 rows in 3.3s
+2026-09-01 05:34:38,193 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-09-01 05:34:39,607 INFO se_daily_plan_agent:   4/6 Attendance_3a: 30636 rows in 1.4s
+2026-09-01 05:34:39,607 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-09-01 05:35:13,237 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 105833 rows in 33.6s
+2026-09-01 05:35:13,238 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-09-01 05:35:30,124 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 78197 rows in 16.9s
+2026-09-01 05:35:30,125 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-09-01 05:35:31,434 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23327 rows in 1.3s
+2026-09-01 05:35:31,434 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-09-01 05:35:35,540 INFO se_daily_plan_agent:   4/6 Orders_3d: 38961 rows in 4.1s
+2026-09-01 05:35:35,541 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-09-01 05:35:39,727 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 68283 rows in 4.2s
+2026-09-01 05:35:39,727 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-09-01 05:35:41,201 INFO se_daily_plan_agent:   4/6 Payments_3f: 47731 rows in 1.5s
+2026-09-01 05:35:41,201 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-09-01 05:35:41,684 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 0.5s
+2026-09-01 05:35:41,685 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-09-01 05:35:41,787 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.1s
+2026-09-01 05:35:41,787 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-09-01 05:35:43,700 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7508 rows in 1.9s
+2026-09-01 05:35:43,701 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-09-01 05:35:44,814 INFO se_daily_plan_agent:   Supplemented 9088 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-09-01 05:35:44,816 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-09-01 05:35:48,644 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-09-01 05:36:08,564 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-09-01 05:36:20,162 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1012 (SE=abdul.munsif@agrevolution.in @ 2026-09-01): 44 exceptions across 61 DCs (72%) -- exceeds 10% threshold.
+2026-09-01 05:36:25,414 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1013 (SE=abdul.munsif@agrevolution.in @ 2026-09-01): 44 exceptions across 61 DCs (72%) -- exceeds 10% threshold.
+2026-09-01 05:46:43,591 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1014 (ABM=E02190267 @ 2026-09-01): 171 exceptions across 254 DCs (67%) -- exceeds 10% threshold.
+2026-09-01 05:48:58,380 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1015 (SE=susheel.kumar@agrevolution.in @ 2026-09-01): 20 exceptions across 38 DCs (53%) -- exceeds 10% threshold.
+2026-09-01 05:55:31,347 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-01 05:55:32,143 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:55:40,461 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-01 05:55:40,780 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:56:09,368 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-01 05:56:09,681 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:56:28,139 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-01 05:56:28,464 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:56:54,031 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-01 05:56:54,341 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-01 05:58:40,341 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1016 (SE=susheel.kumar@agrevolution.in @ 2026-09-01): 18 exceptions across 38 DCs (47%) -- exceeds 10% threshold.
+2026-09-01 06:00:58,344 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1017 (SE=susheel.kumar@agrevolution.in @ 2026-09-01): 18 exceptions across 38 DCs (47%) -- exceeds 10% threshold.
