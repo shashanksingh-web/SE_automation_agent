@@ -882,6 +882,12 @@ def _sql_visit_outcomes(dc_ids: List[str], se_user_ids: List[int], plan_date: st
 
 
 def _sql_order_outcomes(dc_ids: List[str], plan_date: str) -> str:
+    # status='processed' added 2026-09-01 -- every other order query in this file
+    # applies this filter (SQL_ORDERS_3D's own note: "the only status that should count
+    # as a real order"), but this one didn't, so a cancelled/draft order could still mark
+    # a task PARTIAL in reconcile_outcomes.py even though no real outcome happened --
+    # directly inflates ObjectiveCompletionStats.completion_rate_30d, which feeds BO1/
+    # BO3's adaptive weight_multiplier.
     return f"""
     SELECT dc_id, amount_total, created_at
     FROM (
@@ -889,7 +895,7 @@ def _sql_order_outcomes(dc_ids: List[str], plan_date: str) -> str:
                ROW_NUMBER() OVER (PARTITION BY cc.partner_id ORDER BY o.amount_total DESC) AS rn
         FROM sale_orderrequest o
         JOIN customer_management_customer cc ON cc.id = o.partner_id
-        WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
+        WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND o.status = 'processed'
           AND o.created_at >= DATE '{plan_date}' AND o.created_at <= DATE '{plan_date}' + INTERVAL '2 days'
     ) ranked
     WHERE rn = 1
