@@ -3822,9 +3822,15 @@ def generate_se_daily_plan(
         # score. Falls back to the old SE-level _objective_gap() for objectives with no
         # per-DC score wired yet (PL/Long-Term/Sales/Liquidation, as of 2026-08-06).
         per_dc = dc_bo_scores.get(dc["DC_ID"], {})
+        # FIXED 2026-09-01: `reverse=True` on a plain (gap, obj) tuple sort falls through
+        # to comparing the objective NAME STRING on an exact gap tie, sorting
+        # reverse-alphabetically ("Visits" > "Outstanding" > "PL") -- silently
+        # contradicting the confirmed 7.3 tie_break_order (already used correctly for
+        # the analogous tie-breaks at lines ~3703/3848/3995 in this same file). An
+        # explicit key avoids relying on tuple-comparison fallthrough for the tie leg.
         gap_by_obj = sorted(
             ((_objective_gap(per_dc[obj]) if obj in per_dc else _objective_gap(bo_scores_by_objective.get(obj, {})), obj) for obj in matched),
-            reverse=True,
+            key=lambda go: (-go[0], tie_break_order.index(go[1]) if go[1] in tie_break_order else 99),
         )
         # Bug fixed 2026-08-26: contact-fatigue (8.7 -- >=2 attempts in the rolling
         # window cuts priority by contact_fatigue_priority_cut, 30%) used to be computed
