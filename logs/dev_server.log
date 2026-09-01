@@ -56,3 +56,17 @@ Error: socket hang up
 11:02:10 am [vite] hmr update /src/features/views/ZbmView.tsx, /src/index.css
 11:02:17 am [vite] hmr update /src/features/views/ZbmView.tsx, /src/index.css
 11:02:32 am [vite] hmr update /src/features/views/ZbmView.tsx, /src/index.css
+11:57:40 am [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+11:57:49 am [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+11:58:03 am [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+11:58:31 am [vite] hmr update /src/index.css, /src/features/views/ZbmView.tsx, /src/features/scopeSelector/ScopeSelector.tsx, /src/features/views/shared/TaskTable.tsx, /src/features/routing/PlanDrawer.tsx
+11:58:38 am [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+11:59:03 am [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+1:58:43 pm [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+1:58:51 pm [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+1:59:02 pm [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+1:59:12 pm [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+1:59:30 pm [vite] hmr update /src/features/routing/PlanDrawer.tsx, /src/index.css
+1:59:46 pm [vite] hmr update /src/features/views/ScopeView.tsx, /src/index.css
+2:00:03 pm [vite] hmr update /src/features/views/ZbmView.tsx, /src/index.css
+2:00:31 pm [vite] hmr update /src/features/runsHistory/RunsHistoryPanel.tsx, /src/index.css
