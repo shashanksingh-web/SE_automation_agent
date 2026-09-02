@@ -300,14 +300,14 @@ class DCCard(models.Model):
 
     who_section = models.TextField(blank=True, default="")
     where_dc_stands_section = models.TextField(blank=True, default="")
+    # private_label_section/recommended_products: the card's Section 3 (प्राइवेट लेबल /
+    # Private Label) was removed 2026-09-03 per direct instruction -- planning/dc_card.py
+    # no longer populates either field (always "" / [] now). Left on the model rather
+    # than migrated away since nothing reads them; PitchScript.recommended_products is
+    # the unrelated, still-active field of the same name shown in the pitch script.
     private_label_section = models.TextField(blank=True, default="")
     card_hindi = models.TextField()
 
-    # Same recommended-products list as PitchScript's own field of the same name
-    # (planning.dc_card._pl_recommendation reuses pitching's _format_product_list, so
-    # the two can never name different products for the same DC/category/run) --
-    # captured structured here too, not just inside private_label_section's prose. See
-    # PitchScript.recommended_products for the full shape/scope-tag docstring.
     recommended_products = models.JSONField(default=list, blank=True)
 
     # Structured form of who_section's "Business Area Strength" bullet (planning.dc_card.

@@ -441,11 +441,7 @@ def dc_card(request, daily_task_id: int):
         "DC_Name": card.daily_task.dc_name,
         "Who_Section": card.who_section,
         "Where_DC_Stands_Section": card.where_dc_stands_section,
-        "Private_Label_Section": card.private_label_section,
         "Card_Hindi": card.card_hindi,
-        # Same recommended-products list as PitchScript's own field of the same name -
-        # already folded into Private_Label_Section's prose too.
-        "Recommended_Products": _serialize_recommended_products(card.recommended_products),
         # Structured form of Who_Section's "Business Area Strength" bullet - null when
         # this DC has no current-year business-area data at all. Prior is independently
         # nullable even when Current isn't (prior-year comparison can genuinely be

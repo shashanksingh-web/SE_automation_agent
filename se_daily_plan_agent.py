@@ -389,8 +389,7 @@ def get_client():
 # "totalDCs", "dcs": [{"partnerId" (matches this codebase's DC_ID format), "name",
 # "state", "district", "phone", "reasons": [...], "relatedProductsBought": [...],
 # "relatedProductsBreakdown": [{"productName", "qty", "value"}, ...], "totalQty",
-# "totalValue"}, ...]}} -- see planning/dc_card.py's _build_focus_product_match_index()
-# for a real consumer. Step 2B's response is still genuinely unconfirmed -- callers
+# "totalValue"}, ...]}}. Step 2B's response is still genuinely unconfirmed -- callers
 # should treat only that one as opaque until a real response is seen.
 
 PRODUCT_COHORT_URL = os.environ.get("PRODUCT_COHORT_URL", "https://saas-platform-service.api.dehaat.net")

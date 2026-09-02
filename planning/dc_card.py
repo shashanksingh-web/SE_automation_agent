@@ -1,8 +1,11 @@
 """The DC Card (Preface) -- "Dehaat Center Ko Jaano" -- a second, complementary
 pre-pitch briefing framework for the Pitching Agent (SE_DC_Data_Normalization_Agent_Prompt;
 pitch_config's "DC Card (Preface)" CSV). Shown to the SE when they open a DC's card,
-BEFORE any Ask/Tell/Wish pitch -- 3 sections, matching the CSV's own structure exactly:
-1. कौन (Who), 2. DC कहां खड़ा है (Where DC Stands), 3. प्राइवेट लेबल (Private Label).
+BEFORE any Ask/Tell/Wish pitch -- 2 sections: 1. कौन (Who), 2. DC कहां खड़ा है (Where
+DC Stands). The CSV's own Section 3 (प्राइवेट लेबल / Private Label) was removed from
+this card per direct instruction (2026-09-03) -- the same recommended-products signal
+still reaches the SE via PitchScript's own Recommended_Products (planning/pitching.py),
+just not duplicated here.
 
 Generated automatically alongside PitchScript (planning/pitching.py) -- same trigger
 point (planning.services.generate_plan_for_scope, right after DailyTask rows exist),
@@ -22,33 +25,7 @@ normalize_dc_club() row, for Scheme Standing).
 Crop Type/Style (Section 2's DC-first "what crop does this DC serve" question) has NO
 source anywhere in this pipeline -- confirmed exhaustively (a "Product Cohort" API was
 investigated and runs the opposite direction, product-first). Always skipped, never
-guessed -- see _where_dc_stands_section().
-
-Section 3 (Private Label) -- opportunistic Product Cohort cross-reference, wired
-2026-08-14: Section 3's own DC-first "recommended product" question can't be answered
-DIRECTLY by Product Cohort (still product-first -- see above), but Step 3's OUTPUT is a
-DC cohort for whichever Focus Product a caller already ran (planning.product_cohort,
-opt-in per PlanRun -- see FocusProductTargetRun). So: if this DC happens to appear in
-ANY FocusProductTargetRun's Step 3 cohort from the same plan_date (any scope/PlanRun --
-a Focus Product evaluated for a different scope the same day is still a real signal for
-this DC), use that as the recommendation instead of the category-level fallback. Most
-DCs won't match anything, since Focus Product Targeting only ever runs for whatever
-material a caller explicitly asked about, not automatically for every material -- see
-_build_focus_product_match_index().
-
-Section 3 fallback chain, full order (confirmed 2026-08-18): Product Cohort match ->
-this DC's own block peers -> node peers -> geographic (every other DC within 200km,
-then the nearest 10 Nodes by centroid distance if even that finds nothing) -- see
-services._attach_nearby_product_recommendations(). The geo tier only ever fires when
-every closer, more locally-relevant signal has genuinely come up empty, and is absent
-entirely (not an empty recommendation) when nothing is found anywhere nearby either.
-
-Every tier past Product Cohort match is PRIVATE LABEL-only (confirmed 2026-08-18, per
-direct instruction) -- a section titled Private Label must only ever name a real
-business_segment == "PRIVATE LABEL" product, never a BRANDED one just because it
-outsold PL products among the same peers. Reads recommended_products_pl, a separately
-re-ranked list from Pitching's own (any-segment) recommended_products -- see
-planning.services._peer_stats' segment param."""
+guessed -- see _where_dc_stands_section()."""
 
 from __future__ import annotations
 
@@ -57,8 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
-from .models import DailyTask, DCCard, FocusProductTargetRun, PlanRun
-from .pitching import _format_product_list
+from .models import DailyTask, DCCard, PlanRun
 
 logger = logging.getLogger(__name__)
 
@@ -262,105 +238,6 @@ def _upcoming_to_sell_proxy(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return " और ".join(parts) + " -- यह एक अनुमान है, पक्का crop-calendar डेटा नहीं।", "Upcoming_To_Sell_Proxy"
 
 
-def _build_focus_product_match_index(plan_date) -> Dict[str, Tuple[str, str]]:
-    """dc_id -> (sentence, code) for every DC that shows up in ANY FocusProductTargetRun's
-    Step 3 cohort from this plan_date. Built ONCE per generate_dc_cards_for_plan_run call
-    (not per DC -- would be an N+1 query pattern otherwise). First match wins if a DC
-    somehow appears in more than one run's cohort the same day.
-
-    Confirmed live response shape 2026-08-14 (Step 3's schema was previously unconfirmed
-    -- empty in the saved Postman collection): step_3 = {"status": "Success", "results":
-    {"materialId", "nodeId", "totalDCs", "dcs": [{"partnerId" (matches this codebase's
-    DC_ID format exactly), "name", "reasons": [...], "relatedProductsBought": [...],
-    "relatedProductsBreakdown": [...], "totalQty", "totalValue"}, ...]}}."""
-    index: Dict[str, Tuple[str, str]] = {}
-    runs = FocusProductTargetRun.objects.filter(plan_run__plan_date=plan_date, step_3__isnull=False)
-    for run in runs:
-        results = (run.step_3 or {}).get("results") or {}
-        for dc in results.get("dcs") or []:
-            dc_id = str(dc.get("partnerId") or "")
-            if not dc_id or dc_id in index:
-                continue
-            reasons = ", ".join(dc.get("reasons") or []) or "unspecified"
-            related = dc.get("relatedProductsBought") or []
-            related_note = f" (पहले से खरीदते हैं: {', '.join(related[:3])})" if related else ""
-            index[dc_id] = (
-                f"Product Cohort ने यह DC Focus Product (Material ID: {run.material_id}) के लिए टारगेट किया है -- "
-                f"कारण: {reasons}{related_note}।",
-                "Product_Cohort_Step3_Match",
-            )
-    return index
-
-
-def _pl_recommendation(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-    """Product Cohort's opportunistic Step 3 match (see module docstring) wins when
-    present -- a real, product-named recommendation beats the category-level fallback.
-
-    Bug fixed 2026-08-14: YTD_Private_Label (S8, DailyTask's own already-persisted
-    field) used to only ever appear as a bonus sentence tacked onto the category
-    comparison -- if dominant_category/block_category_avg weren't BOTH available (a real
-    and common gap, same S1 sparsity the Pitching Agent already experiences), the ENTIRE
-    section silently dropped to "no data available," discarding a real YTD PL figure
-    that was sitting right there in ctx unused. Confirmed live: 3 of 5 real DCs checked
-    had a genuine YTD_Private_Label value with an empty Private Label section anyway.
-    The two signals are now independent -- either one present is enough to show
-    something, and both together compose into one sentence when both exist.
-
-    recommended_products_pl (planning.services, added 2026-08-18 per direct instruction)
-    is the single source of truth for the product-name half of this section -- unlike
-    Pitching's S1 (any segment, a general cross-sell signal), this section is titled
-    Private Label and must only ever name a real business_segment == "PRIVATE LABEL"
-    product, so it reads a segment-filtered list computed separately from Pitching's
-    general recommended_products (planning.services._peer_stats' segment param re-ranks
-    within PL only, rather than filtering the general top-5 -- see that function's own
-    docstring for why). Still shares _format_product_list() with pitching.py so the
-    bracket notes can't drift in wording. scope on the first item says which tier
-    produced it: "block"/"node" (this DC's own dominant_category, peer-purchase ranked,
-    PL-only) or "nearby_radius"/"nearby_node" (services._attach_nearby_product_
-    recommendations' geographic fallback, PL-only -- fires only when this DC's own
-    block+node peers had no PL purchase data at all to rank from, even if they had
-    plenty of non-PL data). Falls back to category-average-only phrasing when
-    block_category_avg exists but recommended_products_pl doesn't (this DC's category
-    peers buy in that category, just not any PRIVATE LABEL product within it)."""
-    match = ctx.get("product_cohort_match")
-    if match:
-        return match
-    category, block_avg = ctx.get("dominant_category"), ctx.get("block_category_avg")
-    products = ctx.get("recommended_products_pl") or []
-    ytd_pl = ctx.get("ytd_private_label")
-    parts: List[str] = []
-    if products:
-        scope = products[0].get("scope")
-        if scope in ("block", "node"):
-            scope_label = "नोड" if scope == "node" else "ब्लॉक"
-            dc_amt = ctx.get("dc_category_purchase") or 0
-            parts.append(
-                f"सुझाई गई कैटेगरी: {category} -- इसमें {scope_label} में सबसे ज़्यादा बिकने वाले प्राइवेट लेबल प्रोडक्ट्स: "
-                f"{_format_product_list(products)}। इस DC से इस कैटेगरी में अभी तक ₹{dc_amt:,.0f} का बिज़नेस हुआ है।"
-            )
-        else:
-            # This DC's own purchases + block peers + node peers had no PRIVATE LABEL
-            # purchase data (even if they had plenty of non-PL data) -- geographic
-            # fallback (services._attach_nearby_product_recommendations, confirmed
-            # 2026-08-18): 200km radius first, nearest Nodes only if that itself found
-            # nothing. Absent entirely (not an empty list) when even that found nothing,
-            # so this branch only ever fires with real PL products to show.
-            basis_label = "आसपास के (200km के अंदर) DCs" if scope == "nearby_radius" else "आसपास के नज़दीकी Nodes"
-            parts.append(
-                f"इस DC/ब्लॉक/नोड में कोई प्राइवेट लेबल खरीद डेटा नहीं है -- {basis_label} में लोकप्रिय प्राइवेट लेबल प्रोडक्ट्स के आधार पर सुझाव: "
-                f"{_format_product_list(products)}।"
-            )
-    elif category and block_avg:
-        scope_label = "नोड" if ctx.get("peer_comparison_scope") == "node" else "ब्लॉक"
-        dc_amt = ctx.get("dc_category_purchase") or 0
-        parts.append(f"सुझाई गई कैटेगरी: {category} -- {scope_label} में औसतन ₹{block_avg:,.0f}, इस DC से अभी तक ₹{dc_amt:,.0f}।")
-    if ytd_pl:
-        parts.append(f"इस साल का PL सेल अभी तक ₹{ytd_pl:,.0f} हुआ है।")
-    if not parts:
-        return None
-    return " ".join(parts), "PL_Recommendation"
-
-
 def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Returns the DCCard.objects.create()-ready field dict for one DailyTask."""
     dc_name = (task.dc_name or "").strip() or "यह DC"
@@ -389,38 +266,29 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
     skipped.append("Crop Type/Style (no confirmed source anywhere in this pipeline -- flag to business directly)")
     run("Upcoming to Sell (proxy)", _upcoming_to_sell_proxy, where_lines)
 
-    pl_lines: List[str] = []
-    run("Recommended Product & Brief", _pl_recommendation, pl_lines)
-
     who_section = "\n".join(who_lines) if who_lines else "(कोई डेटा उपलब्ध नहीं इस रन में)"
     where_dc_stands_section = "\n".join(where_lines) if where_lines else "(कोई डेटा उपलब्ध नहीं इस रन में)"
-    private_label_section = "\n".join(pl_lines) if pl_lines else "(कोई डेटा उपलब्ध नहीं इस रन में)"
 
     card_hindi = "\n\n".join([
         f"{dc_name} -- Dehaat Center Ko Jaano",
         "1. कौन (Who)\n" + who_section,
         "2. DC कहां खड़ा है (Where DC Stands)\n" + where_dc_stands_section,
-        "3. प्राइवेट लेबल (Private Label)\n" + private_label_section,
     ])
 
-    # PL-only recommended_products_pl (planning/services.py, added 2026-08-18 per direct
-    # instruction) -- NOT the same list as PitchScript's own recommended_products field
-    # (that one is any segment, a general cross-sell signal; this section is titled
-    # Private Label and must only ever name a real PRIVATE LABEL product). Only the
-    # category/geographic fallback path, not product_cohort_match (Focus Product
-    # Targeting's own pre-formatted override, opt-in and rare) - see that function's own
-    # docstring for why the two paths exist. A card built from product_cohort_match
-    # leaves this structured field empty even though private_label_section's prose has a
-    # recommendation; same honest-degrade tradeoff as everywhere else in this module.
-
+    # Section 3 (प्राइवेट लेबल / Private Label) removed 2026-09-03, per direct
+    # instruction -- recommended_products/private_label_section deliberately left off
+    # this dict so DCCard.objects.update_or_create's defaults= overwrites any stale value
+    # from before this change with the model's own empty default, not just omits them.
+    # PitchScript's own Recommended_Products (planning/pitching.py) is untouched -- a
+    # completely separate field on a separate model, still shown in the pitch script.
     return {
         "who_section": who_section,
         "where_dc_stands_section": where_dc_stands_section,
-        "recommended_products": ctx.get("recommended_products_pl") or [],
+        "recommended_products": [],
         "business_area_detail": _business_area_detail(ctx),
         "turnover_detail": _turnover_detail(ctx),
         "club_detail": ctx.get("club") or {},
-        "private_label_section": private_label_section,
+        "private_label_section": "",
         "card_hindi": card_hindi,
         "data_sources_used": used,
         "data_sources_skipped": skipped,
@@ -434,14 +302,11 @@ def generate_dc_cards_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str
     -- each task isolated in its own try/except (same reasoning as
     pitching.generate_pitches_for_plan_run: one bad DC's data previously aborted every
     other task's card in the same run, not just that one task's)."""
-    focus_match_index = _build_focus_product_match_index(plan_run.plan_date)
     created = 0
     failures: List[Dict[str, str]] = []
     for task in plan_run.tasks.filter(dc_id__isnull=False):
         try:
             ctx = dict(extra_data_by_dc.get(task.dc_id, {}))
-            ctx["ytd_private_label"] = task.ytd_private_label
-            ctx["product_cohort_match"] = focus_match_index.get(str(task.dc_id))
             fields = build_dc_card(task, ctx)
             DCCard.objects.update_or_create(daily_task=task, defaults=fields)
             created += 1

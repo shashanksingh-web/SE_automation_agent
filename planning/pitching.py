@@ -166,11 +166,9 @@ def _format_product_list(products: List[Dict[str, Any]]) -> str:
 
 def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """recommended_products (planning.services, widened 2026-08-18 to up to 5 products
-    per direct instruction -- was a single block_top_product before) drives this
-    talking point now, same context dict planning/dc_card.py's _pl_recommendation()
-    reads, so the pitch and the DC Card can never name different products for the same
-    DC/category/run. scope on the first item tells you which tier actually produced the
-    list: "block"/"node" (this DC's own dominant_category, peer-purchase ranked) or
+    per direct instruction -- was a single block_top_product before) drives this talking
+    point. scope on the first item tells you which tier actually produced the list:
+    "block"/"node" (this DC's own dominant_category, peer-purchase ranked) or
     "nearby_radius"/"nearby_node" (planning.services._attach_nearby_product_
     recommendations' geographic fallback -- this DC's own block+node peers had nothing,
     widened outward rather than showing nothing, per direct instruction 2026-08-18).

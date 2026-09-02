@@ -710,21 +710,19 @@ def _attach_nearby_product_recommendations(
     NEARBY_PL_PRODUCT_COUNT {name, value, category, sub_category, brand,
     business_segment, scope} dicts, highest value first, scope "nearby_radius" or
     "nearby_node") for every dc_id in needs_geo_fallback that a real candidate search
-    actually found something for -- same unified key/shape pitching.py and dc_card.py
-    both already read from the category-scoped (block/node) tier, so callers never need
-    to know which tier a DC's recommendation actually came from. Leaves the key entirely
-    absent for a DC where not even the Node-level fallback found any purchase data
-    anywhere nearby -- pitching._tp_block_comparison/dc_card._pl_recommendation treat
-    that the same as every other "no data" case, not a fabricated empty recommendation.
+    actually found something for -- same unified key/shape pitching.py already reads
+    from the category-scoped (block/node) tier, so callers never need to know which
+    tier a DC's recommendation actually came from. Leaves the key entirely absent for
+    a DC where not even the Node-level fallback found any purchase data anywhere
+    nearby -- pitching._tp_block_comparison treats that the same as every other "no
+    data" case, not a fabricated empty recommendation.
 
-    result_key/segment (added 2026-08-18): called once as-is for the general
-    recommended_products list (any segment), and once with result_key=
-    "recommended_products_pl", segment="PRIVATE LABEL" for dc_card.py's Private Label
-    section, which must only ever recommend a real PRIVATE LABEL product -- segment
-    restricts candidate purchases BEFORE ranking, same reasoning as _peer_stats' own
-    segment param (filtering an already-ranked general list would routinely return
-    nothing, since higher-value BRANDED items usually crowd PL out of an unfiltered
-    top-5)."""
+    result_key/segment (added 2026-08-18, PRIVATE LABEL-only caller removed 2026-09-03
+    alongside the DC Card section it fed): segment restricts candidate purchases BEFORE
+    ranking, same reasoning as _peer_stats' own segment param (filtering an already-
+    ranked general list would routinely return nothing, since higher-value BRANDED
+    items usually crowd PL out of an unfiltered top-5) -- kept as a general capability
+    even though the only current caller uses the plain recommended_products default."""
     dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
 
     def _own_coords(dc_id: str) -> Optional[Tuple[float, float]]:
@@ -1812,7 +1810,6 @@ def generate_plan_for_scope(
 
                 extra_data_by_dc: Dict[str, Dict[str, Any]] = {}
                 needs_geo_fallback: List[str] = []
-                needs_pl_geo_fallback: List[str] = []
                 for dc_id in task_dc_ids:
                     entry = dict(purchase_by_dc.get(dc_id, {}))
                     entry["last_discount"] = discount_by_dc.get(dc_id)
@@ -1911,20 +1908,6 @@ def generate_plan_for_scope(
                                     dc_id, top_product_name, block_ids, node_ids, coupon_discount_by_dc_product,
                                 )
 
-                        # Private Label-only pass (confirmed 2026-08-18) -- same
-                        # block-then-node candidate pools, re-ranked within
-                        # business_segment == "PRIVATE LABEL" only, not a filter of
-                        # recommended_products above. dc_card.py's Private Label section
-                        # reads this, never the general list -- Pitching's S1 stays
-                        # general (any segment), since it's a "what's trending" cross-sell
-                        # signal, not PL-specific.
-                        pl_stats, pl_scope = _peer_stats(block_ids, segment="PRIVATE LABEL"), "block"
-                        if not pl_stats or not pl_stats["top_products"]:
-                            pl_node_stats = _peer_stats(node_ids, segment="PRIVATE LABEL")
-                            if pl_node_stats and pl_node_stats["top_products"]:
-                                pl_stats, pl_scope = pl_node_stats, "node"
-                        if pl_stats and pl_stats["top_products"]:
-                            entry["recommended_products_pl"] = [{**p, "scope": pl_scope} for p in pl_stats["top_products"]]
                     # DC Card-only additions -- read by planning/dc_card.py, ignored by
                     # planning/pitching.py's builders (they only ever ctx.get() the keys
                     # they know about).
@@ -1943,22 +1926,13 @@ def generate_plan_for_scope(
                     # peers had a category average but no product-level breakdown) --
                     # flagged for the geographic fallback below (confirmed 2026-08-18:
                     # 200km radius first, then nearest Nodes by centroid distance if
-                    # even that finds nothing). Tracked separately from the PL-only need
-                    # below -- a DC can have a real general recommendation (any segment)
-                    # while still having nothing PL-specific to show, or vice versa.
+                    # even that finds nothing).
                     if not entry.get("recommended_products"):
                         needs_geo_fallback.append(dc_id)
-                    if not entry.get("recommended_products_pl"):
-                        needs_pl_geo_fallback.append(dc_id)
 
                 if needs_geo_fallback:
                     _attach_nearby_product_recommendations(
                         client, dc_master, needs_geo_fallback, extra_data_by_dc, plan_date, result_key="recommended_products",
-                    )
-                if needs_pl_geo_fallback:
-                    _attach_nearby_product_recommendations(
-                        client, dc_master, needs_pl_geo_fallback, extra_data_by_dc, plan_date,
-                        result_key="recommended_products_pl", segment="PRIVATE LABEL",
                     )
 
                 from .pitching import generate_pitches_for_plan_run
@@ -2001,11 +1975,8 @@ def generate_plan_for_scope(
             if step_3 and isinstance(step_3.get("results"), dict) and isinstance(step_3["results"].get("dcs"), list):
                 # Section 6's Rank<=6000 eligibility gate (confirmed 2026-08-13) applies
                 # network-wide to every agent's DC selection, but the live Product Cohort
-                # API has no awareness of it -- its raw cohort can include ineligible
-                # DCs. dc_card._build_focus_product_match_index only ever cross-
-                # references this against plan_run.tasks (already eligibility-filtered),
-                # so nothing ineligible is surfaced today -- but the persisted record
-                # itself wasn't tagged, a latent gap for any future direct consumer.
+                # API has no awareness of it -- its raw cohort can include ineligible DCs,
+                # so the persisted record is tagged here for any future direct consumer.
                 # Additive only: the raw API response is annotated, never filtered/mutated.
                 eligible_dc_ids = {
                     dc["DC_ID"] for dc in dc_master
