@@ -70,3 +70,13 @@ Error: socket hang up
 1:59:46 pm [vite] hmr update /src/features/views/ScopeView.tsx, /src/index.css
 2:00:03 pm [vite] hmr update /src/features/views/ZbmView.tsx, /src/index.css
 2:00:31 pm [vite] hmr update /src/features/runsHistory/RunsHistoryPanel.tsx, /src/index.css
+2:25:00 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+2:25:16 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+2:25:33 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+2:25:48 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+2:26:09 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+2:26:30 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+2:26:41 pm [vite] hmr update /src/features/views/shared/PlanRunDetail.tsx, /src/index.css
+2:26:49 pm [vite] hmr update /src/features/views/shared/PlanRunDetail.tsx, /src/index.css
+2:27:03 pm [vite] hmr update /src/features/views/ScopeView.tsx, /src/index.css
+2:27:16 pm [vite] hmr update /src/features/views/ZbmView.tsx, /src/index.css
