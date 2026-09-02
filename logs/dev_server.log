@@ -80,3 +80,15 @@ Error: socket hang up
 2:26:49 pm [vite] hmr update /src/features/views/shared/PlanRunDetail.tsx, /src/index.css
 2:27:03 pm [vite] hmr update /src/features/views/ScopeView.tsx, /src/index.css
 2:27:16 pm [vite] hmr update /src/features/views/ZbmView.tsx, /src/index.css
+4:11:50 pm [vite] http proxy error: /api/planning/abm/E02190270/?date=2026-09-03&routing_plan=B&rotation=false
+Error: socket hang up
+    at Socket.socketOnEnd (node:_http_client:617:25)
+    at Socket.emit (node:events:521:24)
+    at endReadableNT (node:internal/streams/readable:1735:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+4:11:52 pm [vite] http proxy error: /api/planning/abm/E02190270/?date=2026-09-03&routing_plan=B&rotation=false
+Error: socket hang up
+    at Socket.socketOnEnd (node:_http_client:617:25)
+    at Socket.emit (node:events:521:24)
+    at endReadableNT (node:internal/streams/readable:1735:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)

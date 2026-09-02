@@ -3019,3 +3019,26 @@ SSL SYSCALL error: Operation timed out
 2026-09-02 02:22:40,579 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1058 (SE=susheel.kumar@agrevolution.in @ 2026-09-02): 29 exceptions across 38 DCs (76%) -- exceeds 10% threshold.
 2026-09-02 02:23:17,281 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1059 (SE=susheel.kumar@agrevolution.in @ 2026-09-03): 29 exceptions across 38 DCs (76%) -- exceeds 10% threshold.
 2026-09-02 02:27:20,012 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1060 (SE=susheel.kumar@agrevolution.in @ 2026-09-03): 32 exceptions across 38 DCs (84%) -- exceeds 10% threshold.
+2026-09-02 08:04:07,580 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-02 08:04:08,567 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-02 08:06:32,702 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-02 08:06:33,195 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-02 09:34:19,356 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-02 10:18:40,393 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-09-02 10:18:41,870 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1061 (ABM=E02190267 @ 2026-09-02): 260 exceptions across 254 DCs (102%) -- exceeds 10% threshold.
+2026-09-02 10:18:51,054 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1062 (ABM=E02190267 @ 2026-09-03): 262 exceptions across 254 DCs (103%) -- exceeds 10% threshold.
+2026-09-02 10:41:15,846 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-09-02 10:41:16,606 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-09-02 10:41:22,105 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1063 (ABM=E02190267 @ 2026-09-02): 258 exceptions across 254 DCs (102%) -- exceeds 10% threshold.
+2026-09-02 10:41:22,399 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-09-02 10:41:49,489 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-02 10:41:50,992 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-02 10:41:52,402 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-02 10:41:53,026 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-02 10:42:16,730 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1064 (SE=vatsya.krishnav@agrevolution.in @ 2026-09-02): 48 exceptions across 47 DCs (102%) -- exceeds 10% threshold.
+2026-09-02 10:42:29,191 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1065 (ABM=E02190260 @ 2026-09-02): 132 exceptions across 140 DCs (94%) -- exceeds 10% threshold.
+2026-09-02 10:43:20,755 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1066 (ABM=E02190267 @ 2026-09-02): 260 exceptions across 254 DCs (102%) -- exceeds 10% threshold.
+2026-09-02 10:43:23,097 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-09-02 10:43:36,748 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1067 (ABM=E02190267 @ 2026-09-03): 262 exceptions across 254 DCs (103%) -- exceeds 10% threshold.
+2026-09-02 10:44:47,655 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1068 (STATE=Bihar @ 2026-09-02): 7133 exceptions across 5253 DCs (136%) -- exceeds 10% threshold.
+2026-09-02 10:45:32,958 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1069 (SE=rohit.singh1@agrevolution.in @ 2026-09-02): 62 exceptions across 52 DCs (119%) -- exceeds 10% threshold.

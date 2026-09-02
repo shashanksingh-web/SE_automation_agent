@@ -523,6 +523,92 @@ class ProductCohortClient:
 
 
 # =====================================================================================
+# 1c. DC FARMER MAPPING CLIENT -- per-DC product recommendations
+# (saas-platform-service-farmer-dc-mapping.api.dehat.co, confirmed live 2026-09-02)
+# =====================================================================================
+# A SEPARATE service from the Product Cohort client above -- different domain (dehat.co,
+# single-a, not dehaat.net), separate Go Admin login, separate session/cookie jar. Given a
+# DC (dcId + sapPartnerId) and a radius, returns a ranked list of recommended products for
+# that DC with per-product recommendation evidence (tags: past_purchase, geo_peers,
+# disease_scan, crop_season -- each carries its own supporting sales/context data).
+#
+# Auth: same Go Admin pattern as Product Cohort (X-FP-Session header + go_admin_session
+# cookie), but this agent does NOT sign in on its own here either, for the identical reason
+# documented on ProductCohortClient above -- entering a password on someone's behalf is
+# outside what this agent does, full stop. A human authenticates at
+# {base_url}/dc-farmer-mapping themselves and hands this client an already-issued session
+# via DC_FARMER_MAPPING_SESSION/DC_FARMER_MAPPING_GO_ADMIN_SESSION.
+
+DC_FARMER_MAPPING_URL = os.environ.get("DC_FARMER_MAPPING_URL", "https://saas-platform-service-farmer-dc-mapping.api.dehat.co")
+
+
+class DCFarmerMappingNotConfigured(RuntimeError):
+    """Raised when a DC Farmer Mapping API call is attempted but DC_FARMER_MAPPING_SESSION /
+    DC_FARMER_MAPPING_GO_ADMIN_SESSION are unset -- this agent never signs in on its own to
+    obtain them (see the section docstring above)."""
+
+
+class DCFarmerMappingClient:
+    """Thin wrapper over the confirmed /sps/v1/fp/dc-product-recommendations endpoint."""
+
+    # Same backoff schedule as ProductCohortClient/Redshift's retry.
+    RETRY_BACKOFF_SECONDS = [2, 6]
+
+    def __init__(self, base_url: Optional[str] = None, session_token: Optional[str] = None, go_admin_session: Optional[str] = None):
+        self.base_url = (base_url or DC_FARMER_MAPPING_URL).rstrip("/")
+        self.session_token = session_token or os.environ.get("DC_FARMER_MAPPING_SESSION", "")
+        self.go_admin_session = go_admin_session or os.environ.get("DC_FARMER_MAPPING_GO_ADMIN_SESSION", "")
+        self._session = requests.Session() if requests is not None else None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.session_token and self.go_admin_session and requests is not None)
+
+    def _request(self, method: str, path: str, params: Optional[Dict[str, Any]] = None, json_body: Optional[Dict[str, Any]] = None) -> Any:
+        if not self.configured:
+            reason = "requests not installed" if requests is None else "DC_FARMER_MAPPING_SESSION/DC_FARMER_MAPPING_GO_ADMIN_SESSION not set"
+            raise DCFarmerMappingNotConfigured(f"DC Farmer Mapping source unavailable ({reason}) -- authenticate at {DC_FARMER_MAPPING_URL}/dc-farmer-mapping yourself and set the env vars; this agent will not sign in on your behalf")
+        url = f"{self.base_url}{path}"
+        headers = {
+            "Content-Type": "application/json",
+            "X-FP-Session": self.session_token,
+            "Cookie": f"go_admin_session={self.go_admin_session}",
+            # This host's WAF silently stalls (no response, no error) requests whose
+            # User-Agent doesn't look like a browser -- confirmed live 2026-09-02: the
+            # default `python-requests/x.x` UA hung for 60s+ on every attempt, while an
+            # identical request with a browser UA succeeded in ~13s. Referer included to
+            # match the real browser request this was reverse-engineered from.
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+            "Referer": f"{self.base_url}/dc-farmer-mapping",
+        }
+        last_error: Optional[Exception] = None
+        for attempt, delay in enumerate([0] + self.RETRY_BACKOFF_SECONDS):
+            if delay:
+                logger.warning("DC Farmer Mapping request to %s failed (attempt %d), retrying in %ds: %s", path, attempt, delay, last_error)
+                time.sleep(delay)
+            try:
+                resp = self._session.request(method, url, headers=headers, params=params, json=json_body, timeout=60)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError as e:
+                # A 4xx (bad/expired session, bad request) will fail identically on
+                # retry -- only a 5xx (server-side, plausibly transient) is worth it.
+                if e.response is not None and e.response.status_code < 500:
+                    raise
+                last_error = e
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                last_error = e
+        raise last_error
+
+    def get_dc_product_recommendations(self, dc_id: str, sap_partner_id: str, radius_km: float = 7) -> Any:
+        """Confirmed live response shape (2026-09-02): {"status": "Success", "results":
+        {"dc": {...}, "radiusKm", "preferDehaat", "products": [{"materialId",
+        "productName", "productCategory", "productSubCategory", "technicalContent",
+        "tags": [...], "context": {<tag>: {...evidence...}}}, ...]}}."""
+        return self._request("GET", "/sps/v1/fp/dc-product-recommendations", params={"dcId": dc_id, "radiusKm": radius_km, "sapPartnerId": sap_partner_id})
+
+
+# =====================================================================================
 # 2. SHARED NORMALIZATION HELPERS (Section 3 / 4 of the doc)
 # =====================================================================================
 
@@ -3544,8 +3630,46 @@ def build_route_cluster_based(
     # whole cluster it happened to be selected as part of.
     if len(all_stops_candidates) > task_cap:
         all_stops_candidates = sorted(all_stops_candidates, key=_candidate_rank_key)
+        capped = all_stops_candidates[:task_cap]
+        capped_stop_set = tuple(c["dc"]["DC_ID"] for c in capped)
+        # Forced distinctness (2026-09-02) -- extends the 2026-09-01 "force 3 different
+        # routes even if 2 are worse" fix past the Exceptional/BO Rule branch, which was
+        # the only place exclude_stop_sets was ever consulted. Confirmed live: of 51 real
+        # Plan B 3-route runs, 12 converged via THIS path with exclude_stop_sets silently
+        # ignored (2 of those -- vatsya.krishnav, rohit.singh1 (recurring across 5 daily
+        # runs) -- were genuine GR-R10 cases, pool had room to differ but never did).
+        # When the cap-trimmed set duplicates an earlier route, try swapping the single
+        # lowest-ranked included candidate for each just-past-the-cap alternative in rank
+        # order, keeping the first swap that both fits the 80km/180min budget and yields
+        # a genuinely new stop-set. Only ever swaps one seat, never a full re-optimize;
+        # falls through to the ordinary (possibly duplicate) result if no swap both fits
+        # and differs -- same "never invents a route from zero candidates, still returns
+        # the best available" contract as the Exceptional branch's own version of this.
+        if exclude_stop_sets and capped_stop_set in exclude_stop_sets:
+            for swap_in in all_stops_candidates[task_cap:]:
+                trial = capped[:-1] + [swap_in]
+                trial_order = _or_opt(_two_opt(_clarke_wright_order(trial, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
+                trial_metrics = _route_metrics(trial_order, origin, avg_speed_kmph)
+                trial_stop_set = tuple(s["row"].DC_ID for s in trial_metrics["stops"])
+                trial_feasible = (
+                    trial_metrics["total_distance_km"] <= PLAN_B_MAX_DAILY_DISTANCE_KM
+                    and trial_metrics["total_travel_min"] <= PLAN_B_MAX_DAILY_TRAVEL_MINUTES
+                )
+                if trial_feasible and trial_stop_set not in exclude_stop_sets:
+                    kept_ids = {c["dc"]["DC_ID"] for c in trial}
+                    for c in all_stops_candidates:
+                        if c["dc"]["DC_ID"] not in kept_ids:
+                            reason = "Standard_Cluster_Swap_Route_Diversity" if c is capped[-1] else "Daily_Task_Cap_Exceeded"
+                            dropped.append({"dc_id": c["dc"]["DC_ID"], "reason": reason})
+                    return {
+                        "stops": trial_metrics["stops"], "dropped": dropped,
+                        "total_distance_km": trial_metrics["total_distance_km"], "total_travel_min": trial_metrics["total_travel_min"],
+                        "total_visit_min": trial_metrics["total_visit_min"], "priority_score_captured": trial_metrics["priority_score_captured"],
+                        "feasible": True, "infeasibility_reason": "",
+                        "clusters_evaluated": len(scored_clusters),
+                    }
         dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Daily_Task_Cap_Exceeded"} for c in all_stops_candidates[task_cap:]]
-        all_stops_candidates = all_stops_candidates[:task_cap]
+        all_stops_candidates = capped
     final_order = _or_opt(_two_opt(_clarke_wright_order(all_stops_candidates, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
     final_metrics = _route_metrics(final_order, origin, avg_speed_kmph)
     feasible = final_metrics["total_distance_km"] <= PLAN_B_MAX_DAILY_DISTANCE_KM and final_metrics["total_travel_min"] <= PLAN_B_MAX_DAILY_TRAVEL_MINUTES
