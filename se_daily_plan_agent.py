@@ -2528,6 +2528,24 @@ class DailyTaskRow:
     # -- Visits/Long-Term are SE-level, never per-DC scored). None when no BO scores were
     # supplied at all for this DC this run (dc_bo_scores wasn't wired for this call path).
     BO_Scores: Optional[Dict[str, Dict[str, Any]]] = None
+    # Numeric composite (2026-09-03, explicit user request: "numerical ranking on the
+    # basis of BO scoring") -- unweighted average of whatever score_pct/ratio/
+    # coverage_pct values BO_Scores actually has (None entries skipped, not treated as
+    # 0). All 3 objectives scored per-DC today (Outstanding/PL/Sales) already share the
+    # same "higher = healthier/better-performing" direction, so a straight average is a
+    # reasonable single index -- but it IS a straight average across differently-scaled
+    # ratios (Outstanding's health_pct is capped 0-1; PL/Sales momentum ratios can
+    # exceed 1.0), not a weighted/normalized formula signed off by anyone. Treat as a
+    # rough composite, not a confirmed score. None when BO_Scores has no usable value at
+    # all for this DC.
+    BO_Composite_Score: Optional[float] = None
+    # 1 = lowest BO_Composite_Score (worst-performing/most in need of attention) among
+    # this SE's OTHER selected tasks the same day -- computed once per day's full task
+    # list (see _assign_bo_ranks), not globally across the network. Ties share the same
+    # rank (dense ranking) rather than an arbitrary tiebreak. None for a task with no
+    # BO_Composite_Score to rank by (e.g. Farmer Meeting tasks, or a DC with no BO
+    # scores supplied this run).
+    BO_Rank: Optional[int] = None
     # sale_orderrequest.partner_finance_status ("financed"/"non_financed"), from this
     # DC's own most recent order of ANY status (normalize_sales_transactions' latest_
     # order_any_status, same source as Credit_On_Hold above) -- confirmed live 2026-09-03
@@ -3703,6 +3721,40 @@ def build_route_cluster_based(
     }
 
 
+def _bo_composite_score(bo_scores: Optional[Dict[str, Dict[str, Any]]]) -> Optional[float]:
+    """DailyTaskRow.BO_Composite_Score docstring has the full caveat -- unweighted
+    average of whatever score_pct/ratio/coverage_pct value each scored objective has,
+    None entries skipped. None (not 0.0) when nothing usable exists, so a DC with no
+    real BO data doesn't silently look identical to a genuinely perfect score."""
+    if not bo_scores:
+        return None
+    values = []
+    for data in bo_scores.values():
+        v = data.get("score_pct")
+        if v is None:
+            v = data.get("ratio")
+        if v is None:
+            v = data.get("coverage_pct")
+        if v is not None:
+            values.append(v)
+    return (sum(values) / len(values)) if values else None
+
+
+def _assign_bo_ranks(rows: List["DailyTaskRow"]) -> None:
+    """Mutates BO_Rank in place across one SE's full day's task list (2026-09-03,
+    explicit user request for a numerical BO-score-based ranking) -- 1 = lowest
+    BO_Composite_Score (worst-performing/most in need of attention) among THIS list
+    only, dense-ranked (equal composite scores share a rank, no arbitrary tiebreak).
+    Rows with no composite score (BO_Composite_Score is None) are left unranked."""
+    ranked = sorted((r for r in rows if r.BO_Composite_Score is not None), key=lambda r: r.BO_Composite_Score)
+    rank, prev_score = 0, None
+    for r in ranked:
+        if prev_score is None or r.BO_Composite_Score != prev_score:
+            rank += 1
+        r.BO_Rank = rank
+        prev_score = r.BO_Composite_Score
+
+
 def generate_se_daily_plan(
     se_id: str,
     se_name: Optional[str],
@@ -4033,6 +4085,7 @@ def generate_se_daily_plan(
             Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,
             Finance_Status=fin.get("Partner_Finance_Status"),
             BO_Scores=per_dc_scores or None,
+            BO_Composite_Score=_bo_composite_score(per_dc_scores),
             Last_Payment_Join_Key_Unconfirmed=False,
             Overdue_Aging_Bucket=overdue_aging,
             Avg_Repayment_Days=avg_repayment_days,
@@ -4109,6 +4162,8 @@ def generate_se_daily_plan(
         {o for r in sequenced for o in r.Objective.split(",") if o},
         key=lambda o: tie_break_order.index(o) if o in tie_break_order else 99,
     )
+
+    _assign_bo_ranks(sequenced)
 
     return {
         **header,

@@ -1689,6 +1689,7 @@ def generate_plan_for_scope(
                 priority_multiplier=t["Priority_Multiplier"],
                 finance_status=t.get("Finance_Status"),
                 bo_scores=t.get("BO_Scores") or {},
+                bo_composite_score=t.get("BO_Composite_Score"), bo_rank=t.get("BO_Rank"),
                 critical=t.get("Critical", False), critical_reasons=t.get("Critical_Reasons", ""),
             ))
 

@@ -143,6 +143,13 @@ class DailyTask(models.Model):
     # supplied for this DC this run.
     bo_scores = models.JSONField(default=dict, blank=True)
 
+    # Numeric composite + dense rank across this SE's own day (explicit user request:
+    # "numerical ranking on the basis of BO scoring") -- see DailyTaskRow.
+    # BO_Composite_Score/BO_Rank docstrings for the formula and rank semantics. Both
+    # NULL when no BO scores were available to rank by (e.g. Farmer Meeting tasks).
+    bo_composite_score = models.FloatField(blank=True, null=True)
+    bo_rank = models.IntegerField(blank=True, null=True)
+
     # Feedback-loop outcome fields (Tier 1) -- populated later by `reconcile_outcomes`,
     # once plan_date has passed and real Visits/Sales/Payments data for that day exists.
     # UNKNOWN (not COMPLETED/MISSED) is the honest default until reconciliation runs --

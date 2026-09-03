@@ -101,3 +101,10 @@ Error: socket hang up
 12:25:52 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
 12:26:12 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
 12:51:51 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+5:31:56 pm [vite] hmr update /src/index.css, /src/features/views/shared/MultiScopeSummary.tsx, /src/features/views/shared/StatusBanner.tsx
+5:32:09 pm [vite] hmr update /src/index.css, /src/features/views/shared/MultiScopeSummary.tsx, /src/features/views/shared/StatusBanner.tsx
+5:32:37 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+5:32:50 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+5:48:13 pm [vite] http proxy error: /api/planning/dc-card/24854/
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)

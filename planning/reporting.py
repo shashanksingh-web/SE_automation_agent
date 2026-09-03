@@ -81,6 +81,13 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     objective is available via the API's BO_Scores field, not repeated here to keep the
     table width sane.
 
+    BO Rank column added 2026-09-03 (explicit user request: "numerical ranking on the
+    basis of BO scoring") -- DailyTaskRow.BO_Rank, 1 = lowest BO_Composite_Score (worst-
+    performing/most in need of attention) among THIS SE's own task list that day, dense-
+    ranked (ties share a rank). Not a network-wide rank, not the same thing as Sr_No
+    (which is still Cohort/Total_Score/tie-break-order -- the actual selection ranking).
+    "N/A" when no BO scores exist to rank by.
+
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
     after a bordered/wrapped grid variant wasn't clearer. DC Name/Reason are truncated
@@ -120,11 +127,12 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             t.dc_club_participation or "N/A",
             {"financed": "Financed", "non_financed": "Non-Financed"}.get(t.finance_status, "Unknown"),
             " ".join(f"{obj}:{data['grade']}" for obj, data in (t.bo_scores or {}).items() if data.get("grade")) or "N/A",
+            str(t.bo_rank) if t.bo_rank is not None else "N/A",
         ])
     headers = [
         "SE", "Sr", "Critical", "DC Name", "Km", "Task Type", "Purpose", "Reason",
         "Last Visit", "Outstanding", "Overdue (Aging)", "Last Order", "Order Value",
-        "Last Payment", "YTD PL", "Club", "Finance", "BO Scores",
+        "Last Payment", "YTD PL", "Club", "Finance", "BO Scores", "BO Rank",
     ]
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
 

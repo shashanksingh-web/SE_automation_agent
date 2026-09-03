@@ -3337,3 +3337,68 @@ Traceback (most recent call last):
 django.db.utils.OperationalError: no such column: planning_dailytask.bo_scores
 2026-09-03 11:52:41,263 ERROR django.request: Bad Gateway: /api/planning/se/kanhaiya.raj1@agrevolution.in/
 2026-09-03 11:53:01,482 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1109 (SE=susheel.kumar@agrevolution.in @ 2026-09-03): 32 exceptions across 38 DCs (84%) -- exceeds 10% threshold.
+2026-09-03 11:54:20,858 INFO se_daily_plan_agent: 1/6 loading Source 5 (Config Master)...
+2026-09-03 11:54:20,945 INFO se_daily_plan_agent: 2/6 loading Source 2 (DC Master + Rank)...
+2026-09-03 11:54:21,060 INFO se_daily_plan_agent: 3/6 loading Source 6 (AOP & Target)...
+2026-09-03 11:54:21,518 INFO se_daily_plan_agent: 4/6 loading Sources 1/3/4 (live via Metabase)...
+2026-09-03 11:54:21,519 INFO se_daily_plan_agent:   4/6 querying Task_Nodes_1b...
+2026-09-03 11:54:24,610 INFO se_daily_plan_agent:   4/6 Task_Nodes_1b: 105704 rows in 3.1s
+2026-09-03 11:54:24,610 INFO se_daily_plan_agent:   4/6 querying Geo_Mapping_1c...
+2026-09-03 11:54:25,611 INFO se_daily_plan_agent:   4/6 Geo_Mapping_1c: 12885 rows in 1.0s
+2026-09-03 11:54:25,611 INFO se_daily_plan_agent:   4/6 querying Attendance_3a...
+2026-09-03 11:54:26,586 INFO se_daily_plan_agent:   4/6 Attendance_3a: 30599 rows in 1.0s
+2026-09-03 11:54:26,586 INFO se_daily_plan_agent:   4/6 querying Active_Roster_4...
+2026-09-03 11:54:36,966 INFO se_daily_plan_agent:   4/6 Active_Roster_4: 105704 rows in 10.4s
+2026-09-03 11:54:36,967 INFO se_daily_plan_agent:   4/6 querying Sales_Transactions_3d...
+2026-09-03 11:54:42,213 INFO se_daily_plan_agent:   4/6 Sales_Transactions_3d: 78156 rows in 5.2s
+2026-09-03 11:54:42,213 INFO se_daily_plan_agent:   4/6 querying Outstanding_3d...
+2026-09-03 11:54:42,721 INFO se_daily_plan_agent:   4/6 Outstanding_3d: 23327 rows in 0.5s
+2026-09-03 11:54:42,722 INFO se_daily_plan_agent:   4/6 querying Orders_3d...
+2026-09-03 11:54:44,035 INFO se_daily_plan_agent:   4/6 Orders_3d: 38769 rows in 1.3s
+2026-09-03 11:54:44,035 INFO se_daily_plan_agent:   4/6 querying Liquidation_3d...
+2026-09-03 11:54:46,775 INFO se_daily_plan_agent:   4/6 Liquidation_3d: 68256 rows in 2.7s
+2026-09-03 11:54:46,775 INFO se_daily_plan_agent:   4/6 querying Payments_3f...
+2026-09-03 11:54:47,860 INFO se_daily_plan_agent:   4/6 Payments_3f: 47709 rows in 1.1s
+2026-09-03 11:54:47,861 INFO se_daily_plan_agent:   4/6 querying DC_Club_Mapping_3g...
+2026-09-03 11:54:48,128 INFO se_daily_plan_agent:   4/6 DC_Club_Mapping_3g: 9801 rows in 0.3s
+2026-09-03 11:54:48,128 INFO se_daily_plan_agent:   4/6 querying DC_Club_Slabs_3g...
+2026-09-03 11:54:48,242 INFO se_daily_plan_agent:   4/6 DC_Club_Slabs_3g: 6 rows in 0.1s
+2026-09-03 11:54:48,242 INFO se_daily_plan_agent:   4/6 querying DC_Club_Qualifying_Turnover_3g...
+2026-09-03 11:54:50,931 INFO se_daily_plan_agent:   4/6 DC_Club_Qualifying_Turnover_3g: 7509 rows in 2.7s
+2026-09-03 11:54:50,932 INFO se_daily_plan_agent:   4/6 supplementing DC Master with live-active DCs missing from DC_RAnk.csv...
+2026-09-03 11:54:51,328 INFO se_daily_plan_agent:   Supplemented 9108 DC(s) missing from DC_RAnk.csv with live input_partner_details data
+2026-09-03 11:54:51,332 INFO se_daily_plan_agent: 5/6 normalizing + cross-checking...
+2026-09-03 11:54:55,220 INFO se_daily_plan_agent: 6/6 scoring + generating SE Daily Plans...
+2026-09-03 11:55:04,114 ERROR django.request: Bad Gateway: /api/planning/se/kanhaiya.raj1@agrevolution.in/
+2026-09-03 11:55:05,784 ERROR django.request: Bad Gateway: /api/planning/se/kanhaiya.raj1@agrevolution.in/
+2026-09-03 11:55:08,889 INFO se_daily_plan_agent: Done. Wrote 13 tables + run summary to /Users/dehaat/Desktop/SE_automation_server/output
+2026-09-03 11:55:09,325 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1110 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-03): 31 exceptions across 37 DCs (84%) -- exceeds 10% threshold.
+2026-09-03 11:55:12,736 ERROR django.request: Bad Gateway: /api/planning/se/kanhaiya.raj1@agrevolution.in/
+2026-09-03 11:55:13,782 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1111 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-04): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-03 11:55:57,697 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1112 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-04): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-03 12:00:20,345 ERROR django.request: Bad Gateway: /api/planning/se/anupam.yadav@agrevolution.in/
+2026-09-03 12:00:21,979 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1113 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-04): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-03 12:00:55,909 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1114 (SE=anupam.yadav@agrevolution.in @ 2026-09-07): 45 exceptions across 45 DCs (100%) -- exceeds 10% threshold.
+2026-09-03 12:03:08,486 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1115 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-04): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-03 12:04:47,050 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1116 (SE=anupam.yadav@agrevolution.in @ 2026-09-07): 45 exceptions across 45 DCs (100%) -- exceeds 10% threshold.
+2026-09-03 12:17:49,055 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-03 12:17:49,682 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-03 12:18:07,151 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-03 12:18:07,588 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-03 12:18:12,914 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-03 12:18:13,656 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-03 12:18:27,181 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-03 12:18:27,607 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-03 12:18:38,931 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-09-03 12:18:39,374 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-03 12:18:42,596 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-03 12:18:43,135 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-03 12:18:45,447 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-03 12:18:45,845 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-03 12:18:49,094 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-09-03 12:18:49,445 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-03 12:19:29,574 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-09-03 12:19:29,574 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-09-03 12:19:33,810 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
+2026-09-03 12:19:34,219 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1117 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-04): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-03 12:19:50,817 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1118 (ABM=E02190267 @ 2026-09-04): 262 exceptions across 254 DCs (103%) -- exceeds 10% threshold.
