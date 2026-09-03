@@ -580,12 +580,20 @@ def _sql_business_area_strength_detailed(dc_ids: List[str], window_start: str, w
     # what made its own test look self-consistent). Every other confirmed query in this
     # file (_sql_ytd_pl, _sql_pl_metrics, etc.) already bridges through
     # customer_management_customer -- this one now does too.
+    #
+    # Bug fixed 2026-09-03: this used to subtract discount_price_unit*quantity, making
+    # every total here NET of discount, while _sql_ytd_pl's YTD_Private_Label (shown in
+    # every outcome table) is GROSS (price_unit*quantity only) -- same DC, same window,
+    # same PRIVATE LABEL filter, but two different "YTD PL" numbers that quietly
+    # disagreed by the full discount amount (confirmed live: DC 1000006972 showed
+    # gross=Rs695,090 vs net=Rs510,568, a 26.6% gap). Now gross throughout, matching
+    # _sql_ytd_pl and every other PL figure in this pipeline.
     return f"""
     SELECT
       cc.partner_id AS dc_id, cat.name AS category_name, sub.name AS sub_category_name,
       CASE WHEN tmpl.business_segment_name = 'PRIVATE LABEL' THEN 'Private Label' ELSE 'Branded' END AS brand_tier,
       sol.product_name, sol.product_brand,
-      SUM(sol.price_unit * sol.quantity) - COALESCE(SUM(sol.discount_price_unit * sol.quantity), 0) AS product_net_value
+      SUM(sol.price_unit * sol.quantity) AS product_gross_value
     FROM sale_orderrequestline sol
     JOIN sale_orderrequest sor ON sor.id = sol.order_request_id
     JOIN customer_management_customer cc ON cc.id = sor.partner_id
@@ -626,13 +634,15 @@ def _build_business_area_tree(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict
     """Flat product-level rows from _sql_business_area_strength_detailed -> per-DC list
     of {sub_category, total, segments: [{segment, total, share_of_subcat, products:
     [{name, brand, value}]}]}, sub-categories and segments ranked highest-value-first,
-    products ranked highest-value-first within their segment. Zero/negative net rows
-    (a sub-category that's all returns this window) are dropped, same convention as
-    every other value-ranked list in this file."""
+    products ranked highest-value-first within their segment. Gross values (2026-09-03
+    fix -- see _sql_business_area_strength_detailed's own docstring), matching
+    _sql_ytd_pl elsewhere in this file. Zero/negative rows (a sub-category that's all
+    returns this window) are dropped, same convention as every other value-ranked list
+    in this file."""
     tree: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for row in rows:
         dc_id = agent.normalize_id(row.get("dc_id"))
-        value = agent.parse_number(row.get("product_net_value")) or 0.0
+        value = agent.parse_number(row.get("product_gross_value")) or 0.0
         if not dc_id or value <= 0:
             continue
         subcat_name = row.get("sub_category_name") or "Unclassified"

@@ -97,3 +97,7 @@ Error: socket hang up
 4:39:12 pm [vite] page reload src/shared/types/dcCard.ts
 4:39:26 pm [vite] page reload src/shared/types/dcCard.ts
 5:01:15 pm [vite] hmr update /src/features/dcCard/BusinessAreaStrengthCard.tsx, /src/index.css
+12:25:14 pm [vite] hmr update /src/index.css, /src/features/views/shared/MultiScopeSummary.tsx, /src/features/views/shared/StatusBanner.tsx
+12:25:52 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+12:26:12 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+12:51:51 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css

@@ -2115,6 +2115,15 @@
     "Data_Confidence": "Live"
   },
   {
+    "SE_ID": 69188,
+    "SE_Name": "sabir.hossain@agrevolution.in",
+    "Plan_Date": "2026-09-04",
+    "Total_Capacity_Minutes": 480,
+    "Tasks": [],
+    "Skipped_Reason": "No punch-in recorded for this SE today (Section 3a gating signal)",
+    "Data_Confidence": "Live"
+  },
+  {
     "SE_ID": 69358,
     "SE_Name": "dinesh.ram@agrevolution.in",
     "Plan_Date": "2026-09-04",
