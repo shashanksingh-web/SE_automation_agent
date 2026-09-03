@@ -131,6 +131,13 @@ class DailyTask(models.Model):
     estimated_duration = models.IntegerField(default=0)
     priority_multiplier = models.FloatField(default=1.0)
 
+    # sale_orderrequest.partner_finance_status ("financed"/"non_financed"), from this
+    # DC's most recent order of any status -- see DailyTaskRow.Finance_Status docstring.
+    # Added 2026-09-03: confirmed live this genuinely changes per DC over time (16.6% of
+    # DCs with any finance-status history show a transition), not a static attribute.
+    # NULL when the DC has no order with this field populated, not assumed non_financed.
+    finance_status = models.CharField(max_length=16, blank=True, null=True)
+
     # Feedback-loop outcome fields (Tier 1) -- populated later by `reconcile_outcomes`,
     # once plan_date has passed and real Visits/Sales/Payments data for that day exists.
     # UNKNOWN (not COMPLETED/MISSED) is the honest default until reconciliation runs --

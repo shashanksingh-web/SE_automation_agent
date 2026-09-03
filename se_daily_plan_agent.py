@@ -2516,6 +2516,14 @@ class DailyTaskRow:
     Credit_On_Hold_Reason: Optional[str] = None
     Estimated_Duration: int = 0
     Priority_Multiplier: float = 1.0
+    # sale_orderrequest.partner_finance_status ("financed"/"non_financed"), from this
+    # DC's own most recent order of ANY status (normalize_sales_transactions' latest_
+    # order_any_status, same source as Credit_On_Hold above) -- confirmed live 2026-09-03
+    # this field genuinely changes over a DC's order history (16.6% of DCs with any
+    # finance-status data show at least one financed<->non_financed transition), so this
+    # is the DC's CURRENT status, not a static attribute. None when the DC has no order
+    # with this field populated at all, not assumed non_financed.
+    Finance_Status: Optional[str] = None
     # Confirmed live 2026-08-06 -- payments_paymenttransaction.customer_id bridges
     # through customer_management_customer.id -> .partner_id, same pattern as Orders.
     Last_Payment_Join_Key_Unconfirmed: bool = False
@@ -4011,6 +4019,7 @@ def generate_se_daily_plan(
             Objective=",".join(matched), No_New_Orders=_no_new_orders(dc_id),
             Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
             Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,
+            Finance_Status=fin.get("Partner_Finance_Status"),
             Last_Payment_Join_Key_Unconfirmed=False,
             Overdue_Aging_Bucket=overdue_aging,
             Avg_Repayment_Days=avg_repayment_days,

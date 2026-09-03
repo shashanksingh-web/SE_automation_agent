@@ -65,6 +65,12 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     DailyTaskRow.Critical. Empty for every non-critical task, not a fixed-width flag
     column, so it doesn't demand attention when there's nothing to flag.
 
+    Finance column added 2026-09-03 (DailyTaskRow.Finance_Status, sale_orderrequest.
+    partner_finance_status from the DC's most recent order) -- shows "Financed" /
+    "Non-Financed" / "Unknown" (no order with this field populated, not assumed
+    Non-Financed). Confirmed live this genuinely changes per DC over time, not a static
+    attribute, so it's shown per-task/per-run rather than treated as a fixed label.
+
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
     after a bordered/wrapped grid variant wasn't clearer. DC Name/Reason are truncated
@@ -102,11 +108,12 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             str(t.last_payment_date) if t.last_payment_date else "N/A",
             f"{t.ytd_private_label:,.0f}" if t.ytd_private_label is not None else "N/A",
             t.dc_club_participation or "N/A",
+            {"financed": "Financed", "non_financed": "Non-Financed"}.get(t.finance_status, "Unknown"),
         ])
     headers = [
         "SE", "Sr", "Critical", "DC Name", "Km", "Task Type", "Purpose", "Reason",
         "Last Visit", "Outstanding", "Overdue (Aging)", "Last Order", "Order Value",
-        "Last Payment", "YTD PL", "Club",
+        "Last Payment", "YTD PL", "Club", "Finance",
     ]
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
 

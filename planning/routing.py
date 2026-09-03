@@ -425,7 +425,7 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
 
     Known limitation: RouteStop only carries R6.1's confirmed fields (DC_ID, sequence,
     purposes, timing) -- not the rich per-DC financial/reason context (Present_Outstanding,
-    Reason_Of_Visit, YTD_Private_Label, etc.) that only exists transiently on the
+    Reason_Of_Visit, YTD_Private_Label, Finance_Status, etc.) that only exists transiently on the
     DailyTaskRow objects built during generation. Re-synced DailyTask rows after a
     plan switch will have those fields blank until a re-run of activate_tuff/
     generate_se_plan regenerates the full candidate set fresh. Not silently
@@ -455,7 +455,7 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
             last_order_date=None, last_order_value=None, last_payment_date=None,
             last_payment_join_key_unconfirmed=True, ytd_private_label=None, dc_club_participation="",
             objective="", no_new_orders=False, credit_on_hold=False, credit_on_hold_reason=None,
-            estimated_duration=int(stop.visit_duration_min), priority_multiplier=1.0,
+            estimated_duration=int(stop.visit_duration_min), priority_multiplier=1.0, finance_status=None,
         )
         created += 1
     return created
