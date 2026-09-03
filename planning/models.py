@@ -138,6 +138,11 @@ class DailyTask(models.Model):
     # NULL when the DC has no order with this field populated, not assumed non_financed.
     finance_status = models.CharField(max_length=16, blank=True, null=True)
 
+    # Full per-DC BO score dict (Outstanding/PL/Sales grades + reasons), as computed --
+    # see DailyTaskRow.BO_Scores docstring. Added 2026-09-03. {} when no BO scores were
+    # supplied for this DC this run.
+    bo_scores = models.JSONField(default=dict, blank=True)
+
     # Feedback-loop outcome fields (Tier 1) -- populated later by `reconcile_outcomes`,
     # once plan_date has passed and real Visits/Sales/Payments data for that day exists.
     # UNKNOWN (not COMPLETED/MISSED) is the honest default until reconciliation runs --

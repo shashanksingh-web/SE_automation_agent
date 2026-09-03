@@ -71,6 +71,16 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     Non-Financed). Confirmed live this genuinely changes per DC over time, not a static
     attribute, so it's shown per-task/per-run rather than treated as a fixed label.
 
+    BO Scores column added 2026-09-03 (DailyTaskRow.BO_Scores) -- compact grade-only
+    summary ("PL:C Outstanding:A") of every objective actually scored for this DC, not
+    just the ones that matched/qualified it (e.g. Sales/BO4 is scored but deliberately
+    excluded from selection per 8.12/GR-25 -- its grade is still shown here if computed).
+    A grade of None (score genuinely undefined, e.g. Config_Ambiguous PL_Expected) is
+    skipped rather than shown as a blank/fake grade. Empty when bo_scores is {} (no BO
+    scores were supplied for this DC this run) -- the full reason/basis text per
+    objective is available via the API's BO_Scores field, not repeated here to keep the
+    table width sane.
+
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
     after a bordered/wrapped grid variant wasn't clearer. DC Name/Reason are truncated
@@ -109,11 +119,12 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             f"{t.ytd_private_label:,.0f}" if t.ytd_private_label is not None else "N/A",
             t.dc_club_participation or "N/A",
             {"financed": "Financed", "non_financed": "Non-Financed"}.get(t.finance_status, "Unknown"),
+            " ".join(f"{obj}:{data['grade']}" for obj, data in (t.bo_scores or {}).items() if data.get("grade")) or "N/A",
         ])
     headers = [
         "SE", "Sr", "Critical", "DC Name", "Km", "Task Type", "Purpose", "Reason",
         "Last Visit", "Outstanding", "Overdue (Aging)", "Last Order", "Order Value",
-        "Last Payment", "YTD PL", "Club", "Finance",
+        "Last Payment", "YTD PL", "Club", "Finance", "BO Scores",
     ]
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
 

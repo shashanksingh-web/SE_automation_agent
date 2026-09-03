@@ -1688,6 +1688,7 @@ def generate_plan_for_scope(
                 credit_on_hold_reason=t["Credit_On_Hold_Reason"], estimated_duration=t["Estimated_Duration"],
                 priority_multiplier=t["Priority_Multiplier"],
                 finance_status=t.get("Finance_Status"),
+                bo_scores=t.get("BO_Scores") or {},
                 critical=t.get("Critical", False), critical_reasons=t.get("Critical_Reasons", ""),
             ))
 

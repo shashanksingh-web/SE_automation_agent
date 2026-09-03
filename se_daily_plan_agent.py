@@ -2516,6 +2516,18 @@ class DailyTaskRow:
     Credit_On_Hold_Reason: Optional[str] = None
     Estimated_Duration: int = 0
     Priority_Multiplier: float = 1.0
+    # Full per-DC BO score dict (2026-09-03), same dc_bo_scores this DC's Priority_Score/
+    # qualification already read -- {objective: {"grade": "A"/"B"/"C"/"D"/None, "reason":
+    # str, ...score_pct/ratio/coverage_pct, "basis"}}. Previously only partially visible,
+    # folded into Reason_Of_Visit's prose and only for objectives that MATCHED (grade_
+    # notes) -- this exposes the DC's full score set as-computed, including objectives
+    # that were scored but didn't qualify it (e.g. Sales/BO4, deliberately excluded from
+    # selection per 8.12/GR-25 but still scored) so the underlying grades are visible
+    # even when they weren't the reason this task exists. Only ever contains the
+    # objectives dc_bo_scores actually computed for THIS DC (Outstanding/PL/Sales today
+    # -- Visits/Long-Term are SE-level, never per-DC scored). None when no BO scores were
+    # supplied at all for this DC this run (dc_bo_scores wasn't wired for this call path).
+    BO_Scores: Optional[Dict[str, Dict[str, Any]]] = None
     # sale_orderrequest.partner_finance_status ("financed"/"non_financed"), from this
     # DC's own most recent order of ANY status (normalize_sales_transactions' latest_
     # order_any_status, same source as Credit_On_Hold above) -- confirmed live 2026-09-03
@@ -4020,6 +4032,7 @@ def generate_se_daily_plan(
             Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
             Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,
             Finance_Status=fin.get("Partner_Finance_Status"),
+            BO_Scores=per_dc_scores or None,
             Last_Payment_Join_Key_Unconfirmed=False,
             Overdue_Aging_Bucket=overdue_aging,
             Avg_Repayment_Days=avg_repayment_days,
