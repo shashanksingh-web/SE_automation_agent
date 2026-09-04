@@ -2305,12 +2305,24 @@ def valid_visit_compliance(visits: Table, exc: Exceptions) -> Dict[str, float]:
 # =====================================================================================
 
 def completion_multiplier(completion_rate_30d: Optional[float], sample_size: int, min_sample_size: int = 5) -> float:
-    """Tier-2 adaptive-weighting multiplier (feedback loop) -- maps a trailing-30d
-    completion rate (0.0-1.0) linearly onto [0.7, 1.3]: objectives whose assigned tasks
-    are actually getting done get a mild boost, chronically-missed ones get mildly
-    dampened, bounded either way so one bad/good week can't swing scoring by more than
-    30%. Neutral (1.0, no-op) whenever sample_size is too small to be meaningful -- never
-    reweight off a handful of data points."""
+    """DISABLED 2026-09-04, explicit user request -- no longer called anywhere in the
+    scoring pipeline (planning/services.py's score_bo3_outstanding_live_proxy/
+    score_bo1_private_label calls no longer pass weight_multiplier at all, so it
+    defaults to 1.0/no-op). Confirmed live this "Tier-2 adaptive weighting" concept
+    appears NOWHERE in SE_DC_Data_Normalization_Agent_Prompt.docx -- it was a system
+    extension never validated against the actual business requirements, silently
+    shrinking/inflating every DC's Outstanding/PL score by up to 30% based on the SE's
+    own completion history, not the DC's own data. Left defined (not deleted), same as
+    ObjectiveCompletionStats/compute_completion_stats, only in case this is ever
+    reintroduced later with a confirmed formula -- do not wire this back in without
+    that confirmation.
+
+    Original docstring, for reference: maps a trailing-30d completion rate (0.0-1.0)
+    linearly onto [0.7, 1.3]: objectives whose assigned tasks are actually getting done
+    get a mild boost, chronically-missed ones get mildly dampened, bounded either way so
+    one bad/good week can't swing scoring by more than 30%. Neutral (1.0, no-op)
+    whenever sample_size is too small to be meaningful -- never reweight off a handful
+    of data points."""
     if completion_rate_30d is None or sample_size < min_sample_size:
         return 1.0
     return max(0.7, min(1.3, 0.7 + 0.6 * completion_rate_30d))

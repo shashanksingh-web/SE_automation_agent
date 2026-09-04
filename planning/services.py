@@ -40,7 +40,7 @@ sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 from . import data_cache, product_cohort, routing
-from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, ObjectiveCompletionStats, PlanRun
+from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, PlanRun
 from .notify import send_alert
 
 
@@ -1177,28 +1177,6 @@ def generate_plan_for_scope(
         _, dc_financials = agent.normalize_sales_transactions([], outstanding_raw, orders_raw, fin_exc)
         run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in fin_exc.rows)
 
-        # Feedback loop, Tier 2 (adaptive weighting) -- dc_id -> owning SE's user_id, so
-        # a DC's BO score can be weighted by ITS SE's trailing-30d completion rate for
-        # that objective, not a network-wide average. Stats come from
-        # compute_completion_stats (run daily via cron, see run_scheduled_tuff); neutral
-        # (1.0x) for any SE/objective with no stats yet -- see agent.completion_multiplier().
-        dc_to_se_uid: Dict[str, int] = {
-            dc["DC_ID"]: se_user_ids[dc["Assigned_SE_Email"]]
-            for dc in scoped_dcs
-            if dc.get("Assigned_SE_Email") in se_user_ids
-        }
-        completion_stats = {
-            (s.se_id, s.objective): (s.completion_rate_30d, s.sample_size)
-            for s in ObjectiveCompletionStats.objects.filter(se_id__in=[str(u) for u in se_user_ids.values()])
-        }
-
-        def _mult(dc_id: str, objective: str) -> float:
-            uid = dc_to_se_uid.get(dc_id)
-            if uid is None:
-                return 1.0
-            rate, n = completion_stats.get((str(uid), objective), (None, 0))
-            return agent.completion_multiplier(rate, n)
-
         # Real per-DC BO3 (Outstanding) scoring -- see score_bo3_outstanding_live_proxy()
         # docstring for why this is a live-data substitute for the literal 3.1-3.6
         # formula, not that formula itself (Expected_Outstanding needs last month's
@@ -1206,10 +1184,22 @@ def generate_plan_for_scope(
         # pipeline). Wired 2026-08-06 so Outstanding-qualifying DCs get a real,
         # DC-specific severity in Layer 3's ranking instead of one shared SE-level floor
         # score that made every Outstanding match lose to Visits regardless of amount.
+        #
+        # Removed 2026-09-04, explicit user request: this used to also apply a Tier-2
+        # "adaptive weighting" multiplier (agent.completion_multiplier(), 0.7x-1.3x based
+        # on the SE's own trailing-30d completion rate for this objective). Confirmed
+        # live that formula appears NOWHERE in SE_DC_Data_Normalization_Agent_Prompt.docx
+        # -- no completion-rate, adaptive-weighting, or Tier-2 language anywhere in the
+        # source spec -- it was a system extension never validated against the actual
+        # business requirements, quietly shrinking/inflating every DC's Outstanding/PL
+        # score by up to 30% based on something that isn't the DC's own data at all.
+        # weight_multiplier now always defaults to 1.0 (no-op) -- scores reflect each
+        # DC's own real numbers only. ObjectiveCompletionStats/compute_completion_stats
+        # deliberately left in place (real tracked data, harmless once unread) rather
+        # than dropped, in case this is ever reintroduced with a confirmed formula.
         dc_bo_scores = {
             dc_id: {"Outstanding": agent.score_bo3_outstanding_live_proxy(
                 fin.get("Current_Outstanding"), fin.get("Current_Overdue"), fin.get("OS_90_Plus"), constants,
-                weight_multiplier=_mult(dc_id, "Outstanding"),
             )}
             for dc_id, fin in dc_financials.items()
         }
@@ -1352,10 +1342,13 @@ def generate_plan_for_scope(
                 legs = [v for v in (leg_trailing, leg_aop) if v is not None]
                 pl_expected = (sum(legs) / len(legs)) if legs else None
 
+                # weight_multiplier removed 2026-09-04 (see score_bo3_outstanding_live_proxy
+                # call site above for why) -- yoy_growth_multiplier is unaffected, that's a
+                # separate, independently-confirmed adjustment.
                 yoy_multiplier, yoy_growth_pct = _yoy_pl_growth_multiplier(dc_id)
                 result = agent.score_bo1_private_label(
                     pl_actual_30d_by_dc.get(dc_id, 0.0), pl_expected, constants,
-                    weight_multiplier=_mult(dc_id, "PL"), yoy_growth_multiplier=yoy_multiplier,
+                    yoy_growth_multiplier=yoy_multiplier,
                 )
                 if leg_trailing is not None:
                     result["reason"] += f"; trailing-90d leg carries a {PL_TRAILING_LEG_GROWTH_MULTIPLIER:.1f}x growth expectation (provisional, see PL_TRAILING_LEG_GROWTH_MULTIPLIER)"
