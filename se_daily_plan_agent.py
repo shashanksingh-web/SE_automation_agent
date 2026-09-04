@@ -843,7 +843,10 @@ class BusinessConstants:
     # grade-cutoff reuses above -- confirmed directly by the user 2026-08-06 ("at least
     # one [meeting] in 15 days"). See compute_fm_urgency().
     pacing_buffer_days: int = 15
-    # Section 6 -- DC exclusion (6.2, 6.3, 6.4 confirmed defaults)
+    # Section 6 -- DC exclusion (6.3, 6.4 confirmed defaults)
+    # min_days_since_last_visit -- DISABLED 2026-09-04, explicit user request (see
+    # apply_dc_exclusion_rules docstring). Unused by any decision logic now; kept
+    # defined only in case this is reintroduced later.
     min_days_since_last_visit: int = 5
     seasonal_skip_enabled: bool = False
     # User-confirmed 2026-08-13: a DC must have a real numeric DC_RAnk.csv Rank <=6000
@@ -965,7 +968,9 @@ class BusinessConstants:
 # formulas (8.5, 8.7, 4.4, ...) -- extracting those reliably would risk manufacturing false
 # "drift" flags, which is worse than the silent gap this replaces.
 CONFIG_DRIFT_CHECKS: List[Tuple[str, str, str, Any]] = [
-    ("6.2", "min_days_since_last_visit", r"(\d+)\s*days?", int),
+    # "6.2"/min_days_since_last_visit removed 2026-09-04 (see apply_dc_exclusion_rules
+    # docstring) -- checking config drift on a constant nothing reads anymore would be
+    # misleading, not just harmless.
     ("8.9", "monthly_travel_cap_km", r"([\d,]+)\s*km", lambda s: float(s.replace(",", ""))),
     ("8.10", "max_daily_tasks", r"(\d+)\s*tasks?", int),
 ]
@@ -1270,7 +1275,15 @@ def apply_dc_exclusion_rules(
     """Section 6: rules that remove a DC from consideration entirely.
     6.4 (Agent-Determined): always block Legal_Hold; Credit_Blocked/Blacklisted are
     evaluated live elsewhere (see resolve_full_block), not auto-blocked here.
-    6.2 (confirmed default): exclude a DC from lists if visited within the last 5 days.
+    6.2 REMOVED 2026-09-04, explicit user request -- used to exclude a DC entirely if
+    visited within the last min_days_since_last_visit (5) days. Unlike the completion-
+    weight removal, this one WAS tied to a live config-drift check (Param_Key "6.2" in
+    Source 5) -- genuine evidence it had real backing, not proof either way from the
+    prompt doc itself (that "6.2" numbering traces to a different source document this
+    agent doesn't have access to). Removed anyway per direct instruction, with that
+    uncertainty disclosed first. min_days_since_last_visit stays defined on
+    BusinessConstants (unused now) rather than deleted, same "kept in case of
+    reintroduction" reasoning as completion_multiplier.
     Rank eligibility (user-confirmed 2026-08-13, see BusinessConstants.max_eligible_rank):
     exclude a DC unless it has a real numeric Rank <=6000 -- a Long Tail-cohort DC (text
     placeholder Rank) or an unscored DC (Rank/Cohort both None, e.g. live-supplemented)
@@ -1288,7 +1301,6 @@ def apply_dc_exclusion_rules(
         days_since_visit = None
         if last_visit:
             days_since_visit = (today_dt - datetime.fromisoformat(last_visit)).days
-        too_recent = days_since_visit is not None and days_since_visit < constants.min_days_since_last_visit
         rank = dc.get("Rank")
         rank_eligible = isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank
         if not rank_eligible:
@@ -1307,7 +1319,7 @@ def apply_dc_exclusion_rules(
             )
         else:
             exc.ok("DC_Not_In_Top_List")
-        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and rank_eligible and top_list_eligible
+        in_scope = dc["Has_Assigned_SE"] and not legal_hold and rank_eligible and top_list_eligible
         dc["In_Scope_Flag"] = in_scope
         dc["Days_Since_Last_Visit"] = days_since_visit
         dc["Last_Visit_Date"] = last_visit

@@ -232,10 +232,10 @@ def generate_route_plans_for_se(
         if dc.get("DC_Status") == "Legal_Hold":
             pre_dropped.append({"dc_id": dc["DC_ID"], "reason": "Legal_Hold"})
             continue
-        days_since = dc.get("Days_Since_Last_Visit")
-        if days_since is not None and days_since < constants.min_days_since_last_visit:
-            pre_dropped.append({"dc_id": dc["DC_ID"], "reason": "Visited_Too_Recently"})
-            continue
+        # Visited_Too_Recently check removed 2026-09-04, explicit user request -- was a
+        # redundant second enforcement of the same min_days_since_last_visit rule
+        # apply_dc_exclusion_rules already dropped (see that function's docstring for
+        # why the rule itself was removed, not just this second check point).
         if today_zone is not None and zone_by_dc.get(dc["DC_ID"]) != today_zone:
             pre_dropped.append({"dc_id": dc["DC_ID"], "reason": "Rotation_Zone_Not_Today"})
             continue

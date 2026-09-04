@@ -1751,9 +1751,9 @@ def generate_plan_for_scope(
                 reasons = []
                 if dc.get("DC_Status") == "Legal_Hold":
                     reasons.append("Legal_Hold")
-                days = dc.get("Days_Since_Last_Visit")
-                if days is not None and days < constants.min_days_since_last_visit:
-                    reasons.append(f"Visited_Too_Recently ({days}d < {constants.min_days_since_last_visit}d)")
+                # Visited_Too_Recently branch removed 2026-09-04 -- the rule it explained
+                # no longer exists (see apply_dc_exclusion_rules docstring), so a DC can
+                # never legitimately be out-of-scope for only this reason anymore.
                 rank = dc.get("Rank")
                 if not (isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank):
                     reasons.append(f"DC_Rank_Ineligible (Rank={rank!r})")
