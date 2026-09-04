@@ -3402,3 +3402,6 @@ django.db.utils.OperationalError: no such column: planning_dailytask.bo_scores
 2026-09-03 12:19:33,810 ERROR django.request: Bad Gateway: /api/planning/abm/E02190267/
 2026-09-03 12:19:34,219 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1117 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-04): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
 2026-09-03 12:19:50,817 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1118 (ABM=E02190267 @ 2026-09-04): 262 exceptions across 254 DCs (103%) -- exceeds 10% threshold.
+2026-09-04 02:44:36,135 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1119 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-04): 29 exceptions across 37 DCs (78%) -- exceeds 10% threshold.
+2026-09-04 02:44:48,081 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1120 (SE=susheel.kumar@agrevolution.in @ 2026-09-04): 29 exceptions across 38 DCs (76%) -- exceeds 10% threshold.
+2026-09-04 02:45:03,703 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1121 (SE=susheel.kumar@agrevolution.in @ 2026-09-05): 33 exceptions across 38 DCs (87%) -- exceeds 10% threshold.

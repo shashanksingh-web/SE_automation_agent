@@ -10,6 +10,26 @@ from typing import List
 from .models import PlanRun
 
 
+def _format_bo_scores(bo_scores: dict) -> str:
+    """'Outstanding:33%(D) PL:0%(D)' per objective -- same score_pct/ratio/coverage_pct
+    fallback order as se_daily_plan_agent._bo_composite_score, kept local rather than
+    importing that module just for this one lookup. An objective whose grade is None
+    (score genuinely undefined) is skipped -- never shown as a fake 0%/blank grade."""
+    parts = []
+    for obj, data in (bo_scores or {}).items():
+        grade = data.get("grade")
+        if grade is None:
+            continue
+        value = data.get("score_pct")
+        if value is None:
+            value = data.get("ratio")
+        if value is None:
+            value = data.get("coverage_pct")
+        pct_str = f"{value:.0%}" if value is not None else "?"
+        parts.append(f"{obj}:{pct_str}({grade})")
+    return " ".join(parts) or "N/A"
+
+
 def summary_lines(plan_run: PlanRun) -> List[str]:
     """The header block: PlanRun identity, counts, note, exceptions (first 10)."""
     lines = [
@@ -71,22 +91,26 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     Non-Financed). Confirmed live this genuinely changes per DC over time, not a static
     attribute, so it's shown per-task/per-run rather than treated as a fixed label.
 
-    BO Scores column added 2026-09-03 (DailyTaskRow.BO_Scores) -- compact grade-only
-    summary ("PL:C Outstanding:A") of every objective actually scored for this DC, not
-    just the ones that matched/qualified it (e.g. Sales/BO4 is scored but deliberately
-    excluded from selection per 8.12/GR-25 -- its grade is still shown here if computed).
-    A grade of None (score genuinely undefined, e.g. Config_Ambiguous PL_Expected) is
-    skipped rather than shown as a blank/fake grade. Empty when bo_scores is {} (no BO
-    scores were supplied for this DC this run) -- the full reason/basis text per
-    objective is available via the API's BO_Scores field, not repeated here to keep the
-    table width sane.
+    BO Scores column added 2026-09-03 (DailyTaskRow.BO_Scores), reformatted 2026-09-04
+    (explicit user request: show the numeric health score alongside the letter grade,
+    not the grade alone) -- "PL:0%(D) Outstanding:33%(D)" for every objective actually
+    scored for this DC, not just the ones that matched/qualified it (e.g. Sales/BO4 is
+    scored but deliberately excluded from selection per 8.12/GR-25 -- its grade is still
+    shown here if computed). An objective with no numeric value at all (score genuinely
+    undefined, e.g. Config_Ambiguous PL_Expected -- grade is also None in that case) is
+    skipped entirely rather than shown as a fake 0%/blank grade. Empty when bo_scores is
+    {} (no BO scores were supplied for this DC this run) -- the full reason/basis text
+    per objective is available via the API's BO_Scores field, not repeated here to keep
+    the table width sane.
 
     BO Rank column added 2026-09-03 (explicit user request: "numerical ranking on the
     basis of BO scoring") -- DailyTaskRow.BO_Rank, 1 = lowest BO_Composite_Score (worst-
     performing/most in need of attention) among THIS SE's own task list that day, dense-
     ranked (ties share a rank). Not a network-wide rank, not the same thing as Sr_No
     (which is still Cohort/Total_Score/tie-break-order -- the actual selection ranking).
-    "N/A" when no BO scores exist to rank by.
+    Shows the underlying cumulative (average) health % alongside the rank number as of
+    2026-09-04 ("1 (16%)") -- same "show both the number and the label" choice as BO
+    Scores above. "N/A" when no BO scores exist to rank by.
 
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
@@ -126,8 +150,8 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             f"{t.ytd_private_label:,.0f}" if t.ytd_private_label is not None else "N/A",
             t.dc_club_participation or "N/A",
             {"financed": "Financed", "non_financed": "Non-Financed"}.get(t.finance_status, "Unknown"),
-            " ".join(f"{obj}:{data['grade']}" for obj, data in (t.bo_scores or {}).items() if data.get("grade")) or "N/A",
-            str(t.bo_rank) if t.bo_rank is not None else "N/A",
+            _format_bo_scores(t.bo_scores),
+            f"{t.bo_rank} ({t.bo_composite_score:.0%})" if t.bo_rank is not None else "N/A",
         ])
     headers = [
         "SE", "Sr", "Critical", "DC Name", "Km", "Task Type", "Purpose", "Reason",
