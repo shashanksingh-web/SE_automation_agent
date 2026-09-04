@@ -11,10 +11,14 @@ from .models import PlanRun
 
 
 def _format_bo_scores(bo_scores: dict) -> str:
-    """'Outstanding:33%(D) PL:0%(D)' per objective -- same score_pct/ratio/coverage_pct
-    fallback order as se_daily_plan_agent._bo_composite_score, kept local rather than
-    importing that module just for this one lookup. An objective whose grade is None
-    (score genuinely undefined) is skipped -- never shown as a fake 0%/blank grade."""
+    """'Outstanding:33%(D) PL:0%(D) Sales:1119%(A, MoM 134%)' per objective -- same
+    score_pct/ratio/coverage_pct fallback order as se_daily_plan_agent._bo_composite_
+    score, kept local rather than importing that module just for this one lookup. An
+    objective whose grade is None (score genuinely undefined) is skipped -- never shown
+    as a fake 0%/blank grade. mom_trend_pct (2026-09-04, Sales only) is a purely
+    informational "vs. last month" trend read, appended when present -- never fed into
+    the score/grade itself (that's YoY-based, see score_bo4_sales_momentum), only shown
+    alongside an already-graded entry to keep the table width sane."""
     parts = []
     for obj, data in (bo_scores or {}).items():
         grade = data.get("grade")
@@ -26,7 +30,12 @@ def _format_bo_scores(bo_scores: dict) -> str:
         if value is None:
             value = data.get("coverage_pct")
         pct_str = f"{value:.0%}" if value is not None else "?"
-        parts.append(f"{obj}:{pct_str}({grade})")
+        entry = f"{obj}:{pct_str}({grade}"
+        mom = data.get("mom_trend_pct")
+        if mom is not None:
+            entry += f", MoM {mom:.0%}"
+        entry += ")"
+        parts.append(entry)
     return " ".join(parts) or "N/A"
 
 

@@ -337,27 +337,40 @@ def _sql_bo4_momentum(dc_ids: List[str], plan_date: str) -> str:
     # Grouped by business_category since 4.4's multiplier is category-specific; caller
     # picks each DC's dominant category (highest combined this+baseline sales) in Python.
     #
-    # CHANGED 2026-09-04, explicit user request: the baseline used to be "last month"
-    # (the prior 30-day window) -- switched to "the same 30-day window one year ago"
-    # instead. Confirmed live why this matters: a DC with an unusually quiet PRIOR month
-    # could show 800%+ "momentum" that was really just recovering off a depressed base,
-    # while its actual year-over-year trend was flat or declining (New Annapurna: 848%
-    # vs. last month, but only 80% vs. the same period last year -- its Crop Protection
-    # business is genuinely down from a year ago, the MoM number was misleading). The two
-    # windows (this year's 30 days, last year's matching 30 days) are ~335 days apart, not
-    # contiguous, so the WHERE clause pulls both explicitly rather than one continuous range.
+    # CHANGED 2026-09-04, explicit user request: the SCORED baseline used to be "last
+    # month" (the prior 30-day window) -- switched to "the same 30-day window one year
+    # ago" instead. Confirmed live why this matters: a DC with an unusually quiet PRIOR
+    # month could show 800%+ "momentum" that was really just recovering off a depressed
+    # base, while its actual year-over-year trend was flat or declining (New Annapurna:
+    # 848% vs. last month, but only 80% vs. the same period last year -- its Crop
+    # Protection business is genuinely down from a year ago, the MoM number was
+    # misleading).
+    #
+    # sum_prior_30d ADDED BACK 2026-09-04 (explicit user request, same conversation) --
+    # NOT used for scoring/grading (that stays YoY-only, per the reasoning above), purely
+    # informational: a separate "vs. last month" trend number surfaced alongside the
+    # scored YoY percentage, so the genuine recent-momentum signal that motivated the
+    # original MoM formula isn't lost, just no longer conflated with the scored grade.
+    # See score_bo4_sales_momentum's caller for how mom_trend_pct gets attached.
+    #
+    # Three separate 30-day windows, non-contiguous (this year's, last month's, and last
+    # year's matching window are all disjoint) -- the WHERE clause pulls all three
+    # explicitly rather than one continuous range.
     d = datetime.fromisoformat(plan_date).date()
     period_start = (d - timedelta(days=30)).isoformat()
+    prior_start = (d - timedelta(days=60)).isoformat()
     last_year_end = (d - timedelta(days=365)).isoformat()
     last_year_start = (d - timedelta(days=395)).isoformat()
     return f"""
     SELECT partner_id AS dc_id, business_category,
            SUM(CASE WHEN invoice_date >= '{period_start}' AND invoice_date <= '{plan_date}' THEN net_billed_amount ELSE 0 END) AS sum_this_30d,
+           SUM(CASE WHEN invoice_date >= '{prior_start}' AND invoice_date < '{period_start}' THEN net_billed_amount ELSE 0 END) AS sum_prior_30d,
            SUM(CASE WHEN invoice_date >= '{last_year_start}' AND invoice_date <= '{last_year_end}' THEN net_billed_amount ELSE 0 END) AS sum_last_year_30d
     FROM invoice_liquidation_with_pog
     WHERE partner_id IN ({_sql_list(dc_ids)})
       AND (
         (invoice_date >= '{period_start}' AND invoice_date <= '{plan_date}')
+        OR (invoice_date >= '{prior_start}' AND invoice_date < '{period_start}')
         OR (invoice_date >= '{last_year_start}' AND invoice_date <= '{last_year_end}')
       )
     GROUP BY partner_id, business_category
@@ -1422,9 +1435,21 @@ def generate_plan_for_scope(
                 )
                 momentum_this = (agent.parse_number(dominant.get("sum_this_30d")) or 0.0) / constants.bo4_momentum_period_days
                 momentum_last_year = (agent.parse_number(dominant.get("sum_last_year_30d")) or 0.0) / constants.bo4_momentum_period_days
-                dc_bo_scores.setdefault(dc_id, {})["Sales"] = agent.score_bo4_sales_momentum(
+                sales_result = agent.score_bo4_sales_momentum(
                     momentum_this, momentum_last_year, dominant.get("business_category"), constants,
                 )
+                # mom_trend_pct (2026-09-04, explicit user request) -- informational
+                # only, never fed into score_pct/grade above. sum_this_30d ÷ sum_prior_30d
+                # (last MONTH, not last year) -- same category the DC was actually graded
+                # on, no growth multiplier applied (this is a plain trend read, not a
+                # target comparison). None (not 0%) when there's no real prior-month sales
+                # to compare against, same never-fabricate convention as every other gap.
+                sum_prior_30d = agent.parse_number(dominant.get("sum_prior_30d"))
+                sales_result["mom_trend_pct"] = (
+                    (agent.parse_number(dominant.get("sum_this_30d")) or 0.0) / sum_prior_30d
+                    if sum_prior_30d else None
+                )
+                dc_bo_scores.setdefault(dc_id, {})["Sales"] = sales_result
         except Exception as e:
             run_exceptions.append({"source": "invoice_liquidation_with_pog", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
