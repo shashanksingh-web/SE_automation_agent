@@ -876,25 +876,28 @@ def _sql_punch_in(se_user_ids: List[int], plan_date: str) -> str:
     """
 
 
-def _sql_prev_punch_in(se_user_ids: List[int], plan_date: str) -> str:
-    # Routing Agent R0.4, CONFIRMED (OQ-2/OQ-11): Origin_Point = the SE's previous
-    # working day's punch-in, not today's -- distinct from _sql_punch_in() above (which
-    # is plan_date's own punch-in, used as a fallback by planning.routing when no
-    # prior-day one exists). No DISTINCT ON (unsupported on this cluster's Postgres
-    # dialect, per every other query in this file) -- two window functions instead:
-    # day_rank picks each SE's most recent date strictly before plan_date, rn_in_day
-    # picks that date's earliest check-in (same "earliest of the day" convention as
-    # _sql_punch_in).
+def _sql_recent_punch_ins(se_user_ids: List[int], plan_date: str, days: int = 30) -> str:
+    # Routing Agent R0.4 Origin_Point, REWRITTEN 2026-09-04 (explicit user request) --
+    # was a single most-recent-day punch-in (_sql_prev_punch_in, removed), confirmed
+    # live root cause of a real 300km+ routing anomaly (kanhaiya.raj1: one anomalous
+    # day's GPS reading, zero cross-checking against his actual recent pattern). Now
+    # pulls each SE's earliest check-in for EVERY one of the last `days` calendar days
+    # before plan_date (N=30 per direct instruction) -- clustering (500m buffer,
+    # majority/dominant cluster wins) happens in Python, see
+    # se_daily_plan_agent.resolve_typical_origin(). Same rn_in_day-per-calendar-day
+    # convention as _sql_punch_in above, just over a window instead of a single day.
     return f"""
-    SELECT se_user_id, lat, lon FROM (
+    SELECT se_user_id, lat, lon, check_date FROM (
         SELECT user_id AS se_user_id, check_in_latitude AS lat, check_in_longitude AS lon,
-               ROW_NUMBER() OVER (PARTITION BY user_id, check_in_time::date ORDER BY check_in_time ASC) AS rn_in_day,
-               DENSE_RANK() OVER (PARTITION BY user_id ORDER BY check_in_time::date DESC) AS day_rank
+               check_in_time::date AS check_date,
+               ROW_NUMBER() OVER (PARTITION BY user_id, check_in_time::date ORDER BY check_in_time ASC) AS rn_in_day
         FROM attendance_attendance
         WHERE user_id IN ({",".join(str(u) for u in se_user_ids)})
+          AND check_in_time >= DATE '{plan_date}' - INTERVAL '{days} days'
           AND check_in_time < '{plan_date}'
     ) t
-    WHERE rn_in_day = 1 AND day_rank = 1
+    WHERE rn_in_day = 1
+    ORDER BY se_user_id, check_date ASC
     """
 
 
@@ -1539,11 +1542,32 @@ def generate_plan_for_scope(
             run_exceptions.append({"source": "attendance_attendance", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
         try:
-            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_prev_punch_in(uids, plan_date)):
+            recent_points_by_se: Dict[int, List[Tuple[float, float, str]]] = {}
+            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_recent_punch_ins(uids, plan_date)):
                 uid = row["se_user_id"]
                 lat, lon = agent.parse_number(row.get("lat")), agent.parse_number(row.get("lon"))
                 if lat is not None and lon is not None:
-                    prev_punch_in_by_se[uid] = (lat, lon)
+                    recent_points_by_se.setdefault(uid, []).append((lat, lon, str(row.get("check_date"))))
+            for uid, points in recent_points_by_se.items():
+                resolved = agent.resolve_typical_origin(points)
+                if resolved is None:
+                    continue
+                prev_punch_in_by_se[uid] = (resolved["lat"], resolved["lon"])
+                if not resolved["most_recent_point_in_dominant_cluster"]:
+                    # Exactly the case that produced the kanhaiya.raj1 300km+ anomaly --
+                    # the SE's single most recent punch-in doesn't match where they've
+                    # actually been starting their day over the last 30d. Overridden
+                    # with the majority location instead of trusting the outlier, but
+                    # flagged, not silently swapped.
+                    run_exceptions.append({
+                        "source": "attendance_attendance", "reason_code": "Origin_Point_Outlier_Overridden",
+                        "detail": (
+                            f"SE user_id={uid}: most recent punch-in ({points[-1][2]}) does not match the "
+                            f"{resolved['days_in_cluster']}/{resolved['days_total']}-day majority location "
+                            f"(last matching {resolved['most_recent_date_in_cluster']}) -- used the majority "
+                            f"location instead of the most recent day's outlier reading"
+                        ),
+                    })
         except Exception as e:
             run_exceptions.append({"source": "attendance_attendance", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e} -- Routing Agent Origin_Point (R0.4) falls back to today's punch-in or defers"})
     else:
@@ -1651,7 +1675,7 @@ def generate_plan_for_scope(
         def _route_selector(candidates, se_id_str, plan_date_, punch_in_coords, constants_, dc_by_id_, _uid=uid, _email=email):
             prev = prev_punch_in_by_se.get(_uid)
             if prev is not None:
-                origin, origin_basis = prev, "prev_day_punch_in"
+                origin, origin_basis = prev, "prev_30d_punch_in"
             elif punch_in_coords is not None:
                 origin, origin_basis = punch_in_coords, "today_punch_in"
             else:

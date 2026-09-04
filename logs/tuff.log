@@ -3453,3 +3453,38 @@ django.db.utils.OperationalError: no such column: planning_dailytask.bo_scores
 2026-09-04 06:25:37,387 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
 2026-09-04 06:25:37,792 INFO django.utils.autoreload: Watching for file changes with StatReloader
 2026-09-04 06:26:02,106 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1127 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-05): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-04 06:36:16,910 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1128 (SE=anupam.yadav@agrevolution.in @ 2026-09-04): 45 exceptions across 45 DCs (100%) -- exceeds 10% threshold.
+2026-09-04 06:36:57,389 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1129 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-05): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-04 06:37:04,755 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1130 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-06): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-04 06:37:09,102 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1131 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-07): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-04 06:37:12,919 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1132 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-08): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-04 06:37:55,602 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1133 (STATE=Uttar Pradesh @ 2026-09-08): 5997 exceptions across 4294 DCs (140%) -- exceeds 10% threshold.
+2026-09-04 06:42:57,348 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1134 (STATE=Uttar Pradesh @ 2026-09-08): 5997 exceptions across 4294 DCs (140%) -- exceeds 10% threshold.
+2026-09-04 06:45:01,654 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1135 (STATE=Uttar Pradesh @ 2026-09-05): 6007 exceptions across 4294 DCs (140%) -- exceeds 10% threshold.
+2026-09-04 07:08:09,110 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1136 (SE=vivekk.yadav@agrevolution.in @ 2026-09-08): 28 exceptions across 35 DCs (80%) -- exceeds 10% threshold.
+2026-09-04 07:08:19,626 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1137 (SE=vivekk.yadav@agrevolution.in @ 2026-09-09): 28 exceptions across 35 DCs (80%) -- exceeds 10% threshold.
+2026-09-04 07:08:29,339 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1138 (SE=vivekk.yadav@agrevolution.in @ 2026-09-07): 28 exceptions across 35 DCs (80%) -- exceeds 10% threshold.
+2026-09-04 07:08:39,835 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1139 (SE=vivekk.yadav@agrevolution.in @ 2026-09-06): 28 exceptions across 35 DCs (80%) -- exceeds 10% threshold.
+2026-09-04 07:08:50,264 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1140 (SE=vivekk.yadav@agrevolution.in @ 2026-09-05): 28 exceptions across 35 DCs (80%) -- exceeds 10% threshold.
+2026-09-04 07:12:57,597 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1141 (STATE=Maharashtra @ 2026-09-09): 3985 exceptions across 2811 DCs (142%) -- exceeds 10% threshold.
+2026-09-04 07:14:25,424 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1142 (STATE=Bihar @ 2026-09-09): 7117 exceptions across 5254 DCs (135%) -- exceeds 10% threshold.
+2026-09-04 07:14:45,826 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1143 (STATE=Jharkhand @ 2026-09-09): 668 exceptions across 568 DCs (118%) -- exceeds 10% threshold.
+2026-09-04 07:15:07,264 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1144 (STATE=Rajasthan @ 2026-09-09): 1747 exceptions across 1231 DCs (142%) -- exceeds 10% threshold.
+2026-09-04 07:17:30,095 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1145 (SE=kundan.kr@agrevolution.in @ 2026-09-09): 36 exceptions across 37 DCs (97%) -- exceeds 10% threshold.
+2026-09-04 07:20:08,534 ERROR django.request: Bad Gateway: /api/planning/se/kundan.kr@agrevolution.in/
+2026-09-04 07:20:16,766 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1146 (SE=kundan.kr@agrevolution.in @ 2026-09-09): 33 exceptions across 37 DCs (89%) -- exceeds 10% threshold.
+2026-09-04 07:20:21,976 ERROR django.request: Bad Gateway: /api/planning/se/kundan.kr@agrevolution.in/
+2026-09-04 07:21:00,317 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1146 (STATE=Bihar @ 2026-09-05): 7174 exceptions across 5254 DCs (137%) -- exceeds 10% threshold.
+2026-09-04 08:04:08,026 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1147 (STATE=Bihar @ 2026-09-05): 7174 exceptions across 5254 DCs (137%) -- exceeds 10% threshold.
+2026-09-04 08:17:44,734 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 08:17:45,666 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 08:17:55,024 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-09-04 08:17:55,396 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 08:18:13,837 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 08:18:14,155 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 08:18:29,570 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 08:18:29,966 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 08:18:42,335 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 08:18:42,725 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 08:20:17,355 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1148 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-05): 30 exceptions across 37 DCs (81%) -- exceeds 10% threshold.
+2026-09-04 08:20:54,610 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1149 (SE=susheel.kumar@agrevolution.in @ 2026-09-05): 30 exceptions across 38 DCs (79%) -- exceeds 10% threshold.

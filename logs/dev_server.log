@@ -110,3 +110,8 @@ Error: read ECONNRESET
     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
 8:20:20 am [vite] hmr update /src/index.css, /src/features/views/shared/MultiScopeSummary.tsx, /src/features/views/shared/StatusBanner.tsx
 8:20:51 am [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+12:08:55 pm [vite] hmr update /src/index.css, /src/features/views/shared/MultiScopeSummary.tsx, /src/features/views/shared/StatusBanner.tsx
+12:09:20 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+12:09:35 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+12:40:47 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css
+12:41:12 pm [vite] hmr update /src/features/views/shared/TaskTable.tsx, /src/index.css

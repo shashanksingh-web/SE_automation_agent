@@ -2767,6 +2767,59 @@ R1_7_MAX_STOPS = 5  # R1.7, HARD cap (GR-R4)
 R3_2_DEFAULT_AVG_SPEED_KMPH = 25.0  # R3.2 -- undefined in the sheet; bottom of its own suggested 25-30 km/h range
 
 
+def resolve_typical_origin(points: List[Tuple[float, float, str]], buffer_km: float = 0.5) -> Optional[Dict[str, Any]]:
+    """Routing Agent R0.4 Origin_Point, REWRITTEN 2026-09-04 (explicit user request,
+    replacing the single-most-recent-day punch-in) -- confirmed live root cause of a
+    real 300km+ routing anomaly (kanhaiya.raj1): trusting one raw GPS reading from one
+    day, with zero cross-checking against the SE's actual recent pattern, meant a single
+    device glitch or one-off trip produced a route starting from the wrong side of the
+    state.
+
+    Takes `points` = one (lat, lon, date) per day over the SE's last N days (N=30 per
+    direct instruction), in chronological order, and groups them into location clusters
+    using a straight-line (haversine, NOT the 1.4x road-circuity-adjusted distance --
+    this is "is this the same physical spot," not "how far would you drive") buffer_km
+    radius (500m per direct instruction): a point joins the first existing cluster whose
+    running centroid is within buffer_km, else starts a new cluster; centroid is
+    recomputed as the plain mean of every point in the cluster after each join (a
+    single-pass greedy grouping, not full k-means/DBSCAN -- good enough for "does this
+    SE consistently start from roughly one place," doesn't need to be optimal).
+
+    Returns the DOMINANT (most days) cluster's centroid as the SE's "typical" start-of-
+    day location, plus enough metadata for a caller to flag when the most recent single
+    day disagreed with that pattern (most_recent_point_in_dominant_cluster=False) --
+    see planning.services' Origin_Point_Outlier_Overridden exception, which is exactly
+    what would have caught kanhaiya.raj1's case before it produced a bad route. None
+    when points is empty (no punch-in history at all in the window)."""
+    if not points:
+        return None
+    clusters: List[Dict[str, Any]] = []
+    for lat, lon, date in points:
+        target = None
+        for c in clusters:
+            d = haversine_km(lat, lon, c["centroid"][0], c["centroid"][1])
+            if d is not None and d <= buffer_km:
+                target = c
+                break
+        if target is None:
+            target = {"points": [], "centroid": (lat, lon)}
+            clusters.append(target)
+        target["points"].append((lat, lon, date))
+        n = len(target["points"])
+        target["centroid"] = (
+            sum(p[0] for p in target["points"]) / n,
+            sum(p[1] for p in target["points"]) / n,
+        )
+    dominant = max(clusters, key=lambda c: len(c["points"]))
+    dates = sorted(p[2] for p in dominant["points"])
+    return {
+        "lat": dominant["centroid"][0], "lon": dominant["centroid"][1],
+        "days_in_cluster": len(dominant["points"]), "days_total": len(points),
+        "most_recent_date_in_cluster": dates[-1], "least_recent_date_in_cluster": dates[0],
+        "most_recent_point_in_dominant_cluster": points[-1] in dominant["points"],
+    }
+
+
 def circuity_distance_km(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
     """R3.1, FINAL: Distance_Leg(i,j) = Haversine(i,j) x 1.4. Same None-propagation
     convention as haversine_km() -- an incomplete point yields an incomplete distance,

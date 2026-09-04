@@ -411,7 +411,17 @@ class RoutePlan(models.Model):
     # R0.4: previous working day's punch-in, confirmed -- if none exists yet, the agent
     # waits for today's real punch-in rather than guessing a fallback (see planning.routing).
     ORIGIN_BASIS_CHOICES = [
-        ("prev_day_punch_in", "Previous working day's punch-in"),
+        # Legacy value (rows generated before 2026-09-04) -- a single most-recent-day
+        # punch-in, no cross-checking. Confirmed live root cause of a real 300km+
+        # routing anomaly (kanhaiya.raj1) -- superseded below, kept here only so old
+        # RoutePlan rows still validate against this choices list.
+        ("prev_day_punch_in", "Previous working day's punch-in (legacy, pre-2026-09-04)"),
+        # REWRITTEN 2026-09-04, explicit user request -- majority location across the
+        # SE's last 30 days of punch-ins, clustered with a 500m buffer (see
+        # se_daily_plan_agent.resolve_typical_origin). Resistant to a single anomalous
+        # day; see planning.services' Origin_Point_Outlier_Overridden exception for
+        # when the most recent day's punch-in disagreed with this pattern.
+        ("prev_30d_punch_in", "Majority of last 30 days' punch-ins (500m cluster)"),
         # R0.4's "waits for today's real punch-in instead of guessing" case where that
         # punch-in has already actually happened by the time this ran (plan_date's own
         # attendance record exists, even though no prior-day one does) -- a resolved
