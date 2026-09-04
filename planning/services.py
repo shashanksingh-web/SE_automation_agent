@@ -330,22 +330,36 @@ def _sql_pl_metrics(dc_ids: List[str], plan_date: str) -> str:
 def _sql_bo4_momentum(dc_ids: List[str], plan_date: str) -> str:
     # Real per-DC BO4 (Sales Momentum) scoring, wired 2026-08-06 -- 4.2's Momentum =
     # Total_Sales_This_Period / Total_Working_Days_In_Period, graded against
-    # Prior_Momentum x Category_Multiplier (4.4, GR-25). Same invoice_liquidation_with_pog
+    # Baseline_Momentum x Category_Multiplier (4.4, GR-25). Same invoice_liquidation_with_pog
     # source as Liquidation_Normalized (SQL_LIQUIDATION_3D in se_daily_plan_agent.py) --
     # partner_id IS sap_partner_id directly here, no customer_management_customer bridge
     # needed (confirmed live via a join to input_partner_details), unlike orders/payments.
     # Grouped by business_category since 4.4's multiplier is category-specific; caller
-    # picks each DC's dominant category (highest combined this+prior sales) in Python.
+    # picks each DC's dominant category (highest combined this+baseline sales) in Python.
+    #
+    # CHANGED 2026-09-04, explicit user request: the baseline used to be "last month"
+    # (the prior 30-day window) -- switched to "the same 30-day window one year ago"
+    # instead. Confirmed live why this matters: a DC with an unusually quiet PRIOR month
+    # could show 800%+ "momentum" that was really just recovering off a depressed base,
+    # while its actual year-over-year trend was flat or declining (New Annapurna: 848%
+    # vs. last month, but only 80% vs. the same period last year -- its Crop Protection
+    # business is genuinely down from a year ago, the MoM number was misleading). The two
+    # windows (this year's 30 days, last year's matching 30 days) are ~335 days apart, not
+    # contiguous, so the WHERE clause pulls both explicitly rather than one continuous range.
     d = datetime.fromisoformat(plan_date).date()
     period_start = (d - timedelta(days=30)).isoformat()
-    prior_start = (d - timedelta(days=60)).isoformat()
+    last_year_end = (d - timedelta(days=365)).isoformat()
+    last_year_start = (d - timedelta(days=395)).isoformat()
     return f"""
     SELECT partner_id AS dc_id, business_category,
-           SUM(CASE WHEN invoice_date >= '{period_start}' THEN net_billed_amount ELSE 0 END) AS sum_this_30d,
-           SUM(CASE WHEN invoice_date < '{period_start}' THEN net_billed_amount ELSE 0 END) AS sum_prior_30d
+           SUM(CASE WHEN invoice_date >= '{period_start}' AND invoice_date <= '{plan_date}' THEN net_billed_amount ELSE 0 END) AS sum_this_30d,
+           SUM(CASE WHEN invoice_date >= '{last_year_start}' AND invoice_date <= '{last_year_end}' THEN net_billed_amount ELSE 0 END) AS sum_last_year_30d
     FROM invoice_liquidation_with_pog
     WHERE partner_id IN ({_sql_list(dc_ids)})
-      AND invoice_date >= '{prior_start}' AND invoice_date <= '{plan_date}'
+      AND (
+        (invoice_date >= '{period_start}' AND invoice_date <= '{plan_date}')
+        OR (invoice_date >= '{last_year_start}' AND invoice_date <= '{last_year_end}')
+      )
     GROUP BY partner_id, business_category
     """
 
@@ -1398,17 +1412,18 @@ def generate_plan_for_scope(
                 if dc_id:
                     bo4_rows_by_dc.setdefault(dc_id, []).append(row)
             for dc_id, rows in bo4_rows_by_dc.items():
-                # Dominant category = highest combined this+prior sales -- a DC selling
-                # across multiple categories is graded on its largest one (documented
-                # simplification, same single-tag-per-DC pattern DC_RAnk's Cohort uses).
+                # Dominant category = highest combined this+same-period-last-year sales --
+                # a DC selling across multiple categories is graded on its largest one
+                # (documented simplification, same single-tag-per-DC pattern DC_RAnk's
+                # Cohort uses).
                 dominant = max(
                     rows,
-                    key=lambda r: (agent.parse_number(r.get("sum_this_30d")) or 0.0) + (agent.parse_number(r.get("sum_prior_30d")) or 0.0),
+                    key=lambda r: (agent.parse_number(r.get("sum_this_30d")) or 0.0) + (agent.parse_number(r.get("sum_last_year_30d")) or 0.0),
                 )
                 momentum_this = (agent.parse_number(dominant.get("sum_this_30d")) or 0.0) / constants.bo4_momentum_period_days
-                momentum_prior = (agent.parse_number(dominant.get("sum_prior_30d")) or 0.0) / constants.bo4_momentum_period_days
+                momentum_last_year = (agent.parse_number(dominant.get("sum_last_year_30d")) or 0.0) / constants.bo4_momentum_period_days
                 dc_bo_scores.setdefault(dc_id, {})["Sales"] = agent.score_bo4_sales_momentum(
-                    momentum_this, momentum_prior, dominant.get("business_category"), constants,
+                    momentum_this, momentum_last_year, dominant.get("business_category"), constants,
                 )
         except Exception as e:
             run_exceptions.append({"source": "invoice_liquidation_with_pog", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})

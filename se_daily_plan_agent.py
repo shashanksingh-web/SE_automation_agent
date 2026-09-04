@@ -2408,14 +2408,22 @@ def score_bo3_outstanding_live_proxy(
 
 
 def score_bo4_sales_momentum(
-    momentum_this: Optional[float], momentum_prior: Optional[float], business_category: Optional[str], c: BusinessConstants,
+    momentum_this: Optional[float], momentum_last_year: Optional[float], business_category: Optional[str], c: BusinessConstants,
 ) -> Dict[str, Any]:
     """4.1-4.3: Momentum = Total_Sales_This_Period / Total_Working_Days_In_Period, graded
-    against Prior_Momentum x Category_Multiplier (4.4, real per-category values -- see
+    against Baseline_Momentum x Category_Multiplier (4.4, real per-category values -- see
     BusinessConstants.bo4_category_multipliers). Wired 2026-08-06 from
     invoice_liquidation_with_pog.net_billed_amount/business_category (confirmed live, see
     GR-25). Deliberately excluded from Candidate_DCs (8.12) -- this scores a DC, it never
     selects one; caller-side wiring only stores the result, doesn't qualify against it.
+
+    Baseline CHANGED 2026-09-04, explicit user request: momentum_last_year is the SAME
+    30-day window one year ago, not last month (the original "prior 30 days" reading).
+    Confirmed live why: a DC with an unusually quiet PRIOR MONTH could show 800%+
+    "momentum" that was really just recovering off a temporarily depressed base, while
+    its real year-over-year trend was flat or declining -- comparing against the same
+    calendar window a year back is a fairer read of genuine growth than comparing
+    against whatever the immediately preceding month happened to look like.
 
     Category multiplier lookup is case-insensitive against the confirmed 4.4 categories.
     An unmapped category (Field Crop -- seasonal factor undefined per the sheet itself,
@@ -2430,14 +2438,14 @@ def score_bo4_sales_momentum(
             else f"no 4.4 growth multiplier defined for category '{business_category}'"
         )
         return {"score_pct": None, "grade": None, "reason": reason, "basis": "provisional_no_multiplier"}
-    if not momentum_prior or momentum_this is None:
+    if not momentum_last_year or momentum_this is None:
         return {"score_pct": None, "grade": None, "reason": "insufficient sales history for momentum comparison", "basis": "live_from_invoice_liquidation_with_pog"}
-    momentum_target = momentum_prior * multiplier
+    momentum_target = momentum_last_year * multiplier
     if not momentum_target:
         return {"score_pct": None, "grade": None, "reason": "momentum target is zero", "basis": "live_from_invoice_liquidation_with_pog"}
     pct = momentum_this / momentum_target
     grade = "A" if pct >= c.bo4_grade_a else "B" if pct >= c.bo4_grade_b else "C" if pct >= c.bo4_grade_c else "D"
-    reason = f"momentum at {pct:.0%} of target ({business_category} x{multiplier})"
+    reason = f"momentum at {pct:.0%} of target ({business_category} x{multiplier}, vs. same period last year)"
     return {"score_pct": pct, "grade": grade, "reason": reason, "basis": "live_from_invoice_liquidation_with_pog"}
 
 
