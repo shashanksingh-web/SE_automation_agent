@@ -894,6 +894,17 @@ class BusinessConstants:
     contact_fatigue_window_days: int = 3
     contact_fatigue_priority_cut: float = 0.30
     wait_after_failed_call_days: int = 2
+    # Explicit user request 2026-09-04: a DC with real overdue aged past 90 days should
+    # jump the queue -- rank/get selected ahead of every other DC in the SE's day,
+    # regardless of the other three objectives' gap magnitudes. Deliberately does NOT
+    # touch the Outstanding score_pct/grade shown in BO Scores/BO_Rank (user confirmed
+    # that display stays as-is) -- this only affects Step 5's priority_score, which
+    # decides Sr_No ordering AND what the Routing Agent's optimizer picks under capacity.
+    # An out-of-band additive constant (not a multiplier) guarantees the boosted DC always
+    # outranks an unboosted one: max possible unboosted priority_score is the sum of the
+    # top-3 objective weights (0.40+0.35+0.25=1.0) times a gap of at most ~1.0 each, so
+    # anything meaningfully larger than 1.0 dominates unconditionally.
+    overdue_90_plus_priority_boost: float = 10.0
     # SE Incentive Policy (FY26-27)
     wps_weight_revenue: float = 0.25
     wps_weight_collection: float = 0.30
@@ -4273,6 +4284,20 @@ def generate_se_daily_plan(
         attempts = recent_attempts_by_dc.get(dc["DC_ID"], 0)
         fatigue_multiplier = (1 - constants.contact_fatigue_priority_cut) if attempts >= constants.contact_fatigue_max_attempts else 1.0
         priority_score = sum(w * gap for w, (gap, _) in zip(weights, gap_by_obj)) * fatigue_multiplier
+        # 90+ day aged overdue queue-jump (explicit user request 2026-09-04) -- same
+        # current_overdue>0 + os_90_plus>0 gate _build_candidate_row uses for Overdue_
+        # Aging_Bucket, so this never fires on a genuine Rs0-overdue/aging-mismatch case.
+        # Applied AFTER fatigue_multiplier on purpose -- a queue-jump-worthy DC should
+        # never be knocked back down by the contact-fatigue discount.
+        fin_for_boost = dc_financials.get(dc["DC_ID"], {})
+        current_overdue_for_boost = fin_for_boost.get("Current_Overdue")
+        os_90_plus_for_boost = fin_for_boost.get("OS_90_Plus")
+        if (
+            "Outstanding" in matched
+            and current_overdue_for_boost and current_overdue_for_boost > 0
+            and os_90_plus_for_boost and os_90_plus_for_boost > 0
+        ):
+            priority_score += constants.overdue_90_plus_priority_boost
         pool.append((dc, [o for _, o in gap_by_obj], priority_score, fatigue_multiplier))
 
     ranked_pool = sorted(
@@ -4338,10 +4363,12 @@ def generate_se_daily_plan(
         purpose = " + ".join(dict.fromkeys(PURPOSE_BY_OBJECTIVE.get(o, o) for o in matched))
         per_dc_scores = dc_bo_scores.get(dc_id, {})
         grade_notes = [f"{o} Grade {per_dc_scores[o]['grade']} ({per_dc_scores[o].get('reason', '')})" for o in matched if o in per_dc_scores and per_dc_scores[o].get("grade")]
+        overdue_90_plus_boosted = overdue_aging == "90+ days" and "Outstanding" in matched
         reason = (
             f"Matched {', '.join(matched)} -- {dc.get('Cohort')} cohort, rank {dc.get('Rank')}"
             + (f" -- {'; '.join(grade_notes)}" if grade_notes else "")
             + (f", contact-fatigue -{int(constants.contact_fatigue_priority_cut*100)}% ({attempts} attempts in {constants.contact_fatigue_window_days}d)" if multiplier < 1.0 else "")
+            + (f", queue-jumped for 90+ day aged overdue (+{constants.overdue_90_plus_priority_boost:.0f} priority)" if overdue_90_plus_boosted else "")
         )
         return DailyTaskRow(
             Sr_No=0, DC_Name=dc.get("DC_Name"), DC_ID=dc_id, Distance_Km=None,
