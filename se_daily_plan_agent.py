@@ -1289,37 +1289,46 @@ def apply_dc_exclusion_rules(
     placeholder Rank) or an unscored DC (Rank/Cohort both None, e.g. live-supplemented)
     fails this by construction, same as a Rank genuinely above the cutoff would.
 
-    top_dc_allowlist (2026-09-04, explicit user request, see load_top_dc_allowlist):
-    an INDEPENDENT gate on top of the Rank check, not a replacement -- a DC must pass
-    BOTH to be in scope. None means the allowlist itself failed to load this run (see
-    load_top_dc_allowlist's own "fail open" contract) -- every Rank-eligible DC is
-    treated as passing this check in that case, not excluded."""
+    top_dc_allowlist CHANGED 2026-09-04, explicit user request ("use that list only"):
+    originally an ADDITIONAL gate on top of the Rank check (both required). Now, whenever
+    the allowlist actually loaded this run, it REPLACES the Rank<=6000 check entirely --
+    list membership is the sole extra criterion beyond Has_Assigned_SE/not-Legal_Hold, so
+    a DC on the list is in scope even with Rank>6000 or an unscored/Long-Tail Rank. Rank
+    only still gates when the allowlist itself failed to load this run (None -- see
+    load_top_dc_allowlist's own "fail open" contract) -- same safety-net fallback as
+    before this change, not a new decision."""
     today_dt = datetime.fromisoformat(today)
+    using_top_list = top_dc_allowlist is not None
     for dc in dc_master:
         legal_hold = dc.get("DC_Status") == "Legal_Hold"
         last_visit = last_visit_by_dc.get(dc["DC_ID"])
         days_since_visit = None
         if last_visit:
             days_since_visit = (today_dt - datetime.fromisoformat(last_visit)).days
-        rank = dc.get("Rank")
-        rank_eligible = isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank
-        if not rank_eligible:
-            exc.flag(
-                dc["DC_ID"], "Source2", "DC_Rank_Ineligible",
-                f"Rank {rank!r} -- not a real numeric rank <= {constants.max_eligible_rank:.0f} "
-                "(Long Tail cohort or unscored DC), excluded from all agents' DC selection",
-            )
+        if using_top_list:
+            top_list_eligible = dc["DC_ID"] in top_dc_allowlist
+            rank_gate_passed = True
+            if not top_list_eligible:
+                exc.flag(
+                    dc["DC_ID"], "Source2b", "DC_Not_In_Top_List",
+                    "DC_ID not present in 'updated TOP DC list.xlsx' -- excluded from all agents' DC selection",
+                )
+            else:
+                exc.ok("DC_Not_In_Top_List")
         else:
-            exc.ok("DC_Rank_Ineligible")
-        top_list_eligible = top_dc_allowlist is None or dc["DC_ID"] in top_dc_allowlist
-        if top_dc_allowlist is not None and not top_list_eligible:
-            exc.flag(
-                dc["DC_ID"], "Source2b", "DC_Not_In_Top_List",
-                "DC_ID not present in 'updated TOP DC list.xlsx' -- excluded from all agents' DC selection",
-            )
-        else:
-            exc.ok("DC_Not_In_Top_List")
-        in_scope = dc["Has_Assigned_SE"] and not legal_hold and rank_eligible and top_list_eligible
+            top_list_eligible = True
+            rank = dc.get("Rank")
+            rank_gate_passed = isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank
+            if not rank_gate_passed:
+                exc.flag(
+                    dc["DC_ID"], "Source2", "DC_Rank_Ineligible",
+                    f"Rank {rank!r} -- not a real numeric rank <= {constants.max_eligible_rank:.0f} "
+                    "(Long Tail cohort or unscored DC), excluded from all agents' DC selection "
+                    "(Top-DC-list unavailable this run, fell back to Rank<=6000)",
+                )
+            else:
+                exc.ok("DC_Rank_Ineligible")
+        in_scope = dc["Has_Assigned_SE"] and not legal_hold and rank_gate_passed and top_list_eligible
         dc["In_Scope_Flag"] = in_scope
         dc["Days_Since_Last_Visit"] = days_since_visit
         dc["Last_Visit_Date"] = last_visit

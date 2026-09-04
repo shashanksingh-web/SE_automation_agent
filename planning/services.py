@@ -1754,9 +1754,18 @@ def generate_plan_for_scope(
                 # Visited_Too_Recently branch removed 2026-09-04 -- the rule it explained
                 # no longer exists (see apply_dc_exclusion_rules docstring), so a DC can
                 # never legitimately be out-of-scope for only this reason anymore.
-                rank = dc.get("Rank")
-                if not (isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank):
-                    reasons.append(f"DC_Rank_Ineligible (Rank={rank!r})")
+                if not dc.get("Has_Assigned_SE"):
+                    reasons.append("No_Assigned_SE")
+                # Rank<=6000 vs Top-DC-list CHANGED 2026-09-04 (see apply_dc_exclusion_rules
+                # docstring, "use that list only") -- mirrors that function's own gate switch:
+                # once the allowlist loaded this run, list membership is the reason, not Rank.
+                if top_dc_allowlist is not None:
+                    if dc["DC_ID"] not in top_dc_allowlist:
+                        reasons.append("DC_Not_In_Top_List")
+                else:
+                    rank = dc.get("Rank")
+                    if not (isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank):
+                        reasons.append(f"DC_Rank_Ineligible (Rank={rank!r})")
                 not_in_scope_detail.append({
                     "DC_ID": dc["DC_ID"], "DC_Name": dc.get("DC_Name"),
                     "Reason": "; ".join(reasons) if reasons else "unknown",
@@ -2087,15 +2096,22 @@ def generate_plan_for_scope(
             )
             step_3 = fp_result["Step_3"]
             if step_3 and isinstance(step_3.get("results"), dict) and isinstance(step_3["results"].get("dcs"), list):
-                # Section 6's Rank<=6000 eligibility gate (confirmed 2026-08-13) applies
-                # network-wide to every agent's DC selection, but the live Product Cohort
-                # API has no awareness of it -- its raw cohort can include ineligible DCs,
-                # so the persisted record is tagged here for any future direct consumer.
-                # Additive only: the raw API response is annotated, never filtered/mutated.
-                eligible_dc_ids = {
-                    dc["DC_ID"] for dc in dc_master
-                    if isinstance(dc.get("Rank"), (int, float)) and dc["Rank"] <= constants.max_eligible_rank
-                }
+                # Section 6's eligibility gate applies network-wide to every agent's DC
+                # selection, but the live Product Cohort API has no awareness of it -- its
+                # raw cohort can include ineligible DCs, so the persisted record is tagged
+                # here for any future direct consumer. Additive only: the raw API response
+                # is annotated, never filtered/mutated. Field kept as "rank_eligible" for
+                # external-consumer stability, but as of 2026-09-04 (see apply_dc_exclusion_
+                # rules docstring, "use that list only") it reflects the actual current gate
+                # -- Top-DC-list membership when that list loaded this run, Rank<=6000 only
+                # as the fallback when it didn't -- not a literal Rank check anymore.
+                if top_dc_allowlist is not None:
+                    eligible_dc_ids = top_dc_allowlist
+                else:
+                    eligible_dc_ids = {
+                        dc["DC_ID"] for dc in dc_master
+                        if isinstance(dc.get("Rank"), (int, float)) and dc["Rank"] <= constants.max_eligible_rank
+                    }
                 for dc_entry in step_3["results"]["dcs"]:
                     dc_entry["rank_eligible"] = str(dc_entry.get("partnerId") or "") in eligible_dc_ids
             FocusProductTargetRun.objects.create(
