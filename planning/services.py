@@ -1751,9 +1751,9 @@ def generate_plan_for_scope(
                 reasons = []
                 if dc.get("DC_Status") == "Legal_Hold":
                     reasons.append("Legal_Hold")
-                # Visited_Too_Recently branch removed 2026-09-04 -- the rule it explained
-                # no longer exists (see apply_dc_exclusion_rules docstring), so a DC can
-                # never legitimately be out-of-scope for only this reason anymore.
+                days = dc.get("Days_Since_Last_Visit")
+                if days is not None and days < constants.min_days_since_last_visit:
+                    reasons.append(f"Visited_Too_Recently ({days}d < {constants.min_days_since_last_visit}d)")
                 if not dc.get("Has_Assigned_SE"):
                     reasons.append("No_Assigned_SE")
                 # Rank<=6000 vs Top-DC-list CHANGED 2026-09-04 (see apply_dc_exclusion_rules
