@@ -42,12 +42,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 try:
     import requests
 except ImportError:  # pragma: no cover - degrade gracefully, see MetabaseClient
     requests = None
+
+try:
+    import openpyxl
+except ImportError:  # pragma: no cover - degrade gracefully, see load_top_dc_allowlist
+    openpyxl = None
 
 try:
     from dotenv import load_dotenv
@@ -70,6 +75,14 @@ INPUT_BACKEND_DB_ID = int(os.environ.get("SE_AGENT_INPUT_BACKEND_DB_ID", "31")) 
 KHETI_DB_ID = int(os.environ.get("SE_AGENT_KHETI_DB_ID", "4"))                 # "kheti"
 
 DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAnk.csv"))
+# Added 2026-09-04, explicit user request -- an independent allowlist on top of
+# DC_RAnk.csv's own Rank<=6000 eligibility (see BusinessConstants.max_eligible_rank),
+# not a replacement for it. Confirmed live: this file has NO Rank/Cohort/Score columns
+# at all (just Partner Id/Name/Sales Rep/Node/State/Dehaat Club Scheme Slab/Prize/
+# Sales) -- it restricts WHICH DCs are eligible, DC_RAnk.csv still decides HOW they're
+# ranked among themselves. 3,143 rows / 2,517 unique Partner Ids as of 2026-09-04 (626
+# duplicate rows, harmless for a set-membership check).
+TOP_DC_LIST_XLSX = Path(os.environ.get("SE_AGENT_TOP_DC_LIST_XLSX", BASE_DIR / "updated TOP DC list.xlsx"))
 # Moved into a subfolder 2026-08-06 -- note the trailing space in the folder name, that's
 # literal (confirmed via `ls`), not a typo to "fix". All 5 BO_Configuration_Sheet_v3 files
 # live here now; DC_RAnk.csv (Source 2) and the AOP dashboard (Source 6) stayed at BASE_DIR.
@@ -1211,8 +1224,48 @@ def load_dc_master(path: Path = DC_MASTER_CSV) -> Tuple[Table, Exceptions]:
     return out, exc
 
 
+def load_top_dc_allowlist(path: Path = TOP_DC_LIST_XLSX) -> Tuple[Optional[Set[str]], Exceptions]:
+    """Added 2026-09-04, explicit user request -- restricts the DC universe to only the
+    Partner Ids listed in 'updated TOP DC list.xlsx', independent of (on top of, not
+    instead of) DC_RAnk.csv's own Rank<=6000 eligibility -- see apply_dc_exclusion_
+    rules()'s new top_dc_allowlist check.
+
+    Returns (None, exc) -- NOT an empty set -- when the file is missing or fails to
+    parse, per direct instruction ("fail open"): apply_dc_exclusion_rules() treats None
+    as "no allowlist restriction this run" rather than "everyone fails," so one missing/
+    renamed/corrupted file can't silently zero out DC selection for the whole network.
+    A loud DC_Top_List_Missing/DC_Top_List_Unreadable exception is still flagged either
+    way, so the degraded run is never silent about it."""
+    exc = Exceptions(utc_now_iso())
+    if openpyxl is None:
+        exc.flag("openpyxl", "Source2b", "DC_Top_List_Unreadable", "openpyxl not installed -- Top DC allowlist restriction skipped this run, every Rank-eligible DC treated as eligible")
+        return None, exc
+    if not path.exists():
+        exc.flag(str(path), "Source2b", "DC_Top_List_Missing", f"{path.name} not found -- Top DC allowlist restriction skipped this run, every Rank-eligible DC treated as eligible")
+        return None, exc
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        rows = ws.iter_rows(min_row=2, values_only=True)
+        allowlist: Set[str] = set()
+        for row in rows:
+            dc_id = normalize_id(row[0]) if row and row[0] is not None else None
+            if dc_id:
+                allowlist.add(dc_id)
+        wb.close()
+    except Exception as e:
+        exc.flag(str(path), "Source2b", "DC_Top_List_Unreadable", f"{type(e).__name__}: {e} -- Top DC allowlist restriction skipped this run, every Rank-eligible DC treated as eligible")
+        return None, exc
+    if not allowlist:
+        exc.flag(str(path), "Source2b", "DC_Top_List_Empty", f"{path.name} parsed with zero valid Partner Ids -- Top DC allowlist restriction skipped this run")
+        return None, exc
+    exc.ok("DC_Top_List_Loaded")
+    return allowlist, exc
+
+
 def apply_dc_exclusion_rules(
-    dc_master: Table, exc: Exceptions, constants: BusinessConstants, last_visit_by_dc: Dict[str, str], today: str
+    dc_master: Table, exc: Exceptions, constants: BusinessConstants, last_visit_by_dc: Dict[str, str], today: str,
+    top_dc_allowlist: Optional[Set[str]] = None,
 ) -> None:
     """Section 6: rules that remove a DC from consideration entirely.
     6.4 (Agent-Determined): always block Legal_Hold; Credit_Blocked/Blacklisted are
@@ -1221,7 +1274,13 @@ def apply_dc_exclusion_rules(
     Rank eligibility (user-confirmed 2026-08-13, see BusinessConstants.max_eligible_rank):
     exclude a DC unless it has a real numeric Rank <=6000 -- a Long Tail-cohort DC (text
     placeholder Rank) or an unscored DC (Rank/Cohort both None, e.g. live-supplemented)
-    fails this by construction, same as a Rank genuinely above the cutoff would."""
+    fails this by construction, same as a Rank genuinely above the cutoff would.
+
+    top_dc_allowlist (2026-09-04, explicit user request, see load_top_dc_allowlist):
+    an INDEPENDENT gate on top of the Rank check, not a replacement -- a DC must pass
+    BOTH to be in scope. None means the allowlist itself failed to load this run (see
+    load_top_dc_allowlist's own "fail open" contract) -- every Rank-eligible DC is
+    treated as passing this check in that case, not excluded."""
     today_dt = datetime.fromisoformat(today)
     for dc in dc_master:
         legal_hold = dc.get("DC_Status") == "Legal_Hold"
@@ -1240,7 +1299,15 @@ def apply_dc_exclusion_rules(
             )
         else:
             exc.ok("DC_Rank_Ineligible")
-        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and rank_eligible
+        top_list_eligible = top_dc_allowlist is None or dc["DC_ID"] in top_dc_allowlist
+        if top_dc_allowlist is not None and not top_list_eligible:
+            exc.flag(
+                dc["DC_ID"], "Source2b", "DC_Not_In_Top_List",
+                "DC_ID not present in 'updated TOP DC list.xlsx' -- excluded from all agents' DC selection",
+            )
+        else:
+            exc.ok("DC_Not_In_Top_List")
+        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and rank_eligible and top_list_eligible
         dc["In_Scope_Flag"] = in_scope
         dc["Days_Since_Last_Visit"] = days_since_visit
         dc["Last_Visit_Date"] = last_visit
@@ -4502,8 +4569,10 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
         if v["DC_ID"] and v["Date"]:
             if v["DC_ID"] not in last_visit_by_dc or v["Date"] > last_visit_by_dc[v["DC_ID"]]:
                 last_visit_by_dc[v["DC_ID"]] = v["Date"]
+    top_dc_allowlist, top_dc_exc = load_top_dc_allowlist()
+    merge(top_dc_exc)
     excl_exc = Exceptions(run_ts)
-    apply_dc_exclusion_rules(dc_master, excl_exc, constants, last_visit_by_dc, plan_date)
+    apply_dc_exclusion_rules(dc_master, excl_exc, constants, last_visit_by_dc, plan_date, top_dc_allowlist=top_dc_allowlist)
     merge(excl_exc)
 
     ref_exc = Exceptions(run_ts)

@@ -1578,8 +1578,10 @@ def generate_plan_for_scope(
                       "(In_Scope_Flag not re-checked against 6.2 recency), and every task is Provisional.",
         })
 
+    top_dc_allowlist, top_dc_exc = agent.load_top_dc_allowlist()
+    run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in top_dc_exc.rows)
     excl_exc = agent.Exceptions(agent.utc_now_iso())
-    agent.apply_dc_exclusion_rules(scoped_dcs, excl_exc, constants, last_visit_by_dc, plan_date)
+    agent.apply_dc_exclusion_rules(scoped_dcs, excl_exc, constants, last_visit_by_dc, plan_date, top_dc_allowlist=top_dc_allowlist)
     run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in excl_exc.rows)
     for dc in scoped_dcs:
         lat_lon = geo_by_dc.get(dc["DC_ID"])
