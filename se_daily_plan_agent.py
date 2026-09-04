@@ -1641,6 +1641,49 @@ JOIN customer_management_customer cc ON cc.id = p.customer_id
 WHERE {_lookback_clause('p.created_at')}
 """
 
+# Source 3j -- Promise To Pay (added 2026-09-04, per SE_DC_Data_Normalization_Agent_
+# Prompt.docx update). Primary, confirmed-live source: task_management_visitpurposedetails
+# joined to task_management_task (input-backend Postgres, database_id 31) --
+# visit_purpose_id=4 is the confirmed 'Promise To Pay / Collection' id. Supersedes the
+# stale public.promise_to_pay Redshift table (frozen since 2024-12-31 per the doc, not
+# used here) for "current" commitment tracking.
+#
+# Dialect trap, confirmed live: this Redshift replica has no native json/jsonb type --
+# the doc's own ->> operator syntax fails (UndefinedFunction). Use JSON_EXTRACT_PATH_TEXT
+# instead, same "this cluster's Postgres dialect differs from real Postgres" pattern as
+# ROW_NUMBER-instead-of-DISTINCT-ON elsewhere in this file.
+#
+# Only the MOST RECENT promise per DC is kept (ROW_NUMBER, rn=1) -- older promises are
+# superseded, per direct instruction. paid_on_time is computed server-side: ANY real
+# SUCCESS payment landing between when the promise was logged (promise_created_at) and
+# its committed date (promise_date) counts -- not required to cover the full promised
+# amount, per direct instruction. Known trap, confirmed live (matches the doc's own
+# finding): ~32% of records have promise_amount = 0 (an SE logged the purpose without a
+# specific number) -- still carried through and still checked for a qualifying payment,
+# per direct instruction, not excluded as junk.
+SQL_PROMISE_TO_PAY_3J = f"""
+WITH latest_promise AS (
+    SELECT vpd.id AS record_id, cc.partner_id AS dc_id,
+           JSON_EXTRACT_PATH_TEXT(vpd.visit_purpose_details, 'amount') AS promise_amount_raw,
+           TIMESTAMP 'epoch' + CAST(JSON_EXTRACT_PATH_TEXT(vpd.visit_purpose_details, 'date') AS BIGINT) * INTERVAL '1 second' AS promise_date,
+           vpd.created_at AS promise_created_at,
+           ROW_NUMBER() OVER (PARTITION BY cc.partner_id ORDER BY vpd.created_at DESC) AS rn
+    FROM task_management_visitpurposedetails vpd
+    JOIN task_management_task t ON t.id = vpd.task_id
+    JOIN customer_management_customer cc ON cc.id = t.partner_id
+    WHERE vpd.visit_purpose_id = 4 AND {_lookback_clause('vpd.created_at')}
+)
+SELECT lp.dc_id, lp.promise_amount_raw, lp.promise_date, lp.promise_created_at,
+       EXISTS (
+           SELECT 1 FROM payments_paymenttransaction p
+           JOIN customer_management_customer cc2 ON cc2.id = p.customer_id
+           WHERE cc2.partner_id = lp.dc_id AND p.status = 'SUCCESS'
+             AND p.created_at >= lp.promise_created_at AND p.created_at <= lp.promise_date
+       ) AS paid_on_time
+FROM latest_promise lp
+WHERE lp.rn = 1
+"""
+
 # Source 3g -- DC Club Scheme (new). dc_mapping_club_scheme's presence-by-partner_id is a
 # PLAUSIBLE, not confirmed, proxy for enrollment (no explicit is_member/status flag exists).
 # dc_club_slabs defines tier rules (turnover band -> club), not a per-DC assignment --
@@ -1733,6 +1776,7 @@ def load_live_sources(client: MetabaseClient) -> Tuple[Dict[str, Table], Excepti
         ("Orders_3d", INPUT_BACKEND_DB_ID, SQL_ORDERS_3D),
         ("Liquidation_3d", REDSHIFT_DB_ID, SQL_LIQUIDATION_3D),
         ("Payments_3f", INPUT_BACKEND_DB_ID, SQL_PAYMENTS_3F),
+        ("Promise_To_Pay_3j", INPUT_BACKEND_DB_ID, SQL_PROMISE_TO_PAY_3J),
         ("DC_Club_Mapping_3g", REDSHIFT_DB_ID, SQL_DC_CLUB_MAPPING_3G),
         ("DC_Club_Slabs_3g", REDSHIFT_DB_ID, SQL_DC_CLUB_SLABS_3G),
         ("DC_Club_Qualifying_Turnover_3g", REDSHIFT_DB_ID, SQL_DC_CLUB_QUALIFYING_TURNOVER_3G),
@@ -1968,6 +2012,32 @@ def normalize_payments(payments_raw: Table, exc: Exceptions) -> Tuple[Table, Dic
                 last_payment_by_dc[dc_id] = date
     exc.ok("Join_Key_Confirmed") if payments_raw else None
     return out, last_payment_by_dc
+
+
+def normalize_promise_to_pay(promise_raw: Table, exc: Exceptions) -> Dict[str, Dict[str, Any]]:
+    """Promise_To_Pay_By_DC (Source 3j, added 2026-09-04) -- see SQL_PROMISE_TO_PAY_3J's
+    own docstring for the source/dialect details. One entry per DC (already de-duped to
+    the most recent promise server-side, via ROW_NUMBER rn=1): {Promise_Date (ISO date,
+    the committed date only, not the timestamp), Promise_Amount (float, 0.0 for the
+    confirmed-live '32% zero-amount' pattern -- never None just because the SE didn't
+    give a number, that's a real recorded promise of an unspecified amount, not a
+    missing promise), Paid_On_Time (bool, computed server-side)}. Does NOT compute
+    Kept/Broken/Pending here -- that depends on plan_date, which this normalization
+    step doesn't have (see generate_se_daily_plan._promise_status)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in promise_raw:
+        dc_id = normalize_id(row.get("dc_id"))
+        promise_date = standardize_date(row.get("promise_date"))
+        if not dc_id or not promise_date:
+            continue
+        amount = parse_number(row.get("promise_amount_raw"))
+        out[dc_id] = {
+            "Promise_Date": promise_date,
+            "Promise_Amount": amount if amount is not None else 0.0,
+            "Paid_On_Time": row.get("paid_on_time") in (True, "true", "t", 1),
+        }
+    exc.ok("Promise_To_Pay_Normalized") if promise_raw else None
+    return out
 
 
 def normalize_dc_club(
@@ -2554,6 +2624,19 @@ class DailyTaskRow:
     # is the DC's CURRENT status, not a static attribute. None when the DC has no order
     # with this field populated at all, not assumed non_financed.
     Finance_Status: Optional[str] = None
+    # Promise To Pay tracking (2026-09-04, explicit user request + SE_DC_Data_
+    # Normalization_Agent_Prompt.docx update, Source 3j -- task_management_
+    # visitpurposedetails, visit_purpose_id=4) -- this DC's MOST RECENT Promise To Pay
+    # commitment (older ones are superseded, per direct instruction). Promise_To_Pay_
+    # Date/Amount are the raw committed date/amount as logged; Promise_Status is
+    # "Pending" (date hasn't arrived yet -- too early to judge), "Kept" (a real payment
+    # landed between the promise and its date -- amount not required to match, per
+    # direct instruction), "Broken" (date passed, no qualifying payment), or None (no
+    # promise on record for this DC at all). See _qualify_outstanding/_promise_status
+    # for how Kept/Broken feed back into whether this DC gets selected at all.
+    Promise_To_Pay_Date: Optional[str] = None
+    Promise_To_Pay_Amount: Optional[float] = None
+    Promise_Status: Optional[str] = None
     # Confirmed live 2026-08-06 -- payments_paymenttransaction.customer_id bridges
     # through customer_management_customer.id -> .partner_id, same pattern as Orders.
     Last_Payment_Join_Key_Unconfirmed: bool = False
@@ -3775,6 +3858,7 @@ def generate_se_daily_plan(
     dc_bo_scores: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     route_selector: Optional[Callable[..., Dict[str, Any]]] = None,
     consecutive_misses_by_dc: Optional[Dict[str, int]] = None,
+    promise_by_dc: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Section 6 process flow + Section 7/8/10: rank objectives, respect capacity/travel
     caps, apply the confirmed tie-break/override rules, and shape the output exactly as
@@ -3807,6 +3891,28 @@ def generate_se_daily_plan(
     ytd_pl_by_dc = ytd_pl_by_dc or {}
     dc_bo_scores = dc_bo_scores or {}
     consecutive_misses_by_dc = consecutive_misses_by_dc or {}
+    promise_by_dc = promise_by_dc or {}
+
+    def _promise_status(dc_id: str) -> Optional[str]:
+        """2026-09-04, explicit user request (SE_DC_Data_Normalization_Agent_Prompt.docx
+        update, Source 3j -- task_management_visitpurposedetails, visit_purpose_id=4):
+        only the DC's MOST RECENT Promise To Pay record matters (per direct instruction
+        -- older, superseded promises are ignored). "Kept"/"Broken" only apply once the
+        committed promise_date has actually passed relative to plan_date -- a promise
+        not yet due is "Pending" and changes nothing (there's no way to judge it yet).
+        "Paid" (Kept) is confirmed live-SQL-side (see SQL_PROMISE_TO_PAY_3J) as ANY real
+        SUCCESS payment landing between when the promise was logged and its committed
+        date -- not required to cover the full promised amount (per direct instruction),
+        and a 0-amount promise still counts (per direct instruction -- the doc confirms
+        32% of real promise records carry no amount, a genuine pattern, not junk data).
+        None when this DC has no promise on record at all."""
+        p = promise_by_dc.get(dc_id)
+        if not p or not p.get("Promise_Date"):
+            return None
+        if p["Promise_Date"] >= plan_date:
+            return "Pending"
+        return "Kept" if p.get("Paid_On_Time") else "Broken"
+
     header = {
         "SE_ID": se_id, "SE_Name": se_name, "Plan_Date": plan_date,
         "Total_Capacity_Minutes": constants.total_capacity_min,
@@ -3917,8 +4023,25 @@ def generate_se_daily_plan(
         balance constant name both describe) -- a DC with a large balance but currently
         $0 overdue could never qualify, defeating the point of a balance leg that's
         independent of overdue status."""
+        # Promise To Pay override (2026-09-04, explicit user request) -- checked BEFORE
+        # the balance threshold: a Broken promise (committed date passed, no qualifying
+        # payment) force-qualifies this DC for collection regardless of current balance
+        # -- a broken promise is itself the signal, not the balance. A Kept promise
+        # suppresses this objective for the run even if the current balance still
+        # crosses the threshold (per direct instruction) -- NOT silently hidden: the
+        # DC's real Current_Outstanding, Promise_Status="Kept", and the promise's own
+        # date/amount are all still visible in this run's outcome fields, so a reviewer
+        # can see a kept-promise-but-still-above-threshold DC for themselves rather than
+        # this function silently deciding it's fine. Pending/None promises don't change
+        # anything -- falls through to the ordinary balance check.
+        status = _promise_status(dc["DC_ID"])
+        if status == "Broken":
+            return True
         outstanding = dc_financials.get(dc["DC_ID"], {}).get("Current_Outstanding")
-        return outstanding is not None and outstanding >= constants.qualify_outstanding_balance
+        qualifies = outstanding is not None and outstanding >= constants.qualify_outstanding_balance
+        if status == "Kept":
+            return False
+        return qualifies
 
     def _qualify_pl(dc: Dict[str, Any]) -> bool:
         """8.5's literal '<3 PL orders in 30 days' still isn't computable -- needs a
@@ -3974,10 +4097,17 @@ def generate_se_daily_plan(
             d = dc.get("Days_Since_Last_Visit")
             outstanding = dc_financials.get(dc["DC_ID"], {}).get("Current_Outstanding")
             pl_grade = dc_bo_scores.get(dc["DC_ID"], {}).get("PL", {}).get("grade")
+            # Promise To Pay override note (2026-09-04) -- a "Kept" promise can suppress
+            # Outstanding even when the raw balance itself would have qualified; say so
+            # explicitly here instead of leaving the balance-only message looking like
+            # the balance check simply failed on its own terms.
+            outstanding_detail = f"balance={outstanding!r} (need >={constants.qualify_outstanding_balance:,.0f})"
+            if _promise_status(dc["DC_ID"]) == "Kept":
+                outstanding_detail += " -- suppressed: most recent Promise To Pay was Kept"
             unqualified_detail.append({
                 "DC_ID": dc["DC_ID"], "DC_Name": dc.get("DC_Name"),
                 "Visits": f"last visit {d}d ago (need >{constants.qualify_visits_days_since}d/never)",
-                "Outstanding": f"balance={outstanding!r} (need >={constants.qualify_outstanding_balance:,.0f})",
+                "Outstanding": outstanding_detail,
                 "PL": f"grade={pl_grade!r} (need C/D)",
             })
             continue
@@ -4060,6 +4190,12 @@ def generate_se_daily_plan(
             critical_reasons.append(f"₹{current_overdue:,.0f} overdue 90+ days")
         if credit_on_hold:
             critical_reasons.append("Credit on hold")
+        promise_status = _promise_status(dc_id)
+        promise = promise_by_dc.get(dc_id) or {}
+        if promise_status == "Broken":
+            critical_reasons.append(
+                f"Broke promise to pay ₹{promise.get('Promise_Amount') or 0:,.0f} by {promise.get('Promise_Date')}"
+            )
 
         # 8.12 bundling: one visit-task covers every matched objective for this DC.
         purpose = " + ".join(dict.fromkeys(PURPOSE_BY_OBJECTIVE.get(o, o) for o in matched))
@@ -4084,6 +4220,9 @@ def generate_se_daily_plan(
             Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
             Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,
             Finance_Status=fin.get("Partner_Finance_Status"),
+            Promise_To_Pay_Date=promise.get("Promise_Date"),
+            Promise_To_Pay_Amount=promise.get("Promise_Amount"),
+            Promise_Status=promise_status,
             BO_Scores=per_dc_scores or None,
             BO_Composite_Score=_bo_composite_score(per_dc_scores),
             Last_Payment_Join_Key_Unconfirmed=False,
@@ -4271,6 +4410,9 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
     payments_exc = Exceptions(run_ts)
     payments, last_payment_by_dc = normalize_payments(live["Payments_3f"], payments_exc)
     merge(payments_exc)
+    promise_exc = Exceptions(run_ts)
+    promise_by_dc = normalize_promise_to_pay(live["Promise_To_Pay_3j"], promise_exc)
+    merge(promise_exc)
     club_exc = Exceptions(run_ts)
     dc_club = normalize_dc_club(
         live["DC_Club_Mapping_3g"], live["DC_Club_Slabs_3g"], live["DC_Club_Qualifying_Turnover_3g"],
@@ -4360,7 +4502,7 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
             se_id, se_names.get(se_id), plan_date, se_dc_candidates, bo_scores, dynamic_params, constants,
             attendance_gate_ok, recent_attempts_by_dc=dict(recent_attempts_all.get(se_id, {})),
             dc_financials=dc_financials, last_payment_by_dc=last_payment_by_dc, dc_club_by_id=dc_club_by_id,
-            punch_in_coords=punch_in_by_se.get(se_id),
+            punch_in_coords=punch_in_by_se.get(se_id), promise_by_dc=promise_by_dc,
         )
         daily_plans.append(plan)
 

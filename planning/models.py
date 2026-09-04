@@ -138,6 +138,14 @@ class DailyTask(models.Model):
     # NULL when the DC has no order with this field populated, not assumed non_financed.
     finance_status = models.CharField(max_length=16, blank=True, null=True)
 
+    # Promise To Pay tracking (Source 3j, added 2026-09-04) -- see DailyTaskRow.
+    # Promise_To_Pay_Date/Amount/Status docstring for the full semantics (most recent
+    # promise only, Kept/Broken/Pending, and how Kept/Broken feed back into whether
+    # this DC was even selected). All NULL when this DC has no promise on record.
+    promise_to_pay_date = models.DateField(blank=True, null=True)
+    promise_to_pay_amount = models.FloatField(blank=True, null=True)
+    promise_status = models.CharField(max_length=16, blank=True, null=True)
+
     # Full per-DC BO score dict (Outstanding/PL/Sales grades + reasons), as computed --
     # see DailyTaskRow.BO_Scores docstring. Added 2026-09-03. {} when no BO scores were
     # supplied for this DC this run.

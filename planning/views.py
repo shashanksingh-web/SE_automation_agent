@@ -97,6 +97,8 @@ def _serialize_task(t: DailyTask) -> dict:
         "Credit_On_Hold_Reason": t.credit_on_hold_reason, "Estimated_Duration": t.estimated_duration,
         "Priority_Multiplier": t.priority_multiplier, "Finance_Status": t.finance_status,
         "BO_Scores": t.bo_scores, "BO_Composite_Score": t.bo_composite_score, "BO_Rank": t.bo_rank,
+        "Promise_To_Pay_Date": t.promise_to_pay_date, "Promise_To_Pay_Amount": t.promise_to_pay_amount,
+        "Promise_Status": t.promise_status,
         # Outcome-reconciliation block (Tier 1 feedback loop) -- populated by
         # `manage.py reconcile_outcomes` once plan_date has passed; Outcome_Status stays
         # UNKNOWN (never guessed) until that runs, same honest-degrade discipline as the

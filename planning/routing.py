@@ -457,6 +457,7 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
             objective="", no_new_orders=False, credit_on_hold=False, credit_on_hold_reason=None,
             estimated_duration=int(stop.visit_duration_min), priority_multiplier=1.0, finance_status=None,
             bo_scores={}, bo_composite_score=None, bo_rank=None,
+            promise_to_pay_date=None, promise_to_pay_amount=None, promise_status=None,
         )
         created += 1
     return created

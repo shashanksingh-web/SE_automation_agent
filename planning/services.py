@@ -192,6 +192,36 @@ def _sql_payments(dc_ids: List[str]) -> str:
     """
 
 
+def _sql_promise_to_pay(dc_ids: List[str]) -> str:
+    """Scoped counterpart of se_daily_plan_agent.SQL_PROMISE_TO_PAY_3J -- see that
+    query's own docstring for the dialect trap (JSON_EXTRACT_PATH_TEXT, not ->>) and
+    the "most recent promise only" / "any qualifying payment, not full amount" rules.
+    No lookback window, same reasoning as _sql_payments above -- already scoped to a
+    handful of dc_ids, no cost to finding each DC's true most recent promise."""
+    return f"""
+    WITH latest_promise AS (
+        SELECT vpd.id AS record_id, cc.partner_id AS dc_id,
+               JSON_EXTRACT_PATH_TEXT(vpd.visit_purpose_details, 'amount') AS promise_amount_raw,
+               TIMESTAMP 'epoch' + CAST(JSON_EXTRACT_PATH_TEXT(vpd.visit_purpose_details, 'date') AS BIGINT) * INTERVAL '1 second' AS promise_date,
+               vpd.created_at AS promise_created_at,
+               ROW_NUMBER() OVER (PARTITION BY cc.partner_id ORDER BY vpd.created_at DESC) AS rn
+        FROM task_management_visitpurposedetails vpd
+        JOIN task_management_task t ON t.id = vpd.task_id
+        JOIN customer_management_customer cc ON cc.id = t.partner_id
+        WHERE vpd.visit_purpose_id = 4 AND cc.partner_id::text IN ({_sql_list(dc_ids)})
+    )
+    SELECT lp.dc_id, lp.promise_amount_raw, lp.promise_date, lp.promise_created_at,
+           EXISTS (
+               SELECT 1 FROM payments_paymenttransaction p
+               JOIN customer_management_customer cc2 ON cc2.id = p.customer_id
+               WHERE cc2.partner_id = lp.dc_id AND p.status = 'SUCCESS'
+                 AND p.created_at >= lp.promise_created_at AND p.created_at <= lp.promise_date
+           ) AS paid_on_time
+    FROM latest_promise lp
+    WHERE lp.rn = 1
+    """
+
+
 def _sql_club_mapping(dc_ids: List[str]) -> str:
     return f"""
     SELECT partner_id AS dc_id, partner_name, node, state
@@ -1088,6 +1118,7 @@ def generate_plan_for_scope(
     visits_last30_by_se: Dict[int, set] = {}
     dc_financials: Dict[str, Dict[str, Any]] = {}
     last_payment_by_dc: Dict[str, str] = {}
+    promise_by_dc: Dict[str, Dict[str, Any]] = {}
     dc_club_by_id: Dict[str, Dict[str, Any]] = {}
     geo_by_dc: Dict[str, tuple] = {}
     ytd_pl_by_dc: Dict[str, float] = {}
@@ -1475,6 +1506,14 @@ def generate_plan_for_scope(
             run_exceptions.append({"source": "payments_paymenttransaction", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
         run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in pay_exc.rows)
 
+        promise_exc = agent.Exceptions(agent.utc_now_iso())
+        try:
+            promise_raw = client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_promise_to_pay(dc_ids))
+            promise_by_dc = agent.normalize_promise_to_pay(promise_raw, promise_exc)
+        except Exception as e:
+            run_exceptions.append({"source": "task_management_visitpurposedetails", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in promise_exc.rows)
+
         club_exc = agent.Exceptions(agent.utc_now_iso())
         try:
             club_raw = client.execute_sql(agent.REDSHIFT_DB_ID, _sql_club_mapping(dc_ids))
@@ -1634,6 +1673,7 @@ def generate_plan_for_scope(
             ytd_pl_by_dc=ytd_pl_by_dc, punch_in_coords=punch_in_by_se.get(uid), dc_bo_scores=dc_bo_scores,
             farmer_meeting_scheduled_today=farmer_meeting_confirmed_by_se.get(email, False),
             route_selector=_route_selector, consecutive_misses_by_dc=consecutive_misses_by_dc,
+            promise_by_dc=promise_by_dc,
         )
         tasks = plan.get("Tasks", [])
         if not tasks:
@@ -1688,6 +1728,8 @@ def generate_plan_for_scope(
                 credit_on_hold_reason=t["Credit_On_Hold_Reason"], estimated_duration=t["Estimated_Duration"],
                 priority_multiplier=t["Priority_Multiplier"],
                 finance_status=t.get("Finance_Status"),
+                promise_to_pay_date=t.get("Promise_To_Pay_Date"), promise_to_pay_amount=t.get("Promise_To_Pay_Amount"),
+                promise_status=t.get("Promise_Status"),
                 bo_scores=t.get("BO_Scores") or {},
                 bo_composite_score=t.get("BO_Composite_Score"), bo_rank=t.get("BO_Rank"),
                 critical=t.get("Critical", False), critical_reasons=t.get("Critical_Reasons", ""),

@@ -112,6 +112,14 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     2026-09-04 ("1 (16%)") -- same "show both the number and the label" choice as BO
     Scores above. "N/A" when no BO scores exist to rank by.
 
+    Promise To Pay column added 2026-09-04 (DailyTaskRow.Promise_To_Pay_Date/Amount/
+    Status, Source 3j) -- "₹20,000 by 2026-09-14 (Pending)". Status is Pending (date
+    hasn't arrived yet), Kept (a real payment landed between the promise and its date),
+    or Broken (date passed, no qualifying payment -- see _qualify_outstanding for how
+    this feeds back into selection: Broken force-qualifies the DC regardless of
+    balance, Kept suppresses the Outstanding objective even if the balance is still
+    above threshold). "N/A" when this DC has no promise on record at all.
+
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
     after a bordered/wrapped grid variant wasn't clearer. DC Name/Reason are truncated
@@ -152,11 +160,12 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             {"financed": "Financed", "non_financed": "Non-Financed"}.get(t.finance_status, "Unknown"),
             _format_bo_scores(t.bo_scores),
             f"{t.bo_rank} ({t.bo_composite_score:.0%})" if t.bo_rank is not None else "N/A",
+            f"₹{t.promise_to_pay_amount:,.0f} by {t.promise_to_pay_date} ({t.promise_status})" if t.promise_to_pay_date else "N/A",
         ])
     headers = [
         "SE", "Sr", "Critical", "DC Name", "Km", "Task Type", "Purpose", "Reason",
         "Last Visit", "Outstanding", "Overdue (Aging)", "Last Order", "Order Value",
-        "Last Payment", "YTD PL", "Club", "Finance", "BO Scores", "BO Rank",
+        "Last Payment", "YTD PL", "Club", "Finance", "BO Scores", "BO Rank", "Promise To Pay",
     ]
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
 

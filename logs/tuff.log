@@ -3405,3 +3405,51 @@ django.db.utils.OperationalError: no such column: planning_dailytask.bo_scores
 2026-09-04 02:44:36,135 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1119 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-04): 29 exceptions across 37 DCs (78%) -- exceeds 10% threshold.
 2026-09-04 02:44:48,081 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1120 (SE=susheel.kumar@agrevolution.in @ 2026-09-04): 29 exceptions across 38 DCs (76%) -- exceeds 10% threshold.
 2026-09-04 02:45:03,703 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1121 (SE=susheel.kumar@agrevolution.in @ 2026-09-05): 33 exceptions across 38 DCs (87%) -- exceeds 10% threshold.
+2026-09-04 02:49:51,222 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1122 (SE=anupam.yadav@agrevolution.in @ 2026-09-08): 46 exceptions across 45 DCs (102%) -- exceeds 10% threshold.
+2026-09-04 02:52:51,160 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1123 (SE=anupam.yadav@agrevolution.in @ 2026-09-08): 46 exceptions across 45 DCs (102%) -- exceeds 10% threshold.
+2026-09-04 06:18:06,768 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:18:07,504 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:18:20,906 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:18:21,332 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:18:34,695 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:18:35,791 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:18:44,505 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:18:45,531 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:18:58,175 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:18:58,524 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:19:09,888 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:19:10,210 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:19:31,707 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:19:32,093 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:19:48,543 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:19:48,960 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:19:53,226 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:19:53,544 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:20:02,867 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:20:03,181 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:20:10,488 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:20:10,812 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:20:42,473 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 06:20:42,899 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:20:50,193 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 06:20:50,508 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:21:07,930 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 06:21:08,376 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:21:11,623 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 06:21:11,959 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:21:21,294 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 06:21:21,635 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:21:32,989 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/services.py changed, reloading.
+2026-09-04 06:21:33,336 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:21:40,638 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/models.py changed, reloading.
+2026-09-04 06:21:40,983 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:21:50,272 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/routing.py changed, reloading.
+2026-09-04 06:21:50,596 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:21:55,842 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/planning/views.py changed, reloading.
+2026-09-04 06:21:56,157 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:23:16,600 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1124 (SE=sudhanshu.singh@agrevolution.in @ 2026-09-05): 40 exceptions across 20 DCs (200%) -- exceeds 10% threshold.
+2026-09-04 06:24:12,993 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1125 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-05): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
+2026-09-04 06:24:56,812 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1126 (SE=chandan.singh2@agrevolution.in @ 2026-09-05): 32 exceptions across 15 DCs (213%) -- exceeds 10% threshold.
+2026-09-04 06:25:37,387 INFO django.utils.autoreload: /Users/dehaat/Desktop/SE_automation_server/se_daily_plan_agent.py changed, reloading.
+2026-09-04 06:25:37,792 INFO django.utils.autoreload: Watching for file changes with StatReloader
+2026-09-04 06:26:02,106 WARNING planning.notify: [no ALERT_WEBHOOK_URL configured] WARNING: PlanRun #1127 (SE=kanhaiya.raj1@agrevolution.in @ 2026-09-05): 32 exceptions across 37 DCs (86%) -- exceeds 10% threshold.
