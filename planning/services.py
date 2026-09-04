@@ -1756,16 +1756,13 @@ def generate_plan_for_scope(
                     reasons.append(f"Visited_Too_Recently ({days}d < {constants.min_days_since_last_visit}d)")
                 if not dc.get("Has_Assigned_SE"):
                     reasons.append("No_Assigned_SE")
-                # Rank<=6000 vs Top-DC-list CHANGED 2026-09-04 (see apply_dc_exclusion_rules
-                # docstring, "use that list only") -- mirrors that function's own gate switch:
-                # once the allowlist loaded this run, list membership is the reason, not Rank.
-                if top_dc_allowlist is not None:
-                    if dc["DC_ID"] not in top_dc_allowlist:
-                        reasons.append("DC_Not_In_Top_List")
-                else:
-                    rank = dc.get("Rank")
-                    if not (isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank):
-                        reasons.append(f"DC_Rank_Ineligible (Rank={rank!r})")
+                # Rank<=6000 fully disabled for eligibility 2026-09-04 (see apply_dc_
+                # exclusion_rules docstring) -- Top-DC-list is now fail-closed, no Rank
+                # fallback, so a load failure gets its own explicit reason here too.
+                if top_dc_allowlist is None:
+                    reasons.append("Top_DC_List_Unavailable")
+                elif dc["DC_ID"] not in top_dc_allowlist:
+                    reasons.append("DC_Not_In_Top_List")
                 not_in_scope_detail.append({
                     "DC_ID": dc["DC_ID"], "DC_Name": dc.get("DC_Name"),
                     "Reason": "; ".join(reasons) if reasons else "unknown",
@@ -2102,16 +2099,10 @@ def generate_plan_for_scope(
                 # here for any future direct consumer. Additive only: the raw API response
                 # is annotated, never filtered/mutated. Field kept as "rank_eligible" for
                 # external-consumer stability, but as of 2026-09-04 (see apply_dc_exclusion_
-                # rules docstring, "use that list only") it reflects the actual current gate
-                # -- Top-DC-list membership when that list loaded this run, Rank<=6000 only
-                # as the fallback when it didn't -- not a literal Rank check anymore.
-                if top_dc_allowlist is not None:
-                    eligible_dc_ids = top_dc_allowlist
-                else:
-                    eligible_dc_ids = {
-                        dc["DC_ID"] for dc in dc_master
-                        if isinstance(dc.get("Rank"), (int, float)) and dc["Rank"] <= constants.max_eligible_rank
-                    }
+                # rules docstring) it's Top-DC-list membership, fail-closed -- Rank<=6000
+                # plays no role at all anymore, not even as a fallback, so an unavailable
+                # list means nothing is eligible here.
+                eligible_dc_ids = top_dc_allowlist or set()
                 for dc_entry in step_3["results"]["dcs"]:
                     dc_entry["rank_eligible"] = str(dc_entry.get("partnerId") or "") in eligible_dc_ids
             FocusProductTargetRun.objects.create(

@@ -846,18 +846,11 @@ class BusinessConstants:
     # Section 6 -- DC exclusion (6.2, 6.3, 6.4 confirmed defaults)
     min_days_since_last_visit: int = 5
     seasonal_skip_enabled: bool = False
-    # User-confirmed 2026-08-13: a DC must have a real numeric DC_RAnk.csv Rank <=6000
-    # to be eligible for any agent's DC selection (SE Daily Task -> cascades to Routing
-    # + Pitching, which only ever see DCs that already passed this gate). In practice
-    # this is a no-op against numeric ranks alone -- no DC_RAnk.csv row exceeds 5545,
-    # the top of the Opportunity cohort band (COHORT_BANDS) -- but it DOES exclude, by
-    # explicit user decision, both "Long Tail" cohort DCs (rank stored as a text
-    # placeholder, never a number, so it can never satisfy <=6000) and DCs with no rank
-    # at all (Cohort/Rank both None -- the live-supplemented DCs from
-    # supplement_dc_master_from_live(), since DC_RAnk.csv is the only source for
-    # Rank/Cohort and a supplemented DC never has one). That second group is ~47% of
-    # DC_Master network-wide as of 2026-08-13 -- a real, large, deliberately-confirmed
-    # exclusion, not an accidental side effect.
+    # User-confirmed 2026-08-13, DISABLED for eligibility 2026-09-04 (see apply_dc_
+    # exclusion_rules docstring -- the Top-DC-list is now the sole eligibility gate,
+    # fail-closed on load failure, no Rank fallback). Kept defined only in case of
+    # reintroduction. DC_RAnk.csv's Rank/Cohort data is still used elsewhere (Step 5
+    # selection ordering) -- only this eligibility role is gone.
     max_eligible_rank: float = 6000.0
     # Section 7 -- daily ranking weights (top-3 objectives)
     rank1_weight: float = 0.40
@@ -1274,21 +1267,22 @@ def apply_dc_exclusion_rules(
     explicit user request both times): exclude a DC entirely if visited within the last
     min_days_since_last_visit (5) days. Tied to a live config-drift check (Param_Key
     "6.2" in Source 5).
-    Rank eligibility (user-confirmed 2026-08-13, see BusinessConstants.max_eligible_rank):
-    exclude a DC unless it has a real numeric Rank <=6000 -- a Long Tail-cohort DC (text
-    placeholder Rank) or an unscored DC (Rank/Cohort both None, e.g. live-supplemented)
-    fails this by construction, same as a Rank genuinely above the cutoff would.
+    Rank<=6000 (BusinessConstants.max_eligible_rank) is DISABLED for eligibility as of
+    2026-09-04, explicit user request -- DC_RAnk.csv's Rank column no longer gates
+    eligibility in ANY capacity, including as a fallback. Kept defined on
+    BusinessConstants only in case of reintroduction, same pattern as completion_
+    multiplier/min_days_since_last_visit's own remove-then-restore history. DC_RAnk.csv
+    itself is untouched -- it's still Source 2's DC Master (names/node/Cohort/financials)
+    and still drives Step 5's Cohort/Total_Score selection ordering; only its Rank
+    column's eligibility role is gone.
 
-    top_dc_allowlist CHANGED 2026-09-04, explicit user request ("use that list only"):
-    originally an ADDITIONAL gate on top of the Rank check (both required). Now, whenever
-    the allowlist actually loaded this run, it REPLACES the Rank<=6000 check entirely --
-    list membership is the sole extra criterion beyond Has_Assigned_SE/not-Legal_Hold, so
-    a DC on the list is in scope even with Rank>6000 or an unscored/Long-Tail Rank. Rank
-    only still gates when the allowlist itself failed to load this run (None -- see
-    load_top_dc_allowlist's own "fail open" contract) -- same safety-net fallback as
-    before this change, not a new decision."""
+    top_dc_allowlist (2026-09-04, explicit user request, "use that list only" then "go
+    to first updated TOP DC list file"): the ONLY DC-selection eligibility gate now,
+    beyond Has_Assigned_SE/not-Legal_Hold/not-too-recent. FAIL-CLOSED, not fail-open: if
+    the allowlist itself fails to load this run (None), every DC is excluded rather than
+    falling back to Rank -- a load failure is now loud (zero tasks network-wide that run)
+    rather than silently substituting a different, unconfirmed-for-this-purpose rule."""
     today_dt = datetime.fromisoformat(today)
-    using_top_list = top_dc_allowlist is not None
     for dc in dc_master:
         legal_hold = dc.get("DC_Status") == "Legal_Hold"
         last_visit = last_visit_by_dc.get(dc["DC_ID"])
@@ -1296,30 +1290,21 @@ def apply_dc_exclusion_rules(
         if last_visit:
             days_since_visit = (today_dt - datetime.fromisoformat(last_visit)).days
         too_recent = days_since_visit is not None and days_since_visit < constants.min_days_since_last_visit
-        if using_top_list:
-            top_list_eligible = dc["DC_ID"] in top_dc_allowlist
-            rank_gate_passed = True
-            if not top_list_eligible:
-                exc.flag(
-                    dc["DC_ID"], "Source2b", "DC_Not_In_Top_List",
-                    "DC_ID not present in 'updated TOP DC list.xlsx' -- excluded from all agents' DC selection",
-                )
-            else:
-                exc.ok("DC_Not_In_Top_List")
+        top_list_eligible = top_dc_allowlist is not None and dc["DC_ID"] in top_dc_allowlist
+        if top_dc_allowlist is None:
+            exc.flag(
+                dc["DC_ID"], "Source2b", "Top_DC_List_Unavailable",
+                "'updated TOP DC list.xlsx' failed to load this run -- excluded from all agents' "
+                "DC selection (fail-closed, no Rank<=6000 fallback)",
+            )
+        elif not top_list_eligible:
+            exc.flag(
+                dc["DC_ID"], "Source2b", "DC_Not_In_Top_List",
+                "DC_ID not present in 'updated TOP DC list.xlsx' -- excluded from all agents' DC selection",
+            )
         else:
-            top_list_eligible = True
-            rank = dc.get("Rank")
-            rank_gate_passed = isinstance(rank, (int, float)) and rank <= constants.max_eligible_rank
-            if not rank_gate_passed:
-                exc.flag(
-                    dc["DC_ID"], "Source2", "DC_Rank_Ineligible",
-                    f"Rank {rank!r} -- not a real numeric rank <= {constants.max_eligible_rank:.0f} "
-                    "(Long Tail cohort or unscored DC), excluded from all agents' DC selection "
-                    "(Top-DC-list unavailable this run, fell back to Rank<=6000)",
-                )
-            else:
-                exc.ok("DC_Rank_Ineligible")
-        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and rank_gate_passed and top_list_eligible
+            exc.ok("DC_Not_In_Top_List")
+        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and top_list_eligible
         dc["In_Scope_Flag"] = in_scope
         dc["Days_Since_Last_Visit"] = days_since_visit
         dc["Last_Visit_Date"] = last_visit
