@@ -84,47 +84,29 @@ DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAn
 # duplicate rows, harmless for a set-membership check).
 TOP_DC_LIST_XLSX = Path(os.environ.get("SE_AGENT_TOP_DC_LIST_XLSX", BASE_DIR / "updated TOP DC list.xlsx"))
 # Moved into a subfolder 2026-08-06 -- note the trailing space in the folder name, that's
-# literal (confirmed via `ls`), not a typo to "fix". All 5 BO_Configuration_Sheet_v3 files
-# live here now; DC_RAnk.csv (Source 2) and the AOP dashboard (Source 6) stayed at BASE_DIR.
+# literal (confirmed via `ls`), not a typo to "fix".
 CONFIG_DIR = Path(os.environ.get("SE_AGENT_CONFIG_DIR", BASE_DIR / "config and parameter "))
-CONFIG_ALL_PARAMS_CSV = Path(
-    # Bumped to (3) 2026-08-12 -- the (2) export was replaced on disk, not just
-    # supplemented; pointing at a deleted file silently degraded every run to
-    # Config_File_Missing since the upload, not just a cosmetic mismatch.
-    os.environ.get("SE_AGENT_CONFIG_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - All Parameters (3).csv")
-)
-CONFIG_SE_INCENTIVE_CSV = Path(
-    os.environ.get(
-        "SE_AGENT_INCENTIVE_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - SE Incentive Policy (FY26-27) (3).csv"
-    )
-)
-# "Open Questions (Sec 9).csv" was retired in the 2026-08-06 re-sync -- superseded by
-# "Agent-Determined Parameters.csv" (same 7-row dynamic-parameter list, restructured).
-# This path is kept for backward compatibility only; it will correctly report
-# Config_File_Missing if ever loaded, which is honest -- the file is gone, not renamed.
-CONFIG_OPEN_QUESTIONS_CSV = Path(
-    os.environ.get("SE_AGENT_OPEN_QUESTIONS_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Open Questions (Sec 9).csv")
-)
-# These 5 constants are defined but never read by load_config() (see below) or anything
-# else in this file -- CONFIG_ALL_PARAMS_CSV/CONFIG_SE_INCENTIVE_CSV are the only two
-# actually loaded. Kept in sync with the current pitch_config-style re-export anyway
-# (bumped (1)->(2) 2026-08-12, same day and same reason as CONFIG_ALL_PARAMS_CSV's
-# (2)->(3) bump above) so they don't point at a guaranteed-404 path if ever wired up.
-CONFIG_AGENT_DETERMINED_CSV = Path(
-    os.environ.get("SE_AGENT_AGENT_DETERMINED_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Agent-Determined Parameters (2).csv")
-)
-CONFIG_TASK_FORMULA_CSV = Path(
-    os.environ.get("SE_AGENT_TASK_FORMULA_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Daily Task Assignment Formula (2).csv")
-)
-CONFIG_GUARDRAILS_CSV = Path(
-    os.environ.get("SE_AGENT_GUARDRAILS_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Guardrails (2).csv")
-)
-CONFIG_VISIT_PURPOSE_MAPPING_CSV = Path(
-    os.environ.get("SE_AGENT_VISIT_PURPOSE_MAPPING_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Visit Type & Purpose Mapping (2).csv")
-)
-CONFIG_VISIT_PURPOSE_SYSTEM_CSV = Path(
-    os.environ.get("SE_AGENT_VISIT_PURPOSE_SYSTEM_CSV", CONFIG_DIR / "BO_Configuration_Sheet_v3 - Visit Type to Purpose (System) (2).csv")
-)
+# CHANGED 2026-09-06, explicit user request -- the 9 individual per-tab CSV exports this
+# used to point at were all replaced on disk by ONE consolidated workbook with a sheet
+# per former CSV (confirmed live: the old CSV filenames are gone, git status shows them
+# deleted). load_config() now reads sheets out of this single file via openpyxl instead
+# of csv.reader -- see load_config()'s own docstring for how the row-parsing logic
+# carried over unchanged (the two loaded sheets' header/section-marker shape is
+# byte-identical to what the old CSVs had).
+CONFIG_XLSX = Path(os.environ.get("SE_AGENT_CONFIG_XLSX", CONFIG_DIR / "BO_Configuration_Sheet_v3.xlsx"))
+CONFIG_ALL_PARAMS_SHEET = os.environ.get("SE_AGENT_CONFIG_ALL_PARAMS_SHEET", "All Parameters")
+CONFIG_SE_INCENTIVE_SHEET = os.environ.get("SE_AGENT_CONFIG_SE_INCENTIVE_SHEET", "SE Incentive Policy (FY26-27)")
+# These 6 sheet names are never read by load_config() (see below) or anything else in
+# this file -- CONFIG_ALL_PARAMS_SHEET/CONFIG_SE_INCENTIVE_SHEET are the only two
+# actually loaded. Kept in sync anyway (all 6 are real sheets in CONFIG_XLSX today) so
+# they're ready if ever wired up, same "don't point at a guaranteed-404" reasoning the
+# old per-CSV constants had.
+CONFIG_OPEN_QUESTIONS_SHEET = "Open Questions (Sec 9)"
+CONFIG_AGENT_DETERMINED_SHEET = "Agent-Determined Parameters"
+CONFIG_TASK_FORMULA_SHEET = "Daily Task Assignment Formula"
+CONFIG_GUARDRAILS_SHEET = "Guardrails"
+CONFIG_VISIT_PURPOSE_MAPPING_SHEET = "Visit Type & Purpose Mapping"
+CONFIG_VISIT_PURPOSE_SYSTEM_SHEET = "Visit Type to Purpose (System)"
 AOP_CSV = Path(
     os.environ.get("SE_AGENT_AOP_CSV", BASE_DIR / "Niyojan Q2-FY_26_27 Dashboard - Planning.csv")
 )
@@ -1031,20 +1013,49 @@ def check_business_constants_against_config(constants: "BusinessConstants", conf
             exc.ok("Config_Drift")
 
 
+def _read_xlsx_sheet_rows(path: Path, sheet_name: str) -> List[List[str]]:
+    """Reads one sheet as a list of string rows, same shape csv.reader used to hand
+    load_config() -- every cell stringified ("" for a blank/None cell), so the parsing
+    logic below (raw[0].strip(), etc.) works unchanged regardless of whether the row
+    came from a CSV or an xlsx sheet."""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet_name]
+        return [["" if c is None else str(c) for c in row] for row in ws.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+
+
 def load_config(
-    all_params_csv: Path = CONFIG_ALL_PARAMS_CSV,
-    se_incentive_csv: Path = CONFIG_SE_INCENTIVE_CSV,
+    config_xlsx: Path = CONFIG_XLSX,
+    all_params_sheet: str = CONFIG_ALL_PARAMS_SHEET,
+    se_incentive_sheet: str = CONFIG_SE_INCENTIVE_SHEET,
 ) -> Tuple[Table, Exceptions]:
-    """Source 5 -> Config_Normalized: flat key-value, one row per BO parameter."""
+    """Source 5 -> Config_Normalized: flat key-value, one row per BO parameter.
+
+    CHANGED 2026-09-06, explicit user request: reads two sheets out of ONE consolidated
+    workbook (openpyxl) instead of two separate per-tab CSV exports (csv.reader) -- the
+    old CSV files were replaced on disk by this single file. The row-parsing loop below
+    is otherwise UNCHANGED from the CSV version: both sheets' header/section-marker
+    shape is byte-identical to what the old CSVs had (confirmed live), so this only
+    needed a new row SOURCE, not new parsing logic."""
     exc = Exceptions(utc_now_iso())
     rows: Table = []
+    if openpyxl is None:
+        exc.flag(str(config_xlsx), "Source5", "Config_File_Missing", "openpyxl not installed -- Source 5 config unavailable this run")
+        exc.flag("ALL", "Source5", "Config_Empty", "No config rows parsed from Source 5")
+        return rows, exc
+    if not config_xlsx.exists():
+        exc.flag(str(config_xlsx), "Source5", "Config_File_Missing", "config workbook not found")
+        exc.flag("ALL", "Source5", "Config_Empty", "No config rows parsed from Source 5")
+        return rows, exc
     section = None
-    for path, kind in ((all_params_csv, "all_parameters"), (se_incentive_csv, "se_incentive_policy")):
-        if not path.exists():
-            exc.flag(str(path), "Source5", "Config_File_Missing", f"{kind} config file not found")
+    for sheet_name, kind in ((all_params_sheet, "all_parameters"), (se_incentive_sheet, "se_incentive_policy")):
+        try:
+            reader = _read_xlsx_sheet_rows(config_xlsx, sheet_name)
+        except KeyError:
+            exc.flag(sheet_name, "Source5", "Config_File_Missing", f"{kind} sheet not found in {config_xlsx.name}")
             continue
-        with path.open(newline="", encoding="utf-8") as f:
-            reader = list(csv.reader(f))
         header = None
         for raw in reader:
             if not any(c.strip() for c in raw):
@@ -1078,7 +1089,7 @@ def load_config(
         exc.flag(row["Param_Key"], "Source5", "Config_Value_Blank", f"{row['Parameter']} has no resolved value")
     exc.ok("Config_Completeness") if not blank else None
     if not rows:
-        exc.flag("ALL", "Source5", "Config_Empty", "No config rows parsed from Source 5 CSVs")
+        exc.flag("ALL", "Source5", "Config_Empty", "No config rows parsed from Source 5")
     return rows, exc
 
 
