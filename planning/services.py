@@ -1357,6 +1357,7 @@ def generate_plan_for_scope(
         # "last sale" -- the doc names no other confirmed source for this field).
         dc_master_by_id = {d["DC_ID"]: d for d in scoped_dcs}
         plan_date_dt = datetime.fromisoformat(plan_date).date()
+        active_dc_ids = list(dc_financials.keys())
         health_eligible_dc_ids = [
             dc_id for dc_id, fin in dc_financials.items()
             if fin.get("Outstanding_Last_Invoice_Date")
@@ -1368,6 +1369,26 @@ def generate_plan_for_scope(
         return_score_by_dc: Dict[str, float] = {}
         pathik_overdue_by_dc: Dict[str, float] = {}
         nrv_raw_by_dc: Dict[str, float] = {}
+
+        # GR-28 (DECOUPLED 2026-09-06, explicit user request): the Guardrails sheet's own
+        # text is an unqualified "ANY DC with overdue > 0" -- no 60-day-recent-sale
+        # precondition. Scoped to active_dc_ids (still requires active=TRUE, the one
+        # eligibility condition that genuinely applies network-wide per the sheet's own
+        # Row 1), NOT health_eligible_dc_ids (which additionally requires a sale within
+        # 60 days -- only relevant to the FULL 7-component Health Score composite, not
+        # this specific override). Queried once here, before the composite-scoring block
+        # below, so a DC that fails the 60-day gate can still be found flagged further
+        # down even though it never gets a full composite computed.
+        if active_dc_ids:
+            try:
+                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_pathik_overdue(active_dc_ids)):
+                    dc_id = agent.normalize_id(row.get("dc_id"))
+                    v = agent.parse_number(row.get("overdue"))
+                    if dc_id and v is not None:
+                        pathik_overdue_by_dc[dc_id] = v
+            except Exception as e:
+                run_exceptions.append({"source": "pathik_report", "reason_code": "Live_Pull_Failed", "detail": f"GR-28 interim OD signal: {type(e).__name__}: {e}"})
+
         if health_eligible_dc_ids:
             # NRV and PL_Contribution both read sale_orderrequest(line) -- the
             # input-backend Postgres DB (31), NOT Redshift. b2b_sales_return and
@@ -1421,15 +1442,6 @@ def generate_plan_for_scope(
             except Exception as e:
                 run_exceptions.append({"source": "b2b_sales_return", "reason_code": "Live_Pull_Failed", "detail": f"Health Score Return: {type(e).__name__}: {e}"})
 
-            try:
-                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_pathik_overdue(health_eligible_dc_ids)):
-                    dc_id = agent.normalize_id(row.get("dc_id"))
-                    v = agent.parse_number(row.get("overdue"))
-                    if dc_id and v is not None:
-                        pathik_overdue_by_dc[dc_id] = v
-            except Exception as e:
-                run_exceptions.append({"source": "pathik_report", "reason_code": "Live_Pull_Failed", "detail": f"GR-28 interim OD signal: {type(e).__name__}: {e}"})
-
             for dc_id in health_eligible_dc_ids:
                 dc = dc_master_by_id.get(dc_id, {})
                 gm_fy_value = dc.get("GM_FY2526")
@@ -1460,6 +1472,35 @@ def generate_plan_for_scope(
                 else:
                     result["Health_Focus_Purposes"] = []
                 dc_health_scores[dc_id] = result
+
+        # GR-28 for DCs that are active but failed the Health Score's own 60-day-
+        # recent-sale eligibility gate -- decoupled 2026-09-06, explicit user request
+        # ("flag that 60 day eligibility condition"). These DCs never get a full
+        # 7-component composite (NRV/PL_Contribution/Return were never queried for
+        # them, scoped to health_eligible_dc_ids above) -- only the bare GR-28 override,
+        # explicitly flagged via an exception record so this bypass is visible, not
+        # silently folded in as if it were an ordinary Health-Focus qualification.
+        for dc_id in active_dc_ids:
+            if dc_id in dc_health_scores or (pathik_overdue_by_dc.get(dc_id) or 0.0) <= 0:
+                continue
+            run_exceptions.append({
+                "source": "GR-28", "reason_code": "GR28_Bypassed_60Day_Eligibility",
+                "detail": (
+                    f"DC {dc_id}: force-included for Outstanding via GR-28 (real overdue balance, "
+                    "pathik_report.overdue) despite failing the Health Score's own Days_Since_Last_"
+                    "Sale<=60 eligibility gate -- no full Health Score composite computed for this "
+                    "DC, only the bare GR-28 override."
+                ),
+            })
+            dc_health_scores[dc_id] = {
+                "DC_Health_Score": None, "Health_Gap": None, "Sub_Scores": {},
+                "Negative_GM_Flag": False, "Qualify_HealthFocus": False,
+                "Health_Focus_Urgency": None, "GR28_Force_Include": True,
+                "GR28_Bypassed_60Day_Gate": True,
+                "Health_Focus_Purposes": agent.health_focus_purposes(
+                    {"OD": {"score_pct": 0.0, "bucket": "Worst", "urgency": 1.0}}
+                ),
+            }
 
         try:
             fy_start = _fiscal_year_start(plan_date)

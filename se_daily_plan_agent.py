@@ -4647,6 +4647,8 @@ def generate_se_daily_plan(
         if health_active:
             if health.get("GR28_Force_Include"):
                 health_note = ", GR-28: current overdue balance force-includes this DC regardless of Health-Focus bucket"
+                if health.get("GR28_Bypassed_60Day_Gate"):
+                    health_note += " (bypassing the Health Score's own 60-day-recent-sale eligibility gate -- no full composite computed for this DC)"
             else:
                 # Credit/OD excluded here -- they're hardcoded 0/Worst for every DC
                 # (data-access-blocked, not a real reading) and never independently
