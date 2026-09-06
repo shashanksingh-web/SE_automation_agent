@@ -99,6 +99,9 @@ def _serialize_task(t: DailyTask) -> dict:
         "BO_Scores": t.bo_scores, "BO_Composite_Score": t.bo_composite_score, "BO_Rank": t.bo_rank,
         "Promise_To_Pay_Date": t.promise_to_pay_date, "Promise_To_Pay_Amount": t.promise_to_pay_amount,
         "Promise_Status": t.promise_status,
+        "DC_Health_Score": t.dc_health_score, "Health_Gap": t.health_gap,
+        "Health_Sub_Scores": t.health_sub_scores, "Negative_GM_Flag": t.negative_gm_flag,
+        "Health_Focus_Track": t.health_focus_track, "Health_Focus_Purposes": t.health_focus_purposes,
         # Outcome-reconciliation block (Tier 1 feedback loop) -- populated by
         # `manage.py reconcile_outcomes` once plan_date has passed; Outcome_Status stays
         # UNKNOWN (never guessed) until that runs, same honest-degrade discipline as the

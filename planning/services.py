@@ -299,6 +299,119 @@ def _sql_ytd_pl(dc_ids: List[str], fy_start: str, plan_date: str) -> str:
     """
 
 
+# ---------------------------------------------------------------------------
+# Source 3k -- DC Composite Health Score (added 2026-09-06, business-confirmed via
+# BO_Configuration_Sheet_v3.xlsx's dedicated sheet). 5 of 7 sub-scores are live-computable
+# today; Credit/OD stay hardcoded 0 (see agent.compute_dc_health_score docstring) pending
+# a Locus-to-sap_partner_id bridge the business itself calls a data-access gap, not a
+# design gap. Note on the doc's own NRV query: it filters `status NOT IN ('cancelled',
+# 'rejected')` -- live-checked this round, sale_orderrequest.status only ever takes
+# 'processed'/'failed'/'processing' in this DB (no 'cancelled'/'rejected' value exists at
+# all), so that filter is a no-op here. Uses the same `status = 'processed'` filter this
+# codebase already applies everywhere else against this table (_sql_pl_metrics above),
+# for consistency, not the doc's literal (here, ineffective) clause.
+# ---------------------------------------------------------------------------
+
+def _sql_nrv_score(dc_ids: List[str], plan_date: str) -> str:
+    # NRV_Score = nrv_12m / MAX(nrv_12m across the WHOLE network) -- this query returns
+    # only the numerator (this scope's DC totals); the network-wide MAX is a SEPARATE,
+    # unscoped query (_sql_nrv_network_max) so the denominator never drifts per-scope
+    # (a State-scoped run must use the same MAX a Network-scoped run would).
+    d = datetime.fromisoformat(plan_date).date()
+    year_start = (d - timedelta(days=365)).isoformat()
+    return f"""
+    SELECT cc.partner_id AS dc_id, SUM(sor.amount_total) AS nrv_12m
+    FROM sale_orderrequest sor
+    JOIN customer_management_customer cc ON cc.id = sor.partner_id
+    WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
+      AND sor.status = 'processed'
+      AND sor.request_date >= '{year_start}' AND sor.request_date <= '{plan_date}'
+    GROUP BY cc.partner_id
+    """
+
+
+def _sql_nrv_network_max(plan_date: str) -> str:
+    # Unscoped on purpose -- the true network-wide denominator, not this run's scope.
+    # Real confirmed result (business-run + this session's own check): ~Rs4.23 crore.
+    # Queried live every run rather than hardcoded, so it can never silently go stale.
+    d = datetime.fromisoformat(plan_date).date()
+    year_start = (d - timedelta(days=365)).isoformat()
+    return f"""
+    SELECT MAX(nrv_12m) AS network_max_nrv
+    FROM (
+        SELECT cc.partner_id AS dc_id, SUM(sor.amount_total) AS nrv_12m
+        FROM sale_orderrequest sor
+        JOIN customer_management_customer cc ON cc.id = sor.partner_id
+        WHERE sor.status = 'processed'
+          AND sor.request_date >= '{year_start}' AND sor.request_date <= '{plan_date}'
+        GROUP BY cc.partner_id
+    ) t
+    """
+
+
+def _sql_pl_contribution(dc_ids: List[str], plan_date: str) -> str:
+    # PL_Contribution input: PL% = SUM(price*qty WHERE PRIVATE LABEL) / SUM(price*qty),
+    # trailing 365 days -- same confirmed join chain as _sql_pl_metrics above, but a
+    # 365-day window (not 90d/30d) and BOTH the PL-tagged and all-segment totals in one
+    # pass via CASE WHEN, since PL_Contribution's denominator is total sales, not a
+    # separate baseline computation.
+    d = datetime.fromisoformat(plan_date).date()
+    year_start = (d - timedelta(days=365)).isoformat()
+    return f"""
+    SELECT cc.partner_id AS dc_id,
+           SUM(CASE WHEN pt.business_segment_name = 'PRIVATE LABEL' THEN sol.price_unit * sol.quantity ELSE 0 END) AS pl_value_365d,
+           SUM(sol.price_unit * sol.quantity) AS total_value_365d
+    FROM sale_orderrequestline sol
+    JOIN sale_orderrequest sor ON sor.id = sol.order_request_id
+    JOIN customer_management_customer cc ON cc.id = sor.partner_id
+    JOIN products_product pp ON pp.id = sol.product_id
+    JOIN products_template pt ON pt.id = pp.template_id
+    WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
+      AND sor.status = 'processed'
+      AND sor.created_at >= '{year_start}' AND sor.created_at <= '{plan_date}'
+    GROUP BY cc.partner_id
+    """
+
+
+def _sql_return_score(dc_ids: List[str], plan_date: str) -> str:
+    # Return_Rate = SUM(credit_note_net_value) / SUM(sale_orderrequest.amount_total),
+    # trailing 365 days. b2b_sales_return lives on Redshift (db 41); sale_orderrequest
+    # lives on the input-backend Postgres (db 31) -- two separate database servers, no
+    # cross-DB join possible, so this query returns ONLY the b2b_sales_return
+    # (Redshift) side. The sales-total denominator reuses _sql_nrv_score's own
+    # nrv_12m result (== SUM(sale_orderrequest.amount_total), the identical quantity)
+    # rather than re-querying it -- see the caller in generate_plan_for_scope.
+    # b2b_sales_return.partner_id is ALREADY sap_partner_id format directly (confirmed
+    # live this round -- 10-digit values, e.g. '1000043726') -- no bridge needed here.
+    d = datetime.fromisoformat(plan_date).date()
+    year_start = (d - timedelta(days=365)).isoformat()
+    return f"""
+    SELECT partner_id AS dc_id, SUM(credit_note_net_value) AS returns_365d
+    FROM b2b_sales_return
+    WHERE partner_id::text IN ({_sql_list(dc_ids)})
+      AND credit_note_timestamp >= '{year_start}' AND credit_note_timestamp <= '{plan_date}'
+    GROUP BY partner_id
+    """
+
+
+def _sql_pathik_overdue(dc_ids: List[str]) -> str:
+    # GR-28's interim OD signal (business-confirmed 2026-09-06): pathik_report.overdue,
+    # NOT customer_management_input_outstanding.current_od (Source 3d) as previously
+    # assumed -- the doc explicitly flags this as a correction. pathik_report's grain is
+    # one row per partner per SE per day (Source 1a), confirmed live this round to carry
+    # many rows per sap_partner_id -- ROW_NUMBER() picks the most recent row per DC (this
+    # codebase's established no-DISTINCT-ON-on-Redshift convention), not just any row.
+    return f"""
+    WITH ranked AS (
+        SELECT sap_partner_id AS dc_id, overdue,
+               ROW_NUMBER() OVER (PARTITION BY sap_partner_id ORDER BY transaction_date DESC) AS rn
+        FROM pathik_report
+        WHERE sap_partner_id::text IN ({_sql_list(dc_ids)})
+    )
+    SELECT dc_id, overdue FROM ranked WHERE rn = 1
+    """
+
+
 def _sql_pl_metrics(dc_ids: List[str], plan_date: str) -> str:
     # Real per-DC BO1 (PL) scoring -- same confirmed PRIVATE LABEL source as
     # _sql_ytd_pl above (see its comment for the join chain/status filter), replacing
@@ -1231,6 +1344,123 @@ def generate_plan_for_scope(
             for dc_id, fin in dc_financials.items()
         }
 
+        # Source 3k -- DC Composite Health Score, wired 2026-09-06 (business request).
+        # A separate, parallel scoring model from BO1-5 -- does NOT feed dc_bo_scores or
+        # Section 7's Priority_Score above, only the separate Health-Focus qualification
+        # track (see _qualify_health_focus below / generate_se_daily_plan's pool-merge).
+        # Eligibility gate first (business-confirmed): active=TRUE AND Days_Since_Last_
+        # Sale<=60. dc_financials already implies active=TRUE by construction -- a DC
+        # failing dc_datamart's own is_active check never gets a dc_financials entry at
+        # all (see normalize_sales_transactions' is_active filter) -- so this loop only
+        # needs to additionally check the 60-day recency, using the same Outstanding_
+        # Last_Invoice_Date already computed from dc_datamart.last_invoice_date (read as
+        # "last sale" -- the doc names no other confirmed source for this field).
+        dc_master_by_id = {d["DC_ID"]: d for d in scoped_dcs}
+        plan_date_dt = datetime.fromisoformat(plan_date).date()
+        health_eligible_dc_ids = [
+            dc_id for dc_id, fin in dc_financials.items()
+            if fin.get("Outstanding_Last_Invoice_Date")
+            and (plan_date_dt - datetime.fromisoformat(fin["Outstanding_Last_Invoice_Date"]).date()).days <= constants.health_focus_days_since_last_sale_max
+        ]
+        dc_health_scores: Dict[str, Dict[str, Any]] = {}
+        nrv_by_dc: Dict[str, float] = {}
+        pl_contribution_by_dc: Dict[str, float] = {}
+        return_score_by_dc: Dict[str, float] = {}
+        pathik_overdue_by_dc: Dict[str, float] = {}
+        nrv_raw_by_dc: Dict[str, float] = {}
+        if health_eligible_dc_ids:
+            # NRV and PL_Contribution both read sale_orderrequest(line) -- the
+            # input-backend Postgres DB (31), NOT Redshift. b2b_sales_return and
+            # pathik_report ARE Redshift (41) -- two separate database servers, hence
+            # the split client.execute_sql database_id below (a real bug caught live
+            # this round: b2b_sales_return can't be joined to sale_orderrequest in one
+            # query the way _sql_return_score originally assumed).
+            try:
+                max_row = next(iter(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_nrv_network_max(plan_date))), None)
+                network_max_nrv = agent.parse_number(max_row.get("network_max_nrv")) if max_row else None
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_nrv_score(health_eligible_dc_ids, plan_date)):
+                    dc_id = agent.normalize_id(row.get("dc_id"))
+                    v = agent.parse_number(row.get("nrv_12m"))
+                    if dc_id and v is not None:
+                        nrv_raw_by_dc[dc_id] = v
+                if network_max_nrv:
+                    nrv_by_dc = {dc_id: min(v / network_max_nrv, 1.0) for dc_id, v in nrv_raw_by_dc.items()}
+            except Exception as e:
+                run_exceptions.append({"source": "sale_orderrequest", "reason_code": "Live_Pull_Failed", "detail": f"Health Score NRV: {type(e).__name__}: {e}"})
+
+            try:
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_pl_contribution(health_eligible_dc_ids, plan_date)):
+                    dc_id = agent.normalize_id(row.get("dc_id"))
+                    if not dc_id:
+                        continue
+                    pl_value = agent.parse_number(row.get("pl_value_365d")) or 0.0
+                    total_value = agent.parse_number(row.get("total_value_365d"))
+                    # Zero-denominator rule (business-confirmed): 0, not undefined.
+                    # PL_Contribution_Score = MIN(PL% x 2, 100%), PL% = pl_value/total_value.
+                    pl_contribution_by_dc[dc_id] = min((pl_value / total_value) * 2, 1.0) if total_value else 0.0
+            except Exception as e:
+                run_exceptions.append({"source": "sale_orderrequestline", "reason_code": "Live_Pull_Failed", "detail": f"Health Score PL_Contribution: {type(e).__name__}: {e}"})
+
+            try:
+                # Return_Rate's denominator (SUM(sale_orderrequest.amount_total)) is the
+                # exact same quantity as nrv_raw_by_dc -- reused rather than re-queried.
+                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_return_score(health_eligible_dc_ids, plan_date)):
+                    dc_id = agent.normalize_id(row.get("dc_id"))
+                    if not dc_id:
+                        continue
+                    returns = agent.parse_number(row.get("returns_365d")) or 0.0
+                    sales = nrv_raw_by_dc.get(dc_id)
+                    # Zero-denominator rule (business-confirmed): 0, not undefined.
+                    return_score_by_dc[dc_id] = max(0.0, 1.0 - (returns / sales)) if sales else 0.0
+                # A DC with ZERO returns never appears in b2b_sales_return at all (the
+                # GROUP BY only returns rows that exist) -- business-confirmed this is a
+                # perfect score (Return_Rate=0 -> Score=1), NOT a missing/undefined
+                # component, so it's backfilled explicitly rather than left absent.
+                for dc_id in nrv_raw_by_dc:
+                    return_score_by_dc.setdefault(dc_id, 1.0)
+            except Exception as e:
+                run_exceptions.append({"source": "b2b_sales_return", "reason_code": "Live_Pull_Failed", "detail": f"Health Score Return: {type(e).__name__}: {e}"})
+
+            try:
+                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_pathik_overdue(health_eligible_dc_ids)):
+                    dc_id = agent.normalize_id(row.get("dc_id"))
+                    v = agent.parse_number(row.get("overdue"))
+                    if dc_id and v is not None:
+                        pathik_overdue_by_dc[dc_id] = v
+            except Exception as e:
+                run_exceptions.append({"source": "pathik_report", "reason_code": "Live_Pull_Failed", "detail": f"GR-28 interim OD signal: {type(e).__name__}: {e}"})
+
+            for dc_id in health_eligible_dc_ids:
+                dc = dc_master_by_id.get(dc_id, {})
+                gm_fy_value = dc.get("GM_FY2526")
+                gm_pct = dc.get("GM_Percent")
+                # Negative-GM rule (business-confirmed): a loss-making DC's GM/GM% scores
+                # are NOT run through the normal formula -- flagged for manual review
+                # instead, rather than producing a score that breaks the 0-1 convention.
+                negative_gm_flag = (gm_fy_value is not None and gm_fy_value < 0) or (gm_pct is not None and gm_pct < 0)
+                gm_score = None if negative_gm_flag else dc.get("GM_Score_File")
+                gm_pct_score = None if negative_gm_flag else dc.get("GM_Percent_Score_File")
+                result = agent.compute_dc_health_score(
+                    nrv_by_dc.get(dc_id), gm_score, gm_pct_score,
+                    pl_contribution_by_dc.get(dc_id), return_score_by_dc.get(dc_id),
+                    negative_gm_flag, constants,
+                )
+                # GR-28 (business-confirmed): current_od>0 always force-includes the DC
+                # in the candidate pool regardless of composite score, bypassing the
+                # Health-Focus bucket logic entirely -- tracked here, applied at pool-
+                # merge time in generate_se_daily_plan.
+                result["GR28_Force_Include"] = (pathik_overdue_by_dc.get(dc_id) or 0.0) > 0
+                if result["GR28_Force_Include"]:
+                    result["Health_Focus_Purposes"] = agent.health_focus_purposes({
+                        **result["Sub_Scores"],
+                        "OD": {"score_pct": 0.0, "bucket": "Worst", "urgency": 1.0},
+                    })
+                elif result["Qualify_HealthFocus"]:
+                    result["Health_Focus_Purposes"] = agent.health_focus_purposes(result["Sub_Scores"])
+                else:
+                    result["Health_Focus_Purposes"] = []
+                dc_health_scores[dc_id] = result
+
         try:
             fy_start = _fiscal_year_start(plan_date)
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_ytd_pl(dc_ids, fy_start, plan_date)):
@@ -1732,7 +1962,7 @@ def generate_plan_for_scope(
             ytd_pl_by_dc=ytd_pl_by_dc, punch_in_coords=punch_in_by_se.get(uid), dc_bo_scores=dc_bo_scores,
             farmer_meeting_scheduled_today=farmer_meeting_confirmed_by_se.get(email, False),
             route_selector=_route_selector, consecutive_misses_by_dc=consecutive_misses_by_dc,
-            promise_by_dc=promise_by_dc,
+            promise_by_dc=promise_by_dc, dc_health_scores=dc_health_scores,
         )
         tasks = plan.get("Tasks", [])
         if not tasks:
@@ -1798,6 +2028,11 @@ def generate_plan_for_scope(
                 bo_scores=t.get("BO_Scores") or {},
                 bo_composite_score=t.get("BO_Composite_Score"), bo_rank=t.get("BO_Rank"),
                 critical=t.get("Critical", False), critical_reasons=t.get("Critical_Reasons", ""),
+                dc_health_score=t.get("DC_Health_Score"), health_gap=t.get("Health_Gap"),
+                health_sub_scores=t.get("Health_Sub_Scores") or {},
+                negative_gm_flag=t.get("Negative_GM_Flag", False),
+                health_focus_track=t.get("Health_Focus_Track", False),
+                health_focus_purposes=t.get("Health_Focus_Purposes", ""),
             ))
 
     DailyTask.objects.bulk_create(pending_tasks)

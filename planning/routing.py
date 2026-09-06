@@ -458,6 +458,8 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
             estimated_duration=int(stop.visit_duration_min), priority_multiplier=1.0, finance_status=None,
             bo_scores={}, bo_composite_score=None, bo_rank=None,
             promise_to_pay_date=None, promise_to_pay_amount=None, promise_status=None,
+            dc_health_score=None, health_gap=None, health_sub_scores={},
+            negative_gm_flag=False, health_focus_track=False, health_focus_purposes="",
         )
         created += 1
     return created

@@ -158,6 +158,19 @@ class DailyTask(models.Model):
     bo_composite_score = models.FloatField(blank=True, null=True)
     bo_rank = models.IntegerField(blank=True, null=True)
 
+    # Source 3k -- DC Composite Health Score (added 2026-09-06). A separate, parallel
+    # 1-100 scoring model from BO1-5 -- see DailyTaskRow.DC_Health_Score docstring for
+    # the full formula/edge cases. NULL when this DC had no Health Score computed this
+    # run (failed the active/Days_Since_Last_Sale<=60 eligibility gate).
+    dc_health_score = models.FloatField(blank=True, null=True)
+    health_gap = models.FloatField(blank=True, null=True)
+    health_sub_scores = models.JSONField(default=dict, blank=True)
+    negative_gm_flag = models.BooleanField(default=False)
+    # True when this task exists (or was re-ranked) because of the Health-Focus track,
+    # not the original BO1-5 selection -- see generate_se_daily_plan's pool-merge.
+    health_focus_track = models.BooleanField(default=False)
+    health_focus_purposes = models.CharField(max_length=200, blank=True, default="")
+
     # Feedback-loop outcome fields (Tier 1) -- populated later by `reconcile_outcomes`,
     # once plan_date has passed and real Visits/Sales/Payments data for that day exists.
     # UNKNOWN (not COMPLETED/MISSED) is the honest default until reconciliation runs --

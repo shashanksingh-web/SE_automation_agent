@@ -873,6 +873,34 @@ class BusinessConstants:
     daily_travel_cap_km: float = 80.0
     monthly_travel_cap_km: float = 1600.0  # 8.9
     total_capacity_min: int = 480  # 8.2 confirmed: 60 min calls + 420 min field = 480 (8hr day)
+    # Source 3k -- DC Composite Health Score (added 2026-09-06, business-confirmed via
+    # BO_Configuration_Sheet_v3.xlsx's dedicated sheet -- weights sum to exactly 1.0, all
+    # 7 formulas confirmed; Credit/OD are formula-confirmed but data-access-blocked on a
+    # Locus-to-sap_partner_id bridge gap, so they contribute 0 via the missing-component
+    # rule below until that bridge exists). Health_Score(1-100) = 100 x sum(weight x
+    # sub_score). A separate, parallel model from BO1-5 -- does NOT feed Section 7's
+    # Priority_Score (explicitly reverted to stay untouched); only affects a separate
+    # "Health-Focus" qualification track that pool-merges with the BO-driven candidates
+    # (see _qualify_health_focus/compute_dc_health_score and services.py's pool-merge).
+    health_weight_nrv: float = 0.20
+    health_weight_gm: float = 0.20
+    health_weight_gm_pct: float = 0.20
+    health_weight_pl_contribution: float = 0.10
+    health_weight_return: float = 0.10
+    health_weight_credit: float = 0.10  # blocked, always contributes 0 -- see docstring above
+    health_weight_od: float = 0.10      # blocked, always contributes 0 -- see docstring above
+    health_focus_days_since_last_sale_max: int = 60
+    # Sub-score grading buckets (business-confirmed), applied to EACH of the 7 components
+    # individually, never to the final 1-100 composite: Strong>80%, Fine 60-80%,
+    # Weak 40-60%, Worst<=40%. A DC qualifies for Health-Focus when ANY component lands
+    # in Weak or Worst -- see _qualify_health_focus.
+    health_bucket_strong: float = 0.80
+    health_bucket_fine: float = 0.60
+    health_bucket_weak: float = 0.40
+    # Health-Focus urgency (business-confirmed, continuous, FINAL): Urgency(component) =
+    # CLAMP((0.60 - sub_score) / 0.60, 0, 1) -- 0 right at the 60% qualifying boundary,
+    # 1.0 at a 0% sub-score. A DC's overall urgency is MAX across its qualifying
+    # components (the single most severe one drives priority, not an average).
     # 8.6 confirmed Win_Definition per objective (Outstanding = payment received ONLY,
     # promise-to-pay removed as a qualifying win in the v3 configured value)
     win_definitions: Dict[str, str] = field(
@@ -1217,6 +1245,14 @@ def load_dc_master(path: Path = DC_MASTER_CSV) -> Tuple[Table, Exceptions]:
                     "PL_Percent": parse_number(row.get("PL%")),
                     "Avg_Repayment_Days": parse_number(row.get("Avg Repayment days")),
                     "Credit_Score": parse_number(row.get("Credit Score")),
+                    # Source 3k (DC Composite Health Score, added 2026-09-06) -- GM_Score
+                    # and GM%_Score are read directly from this file's own precomputed
+                    # columns (confirmed file-based source, R^2 0.998+ against the
+                    # business's own formula) rather than recomputed here -- this file
+                    # IS PDC_Selection_RANK_Working.csv byte-for-byte (confirmed live,
+                    # zero differing rows across all 10,195 shared Partner Ids).
+                    "GM_Score_File": parse_number(row.get("GM Score")),
+                    "GM_Percent_Score_File": parse_number(row.get("GM% Score")),
                     "In_Scope_Flag": None,  # resolved in apply_dc_exclusion_rules() once Source 4 status is known
                     "Latitude": None,       # filled from Geo_Mapping_Normalized (1c) join
                     "Longitude": None,
@@ -2471,6 +2507,134 @@ def score_bo5_long_term(meetings_held: int, dcs_onboarded: int, c: BusinessConst
     return {"score": score, "grade": grade, "meeting_pct": meeting_pct, "onboarding_pct": onboarding_pct}
 
 
+def _health_bucket(score_pct: Optional[float], c: BusinessConstants) -> str:
+    """Sub-score grading bucket (business-confirmed), applied per-component, never to the
+    final composite. A missing/undefined sub-score is treated as a real 0% reading here
+    (same "missing -> 0" convention the composite's own missing-component rule uses --
+    the sheet states this for the weighted sum specifically, extended here for
+    consistency rather than leaving buckets undefined for a DC with no data at all,
+    which would silently exclude it from Health-Focus qualification instead of correctly
+    flagging it as Worst)."""
+    v = 0.0 if score_pct is None else score_pct
+    if v > c.health_bucket_strong:
+        return "Strong"
+    if v > c.health_bucket_fine:
+        return "Fine"
+    if v > c.health_bucket_weak:
+        return "Weak"
+    return "Worst"
+
+
+def _health_urgency(score_pct: Optional[float], c: BusinessConstants) -> float:
+    """Business-confirmed, continuous: CLAMP((0.60 - sub_score) / 0.60, 0, 1). A missing
+    sub-score reads as 0% (same convention as _health_bucket) -> urgency 1.0, the most
+    severe possible reading, consistent with "missing is never silently ignored"."""
+    v = 0.0 if score_pct is None else score_pct
+    return max(0.0, min(1.0, (c.health_bucket_fine - v) / c.health_bucket_fine))
+
+
+def compute_dc_health_score(
+    nrv_score: Optional[float], gm_score: Optional[float], gm_pct_score: Optional[float],
+    pl_contribution_score: Optional[float], return_score: Optional[float],
+    negative_gm_flag: bool, c: BusinessConstants,
+) -> Dict[str, Any]:
+    """Source 3k -- DC Composite Health Score, business-confirmed master formula:
+    Health_Score(1-100) = 100 x [0.20xNRV + 0.20xGM + 0.20xGM% + 0.10xPL_Contribution +
+    0.10xReturn + 0.10xCredit + 0.10xOD]. Credit_Score/OD_Score are hardcoded 0 here --
+    both are formula-confirmed but data-access-blocked on a Locus-to-sap_partner_id
+    bridge gap the business itself describes as "purely data-access, not design" (see
+    BusinessConstants docstring) -- NOT guessed, NOT omitted from the weighted sum
+    (missing-component rule: treated as 0, DC not excluded, remaining weights NOT
+    redistributed to compensate).
+
+    negative_gm_flag (business-confirmed edge case): if the DC's raw GM_FY_Value or GM%
+    is negative, gm_score/gm_pct_score are NOT run through the normal 0-1 formula by the
+    caller (this function just receives None for them and sets Negative_GM_Flag) -- a
+    loss-making DC is flagged for manual review instead of producing a score that breaks
+    the 0-1 convention, per the business's own stated reasoning.
+
+    Returns per-component value/bucket/urgency (business-confirmed continuous urgency,
+    not a binary Weak/Worst split), the 1-100 composite, Health_Gap (100 - score), and
+    Qualify_HealthFocus.
+
+    IMPORTANT: Qualify_HealthFocus is decided ONLY from the 5 live-computable components
+    (NRV/GM/GM%/PL_Contribution/Return) -- NOT from Credit/OD. Credit/OD are hardcoded 0
+    for literally every DC in the network right now (data-access-blocked, not a real
+    reading), so their bucket is unconditionally "Worst" for everyone -- if that were
+    allowed to trigger qualification, EVERY DC would qualify for Health-Focus regardless
+    of its real financial health, which would defeat the entire point of the track
+    (caught live 2026-09-06: a first version of this function did exactly that, and a
+    live Bihar run showed literally every eligible DC qualifying). Credit/OD still fully
+    participate in the weighted composite SUM (0.10 each, per the missing-component
+    rule) and still show their real "Worst" bucket/urgency in Sub_Scores for
+    transparency -- they just can't be the REASON a DC enters the Health-Focus track on
+    their own. GR-28 (current_od>0, live via pathik_report) remains the correct,
+    separate, business-confirmed way an overdue-driven DC still gets force-included."""
+    components = {
+        "NRV": (nrv_score, c.health_weight_nrv),
+        "GM": (gm_score, c.health_weight_gm),
+        "GM_Pct": (gm_pct_score, c.health_weight_gm_pct),
+        "PL_Contribution": (pl_contribution_score, c.health_weight_pl_contribution),
+        "Return": (return_score, c.health_weight_return),
+        "Credit": (0.0, c.health_weight_credit),  # blocked -- see docstring
+        "OD": (0.0, c.health_weight_od),          # blocked -- see docstring
+    }
+    composite_raw = sum((v or 0.0) * w for v, w in components.values())
+    health_score_100 = composite_raw * 100.0
+
+    sub_scores = {}
+    qualifies = False
+    max_urgency = 0.0
+    for name, (v, _w) in components.items():
+        bucket = _health_bucket(v, c)
+        urgency = _health_urgency(v, c)
+        sub_scores[name] = {"score_pct": v, "bucket": bucket, "urgency": round(urgency, 4)}
+        if name in ("Credit", "OD"):
+            continue  # blocked, always-0 -- excluded from qualification, see docstring
+        if bucket in ("Weak", "Worst"):
+            qualifies = True
+            max_urgency = max(max_urgency, urgency)
+
+    return {
+        "DC_Health_Score": round(health_score_100, 2),
+        "Health_Gap": round(100.0 - health_score_100, 2),
+        "Sub_Scores": sub_scores,
+        "Negative_GM_Flag": negative_gm_flag,
+        "Qualify_HealthFocus": qualifies,
+        "Health_Focus_Urgency": round(max_urgency, 4) if qualifies else None,
+    }
+
+
+# Purpose mapping (business-confirmed, row 27 of the DC Composite Health Score sheet):
+# Credit_Score or OD_Score in Weak/Worst -> Promise_To_Pay/Collection; PL_Contribution_
+# Score in Weak/Worst -> PL Sale; NRV/GM/GM%/Return in Weak/Worst -> Sale (general).
+# When multiple components qualify at once, Collection outranks the others (business-
+# confirmed priority order) -- per 8.12, a single visit can still bundle more than one
+# purpose if the caller chooses to attach every qualifying purpose, not just the winner.
+HEALTH_FOCUS_PURPOSE_BY_COMPONENT: Dict[str, str] = {
+    "Credit": "Promise To Pay / Collection",
+    "OD": "Promise To Pay / Collection",
+    "PL_Contribution": "PL Sale",
+    "NRV": "Sale",
+    "GM": "Sale",
+    "GM_Pct": "Sale",
+    "Return": "Sale",
+}
+HEALTH_FOCUS_PURPOSE_PRIORITY = ["Promise To Pay / Collection", "PL Sale", "Sale"]
+
+
+def health_focus_purposes(sub_scores: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Every qualifying (Weak/Worst) component's mapped purpose, de-duplicated and
+    ordered Collection > PL Sale > Sale (business-confirmed priority when multiple
+    components qualify at once) -- bundled per 8.12, not just the single top purpose."""
+    triggered = {
+        HEALTH_FOCUS_PURPOSE_BY_COMPONENT[name]
+        for name, data in sub_scores.items()
+        if data["bucket"] in ("Weak", "Worst")
+    }
+    return [p for p in HEALTH_FOCUS_PURPOSE_PRIORITY if p in triggered]
+
+
 def compute_fm_urgency(meetings_held_mtd: int, days_left_in_month: int, c: BusinessConstants) -> Dict[str, Any]:
     """8.11 Layer 0: FM_Urgency tracks whether an SE is falling behind the >=2
     Mega-meetings/month pace (5.3) and needs one scheduled soon rather than left to
@@ -2765,6 +2929,21 @@ class DailyTaskRow:
     # objective -- doesn't affect Priority_Score/ranking, purely informational.
     Critical: bool = False
     Critical_Reasons: str = ""
+    # Source 3k (DC Composite Health Score, added 2026-09-06) -- a separate, parallel
+    # 1-100 scoring model from BO1-5 (see compute_dc_health_score). None when this DC has
+    # no Health Score computed this run (failed the active/Days_Since_Last_Sale<=60
+    # eligibility gate, or dc_health_scores wasn't wired for this call path).
+    DC_Health_Score: Optional[float] = None
+    Health_Gap: Optional[float] = None
+    Health_Sub_Scores: Optional[Dict[str, Any]] = None
+    Negative_GM_Flag: bool = False
+    # True when this task exists (or was re-ranked to the top of its DC's priority)
+    # because of the Health-Focus track, not the original BO1-5 selection -- see
+    # generate_se_daily_plan's pool-merge. A DC can be True here AND still show real
+    # BO_Scores/Objective values if it ALSO independently qualified via BO1-5 -- the two
+    # tracks are not mutually exclusive, Health-Focus just wins the tie-break on overlap.
+    Health_Focus_Track: bool = False
+    Health_Focus_Purposes: str = ""
 
 
 def haversine_km(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
@@ -4007,6 +4186,7 @@ def generate_se_daily_plan(
     route_selector: Optional[Callable[..., Dict[str, Any]]] = None,
     consecutive_misses_by_dc: Optional[Dict[str, int]] = None,
     promise_by_dc: Optional[Dict[str, Dict[str, Any]]] = None,
+    dc_health_scores: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Section 6 process flow + Section 7/8/10: rank objectives, respect capacity/travel
     caps, apply the confirmed tie-break/override rules, and shape the output exactly as
@@ -4040,6 +4220,7 @@ def generate_se_daily_plan(
     dc_bo_scores = dc_bo_scores or {}
     consecutive_misses_by_dc = consecutive_misses_by_dc or {}
     promise_by_dc = promise_by_dc or {}
+    dc_health_scores = dc_health_scores or {}
 
     def _promise_status(dc_id: str) -> Optional[str]:
         """2026-09-04, explicit user request (SE_DC_Data_Normalization_Agent_Prompt.docx
@@ -4300,9 +4481,42 @@ def generate_se_daily_plan(
             priority_score += constants.overdue_90_plus_priority_boost
         pool.append((dc, [o for _, o in gap_by_obj], priority_score, fatigue_multiplier))
 
+    # Source 3k -- Health-Focus pool-merge (Layer 2.5, business-confirmed 2026-09-06):
+    # Final_Candidate_Pool = Ranked_Pool (BO-driven, above) UNION Qualify_HealthFocus.
+    # A POOL MERGE, not a score-blend -- Health_Gap never feeds the BO Priority_Score
+    # formula above (explicitly reverted to stay untouched, per the business's own
+    # sheet). A DC qualifying via BOTH tracks has Health-Focus WIN the tie-break
+    # (business-confirmed): its priority_score is replaced outright for ranking purposes,
+    # but its BO-matched objectives/purposes stay attached too (bundled per 8.12, see
+    # _build_candidate_row) -- "wins" governs ranking, not erasure of the BO match. GR-28
+    # (current_od>0, live via pathik_report.overdue) always force-includes a DC
+    # regardless of Health-Focus bucket logic -- reuses the same guaranteed-inclusion
+    # mechanism as the 90+-day-overdue boost above (an out-of-band additive constant),
+    # for consistency. Exempt from the 8.1 max-3-objectives/day cap (business-confirmed)
+    # -- a Health-Focus-only candidate has no BO "objectives" to cap; still subject to
+    # the same 5-task/day and travel-time limits everything else in this pool faces,
+    # via the exact same downstream code, no separate path.
+    pool_by_dc_id = {t[0]["DC_ID"]: i for i, t in enumerate(pool)}
+    for dc in ranked_dcs:
+        dc_id = dc["DC_ID"]
+        health = dc_health_scores.get(dc_id)
+        if not health or not (health.get("Qualify_HealthFocus") or health.get("GR28_Force_Include")):
+            continue
+        health_priority = (
+            constants.overdue_90_plus_priority_boost if health.get("GR28_Force_Include")
+            else (health.get("Health_Focus_Urgency") or 0.0)
+        )
+        if dc_id in pool_by_dc_id:
+            idx = pool_by_dc_id[dc_id]
+            _, existing_matched, _, existing_multiplier = pool[idx]
+            pool[idx] = (dc, existing_matched, health_priority, existing_multiplier)
+        else:
+            pool.append((dc, [], health_priority, 1.0))
+            pool_by_dc_id[dc_id] = len(pool) - 1
+
     ranked_pool = sorted(
         pool,
-        key=lambda t: (-t[2], min(tie_break_order.index(o) if o in tie_break_order else 99 for o in t[1])),
+        key=lambda t: (-t[2], min((tie_break_order.index(o) for o in t[1] if o in tie_break_order), default=99)),
     )
 
     # Per-DC row construction -- shared by both the legacy greedy-fill path and the
@@ -4359,16 +4573,40 @@ def generate_se_daily_plan(
                 f"Broke promise to pay ₹{promise.get('Promise_Amount') or 0:,.0f} by {promise.get('Promise_Date')}"
             )
 
+        # Source 3k -- Health-Focus purposes bundle in alongside any BO-matched ones
+        # (8.12), never replace them -- see generate_se_daily_plan's pool-merge for why
+        # a DC can carry both tracks at once.
+        health = dc_health_scores.get(dc_id)
+        health_active = bool(health and (health.get("Qualify_HealthFocus") or health.get("GR28_Force_Include")))
+        health_purposes = health.get("Health_Focus_Purposes", []) if health_active else []
+
         # 8.12 bundling: one visit-task covers every matched objective for this DC.
-        purpose = " + ".join(dict.fromkeys(PURPOSE_BY_OBJECTIVE.get(o, o) for o in matched))
+        purpose = " + ".join(dict.fromkeys(
+            [PURPOSE_BY_OBJECTIVE.get(o, o) for o in matched] + health_purposes
+        ))
         per_dc_scores = dc_bo_scores.get(dc_id, {})
         grade_notes = [f"{o} Grade {per_dc_scores[o]['grade']} ({per_dc_scores[o].get('reason', '')})" for o in matched if o in per_dc_scores and per_dc_scores[o].get("grade")]
         overdue_90_plus_boosted = overdue_aging == "90+ days" and "Outstanding" in matched
+        health_note = ""
+        if health_active:
+            if health.get("GR28_Force_Include"):
+                health_note = ", GR-28: current overdue balance force-includes this DC regardless of Health-Focus bucket"
+            else:
+                # Credit/OD excluded here -- they're hardcoded 0/Worst for every DC
+                # (data-access-blocked, not a real reading) and never independently
+                # cause qualification (see compute_dc_health_score), so listing them as
+                # a "reason" would be meaningless noise repeated on every single row.
+                weak_components = [
+                    name for name, data in health["Sub_Scores"].items()
+                    if data["bucket"] in ("Weak", "Worst") and name not in ("Credit", "OD")
+                ]
+                health_note = f", Health-Focus: Weak/Worst on {', '.join(weak_components)} (urgency {health['Health_Focus_Urgency']:.0%})"
         reason = (
-            f"Matched {', '.join(matched)} -- {dc.get('Cohort')} cohort, rank {dc.get('Rank')}"
+            (f"Matched {', '.join(matched)} -- {dc.get('Cohort')} cohort, rank {dc.get('Rank')}" if matched else f"Health-Focus -- {dc.get('Cohort')} cohort, rank {dc.get('Rank')}")
             + (f" -- {'; '.join(grade_notes)}" if grade_notes else "")
             + (f", contact-fatigue -{int(constants.contact_fatigue_priority_cut*100)}% ({attempts} attempts in {constants.contact_fatigue_window_days}d)" if multiplier < 1.0 else "")
             + (f", queue-jumped for 90+ day aged overdue (+{constants.overdue_90_plus_priority_boost:.0f} priority)" if overdue_90_plus_boosted else "")
+            + health_note
         )
         return DailyTaskRow(
             Sr_No=0, DC_Name=dc.get("DC_Name"), DC_ID=dc_id, Distance_Km=None,
@@ -4380,7 +4618,8 @@ def generate_se_daily_plan(
             Last_Payment_Date=last_payment_by_dc.get(dc_id), YTD_Private_Label=ytd_pl_by_dc.get(dc_id),
             DC_Club_Participation=dc_club_participation_text(club) if dc_club_by_id else "Config_Ambiguous -- DC club data not supplied",
             Club_Detail=club if dc_club_by_id else None,
-            Objective=",".join(matched), No_New_Orders=_no_new_orders(dc_id),
+            Objective=",".join(matched) if matched else ("Health-Focus" if health_active else ""),
+            No_New_Orders=_no_new_orders(dc_id),
             Credit_On_Hold=credit_on_hold, Credit_On_Hold_Reason=fin.get("Credit_On_Hold_Reason"),
             Estimated_Duration=constants.visit_duration_min, Priority_Multiplier=multiplier,
             Finance_Status=fin.get("Partner_Finance_Status"),
@@ -4394,6 +4633,12 @@ def generate_se_daily_plan(
             Avg_Repayment_Days=avg_repayment_days,
             Critical=bool(critical_reasons),
             Critical_Reasons="; ".join(critical_reasons),
+            DC_Health_Score=health.get("DC_Health_Score") if health else None,
+            Health_Gap=health.get("Health_Gap") if health else None,
+            Health_Sub_Scores=health.get("Sub_Scores") if health else None,
+            Negative_GM_Flag=bool(health.get("Negative_GM_Flag")) if health else False,
+            Health_Focus_Track=health_active,
+            Health_Focus_Purposes=" + ".join(health_purposes),
         )
 
     if route_selector is None:

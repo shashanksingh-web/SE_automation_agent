@@ -39,6 +39,32 @@ def _format_bo_scores(bo_scores: dict) -> str:
     return " ".join(parts) or "N/A"
 
 
+def _format_health_score(t) -> str:
+    """Source 3k (DC Composite Health Score, added 2026-09-06) -- 'Health:62 (Focus:
+    Weak Credit,OD)' when this DC has a real Health Score computed this run, listing
+    only its Weak/Worst components (never every one of the 7, to keep the table width
+    sane -- Strong/Fine components aren't the story here). 'N/A' when this DC had no
+    Health Score this run (failed the active/Days_Since_Last_Sale<=60 eligibility gate).
+    "Focus:" prefix only appears when this DC actually qualifies for/was force-included
+    into the Health-Focus track -- a real Health Score with nothing Weak/Worst shows
+    just the number, same "don't flag what isn't flaggable" discipline as Critical."""
+    if t.dc_health_score is None:
+        return "N/A"
+    entry = f"{t.dc_health_score:.0f}"
+    if t.negative_gm_flag:
+        entry += " (Negative_GM_Flag)"
+    if t.health_focus_track:
+        # Credit/OD excluded -- hardcoded 0/Worst for every DC (data-access-blocked, not
+        # a real reading), never the actual reason a DC qualifies -- see
+        # compute_dc_health_score. Listing them here would be meaningless on every row.
+        weak = [
+            name for name, data in (t.health_sub_scores or {}).items()
+            if data.get("bucket") in ("Weak", "Worst") and name not in ("Credit", "OD")
+        ]
+        entry += f" [Focus: {', '.join(weak)}]" if weak else " [Focus: GR-28]"
+    return entry
+
+
 def summary_lines(plan_run: PlanRun) -> List[str]:
     """The header block: PlanRun identity, counts, note, exceptions (first 10)."""
     lines = [
@@ -129,6 +155,13 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     balance, Kept suppresses the Outstanding objective even if the balance is still
     above threshold). "N/A" when this DC has no promise on record at all.
 
+    Health Score column added 2026-09-06 (Source 3k, DC Composite Health Score -- a
+    separate, parallel 1-100 model from BO1-5, see se_daily_plan_agent.compute_dc_
+    health_score) -- see _format_health_score for the exact display format. This is a
+    genuinely different track from BO Scores/BO Rank above: a task can show real values
+    in both, since Health-Focus and BO1-5 qualification run independently and merge into
+    one candidate pool (a DC needs only one track to get a task at all).
+
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
     after a bordered/wrapped grid variant wasn't clearer. DC Name/Reason are truncated
@@ -170,11 +203,13 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             _format_bo_scores(t.bo_scores),
             f"{t.bo_rank} ({t.bo_composite_score:.0%})" if t.bo_rank is not None else "N/A",
             f"₹{t.promise_to_pay_amount:,.0f} by {t.promise_to_pay_date} ({t.promise_status})" if t.promise_to_pay_date else "N/A",
+            _format_health_score(t),
         ])
     headers = [
         "SE", "Sr", "Critical", "DC Name", "Km", "Task Type", "Purpose", "Reason",
         "Last Visit", "Outstanding", "Overdue (Aging)", "Last Order", "Order Value",
         "Last Payment", "YTD PL", "Club", "Finance", "BO Scores", "BO Rank", "Promise To Pay",
+        "Health Score",
     ]
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
 
