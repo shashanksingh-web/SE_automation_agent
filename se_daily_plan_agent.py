@@ -915,6 +915,14 @@ class BusinessConstants:
     # top-3 objective weights (0.40+0.35+0.25=1.0) times a gap of at most ~1.0 each, so
     # anything meaningfully larger than 1.0 dominates unconditionally.
     overdue_90_plus_priority_boost: float = 10.0
+    # GR-28 (BROADENED 2026-09-06, business-confirmed): a DC with ANY real overdue
+    # balance (pathik_report.overdue > 0) is force-included in the Outstanding
+    # candidate pool AND its Priority_Score is set to rank #1 for that SE that day --
+    # a genuinely EXCLUSIVE top rank, not just a large-but-shareable boost. Set well
+    # above overdue_90_plus_priority_boost (10.0) so a GR-28 DC always outranks even a
+    # 90-day-aged-overdue-boosted one -- the two guardrails are independent and can
+    # both apply to the same or different DCs on the same day, GR-28 must still win.
+    gr28_priority_score: float = 1000.0
     # SE Incentive Policy (FY26-27)
     wps_weight_revenue: float = 0.25
     wps_weight_collection: float = 0.30
@@ -4368,6 +4376,21 @@ def generate_se_daily_plan(
         balance constant name both describe) -- a DC with a large balance but currently
         $0 overdue could never qualify, defeating the point of a balance leg that's
         independent of overdue status."""
+        # GR-28 (CORRECTED 2026-09-06, business-confirmed -- caught via a direct
+        # Guardrails-sheet cross-check that this session's first implementation had
+        # missed): "ANY DC with overdue > 0 is force-included in that day's Outstanding
+        # candidate pool, overriding normal 8.5 qualification thresholds" -- checked
+        # first, force-qualifies regardless of balance/promise. This is the real,
+        # live-data substitute for GR-31's literal "OD_Score bucket qualifies
+        # Outstanding" language: OD_Score itself is hardcoded 0 (blocked, data-access
+        # gap) for every DC right now, so using its bucket directly here would qualify
+        # the entire network on that basis alone -- the exact flooding bug already
+        # caught and fixed for Health-Focus qualification (see compute_dc_health_score
+        # docstring). GR-28's real pathik_report.overdue signal is what actually stands
+        # in for OD_Score today; its own Priority_Score rank-#1 requirement is enforced
+        # separately, see the pool-merge section below (gr28_priority_score).
+        if dc_health_scores.get(dc["DC_ID"], {}).get("GR28_Force_Include"):
+            return True
         # Promise To Pay override (2026-09-04, explicit user request) -- checked BEFORE
         # the balance threshold: a Broken promise (committed date passed, no qualifying
         # payment) force-qualifies this DC for collection regardless of current balance
@@ -4399,9 +4422,20 @@ def generate_se_daily_plan(
         on PL, a more direct read of "does this DC need a PL push" than a raw order
         count would have been anyway. Requires dc_bo_scores["PL"] to be supplied by the
         caller (planning/services.py); returns False, the same fail-safe default as
-        before, when no PL score exists for this DC at all."""
+        before, when no PL score exists for this DC at all.
+
+        GR-31 (business-confirmed 2026-09-06, added after a direct Guardrails-sheet
+        cross-check caught this session's first Health Score implementation had missed
+        it): "8.5 Qualify_PL now uses PL_Contribution_Score buckets" -- a DC ALSO
+        qualifies if its PL_Contribution_Score (Source 3k, a real, live-computed
+        component -- unlike OD_Score/Credit_Score, which stay excluded from qualifying
+        anything on their own, see _qualify_outstanding's own GR-31 note) lands in the
+        Weak or Worst bucket, independent of the PL_Ratio-grade check above."""
         grade = dc_bo_scores.get(dc["DC_ID"], {}).get("PL", {}).get("grade")
-        return grade in ("C", "D")
+        if grade in ("C", "D"):
+            return True
+        pl_contribution = dc_health_scores.get(dc["DC_ID"], {}).get("Sub_Scores", {}).get("PL_Contribution")
+        return bool(pl_contribution and pl_contribution.get("bucket") in ("Weak", "Worst"))
 
     # _qualify_longterm() removed 2026-08-06. Long-Term (BO5) is deliberately excluded
     # from this DC Visit candidate pool -- 8.11
@@ -4518,8 +4552,14 @@ def generate_se_daily_plan(
         health = dc_health_scores.get(dc_id)
         if not health or not (health.get("Qualify_HealthFocus") or health.get("GR28_Force_Include")):
             continue
+        # GR-28 (CORRECTED 2026-09-06): "Priority_Score is set to rank #1 for that DC
+        # that day" -- a genuinely exclusive top rank, not the shared 90-day-overdue
+        # boost (10.0) this session's first implementation mistakenly reused. Using
+        # gr28_priority_score (1000.0) here guarantees it outranks every other DC's
+        # priority_score unconditionally, including another DC boosted for a different
+        # reason on the same day.
         health_priority = (
-            constants.overdue_90_plus_priority_boost if health.get("GR28_Force_Include")
+            constants.gr28_priority_score if health.get("GR28_Force_Include")
             else (health.get("Health_Focus_Urgency") or 0.0)
         )
         if dc_id in pool_by_dc_id:
