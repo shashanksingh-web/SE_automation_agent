@@ -391,8 +391,8 @@ def generate_route_plans_for_se(
             # build_route_cluster_based) sets infeasibility_reason as an informational
             # ceiling-breach note with feasible=True -- it is by-design, not a failure,
             # so it gets its own reason_code rather than being lumped in with genuine
-            # Travel_Floor_Not_Met infeasibility (which always has feasible=False).
-            reason_code = "Exceptional_DC_BO_Rule" if result.get("is_exceptional_dc") else "Travel_Floor_Not_Met"
+            # Travel_Ceiling_Exceeded infeasibility (which always has feasible=False).
+            reason_code = "Exceptional_DC_BO_Rule" if result.get("is_exceptional_dc") else "Travel_Ceiling_Exceeded"
             exceptions.append({
                 "source": "RoutingAgent", "reason_code": reason_code,
                 "detail": f"{who} @ {plan_date} ({plan_type}): {result['infeasibility_reason']}",

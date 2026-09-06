@@ -3039,15 +3039,16 @@ def sequence_with_distance(
 
 R3_1_CIRCUITY_FACTOR = 1.4  # R3.1, FINAL: Haversine x 1.4 is the locked primary per-leg distance method.
 R1_1_FIELD_MINUTES_CAP = 420  # R1.1, HARD cap (GR-R3)
-# R1.2, MINIMUM FLOOR (RE-CONFIRMED 2026-08-12 by the v7 Outcome Example, which reversed
-# an earlier 2026-08-12 "ceiling" reading based on a side-file that claimed a correction
-# never actually written back into the Routing Agent's own sheets. v7 is decisive: its
-# own header states "Min_Travel_Minutes >= 180 (R1.2)" and all 3 of its worked-example
-# plans have travel times of 195/220/240 min -- every one comfortably ABOVE 180, none
-# below, which is only self-consistent with a floor. Matches v5's own original R1.2/GR-R5
-# wording ("cumulative floor", reason code Travel_Floor_Not_Met) too. A route is
-# feasible only if SUM(Travel_Time_Leg) >= 180.
-R1_2_MIN_TRAVEL_MINUTES = 180
+# R1.2, MAXIMUM CEILING -- CORRECTED 2026-09-06 via Routing_Agent_Configuration_Sheet_v9.
+# xlsx (explicit user request), which supersedes the v7-era "RE-CONFIRMED floor" reading
+# this constant carried before: v9's own header states this plainly ("CORRECTED: 3-hr
+# travel time is a MAXIMUM ceiling, not a minimum floor this sheet previously
+# documented") and its Guardrails sheet rewrites GR-R5 to match ("this guardrail was
+# previously written the opposite way ... which was backwards"), sourced from the same
+# correction already made in the master BO_Configuration_Sheet_v3.xlsx (8.9). A route is
+# feasible only if SUM(Travel_Time_Leg) <= 180 -- an SE must NOT spend more than 3 hours
+# of the day travelling, not "must spend at least" as this constant previously enforced.
+R1_2_MAX_TRAVEL_MINUTES = 180
 R1_7_MAX_STOPS = 5  # R1.7, HARD cap (GR-R4)
 R3_2_DEFAULT_AVG_SPEED_KMPH = 25.0  # R3.2 -- undefined in the sheet; bottom of its own suggested 25-30 km/h range
 
@@ -3118,14 +3119,15 @@ def travel_time_minutes(distance_km: Optional[float], avg_speed_kmph: float = R3
     confirmed value anywhere in the Routing Agent's own sheet -- flagged there as "the
     single most important undefined number in the whole sheet," recommending an ops call
     over the 25-30 km/h range for mixed rural/semi-urban roads. Defaults to 25 (the
-    slower end of that range) until that call happens -- worth knowing this is no longer
-    the "conservative" choice it was under the old ceiling reading: against R1.2's
-    RE-CONFIRMED >=180-min FLOOR, a slower assumed speed inflates computed travel time
-    for any given distance, making the floor easier to satisfy on paper than an SE's
-    actual drive time might support. Neither 25 nor 30 has been re-picked with that in
-    mind -- still genuinely undefined, still worth the same ops call the sheet asks for,
-    just flagging the direction changed. Callers should flag this Provisional rather
-    than treat it as confirmed."""
+    slower end of that range) until that call happens -- this IS the conservative choice
+    now that R1.2 is confirmed a CEILING (<=180 min, corrected 2026-09-06): a slower
+    assumed speed inflates computed travel time for any given distance, making the
+    180-min ceiling easier to BREACH on paper than an SE's actual drive time might
+    warrant -- i.e. this default now trims stops more aggressively than reality might
+    require, the safe direction to err on for a hard cap. Neither 25 nor 30 has been
+    re-picked with the ceiling specifically in mind -- still genuinely undefined, still
+    worth the same ops call the sheet asks for. Callers should flag this Provisional
+    rather than treat it as confirmed."""
     if distance_km is None:
         return None
     return (distance_km / avg_speed_kmph) * 60.0
@@ -3174,10 +3176,10 @@ def _route_metrics(stop_candidates: List[Dict[str, Any]], origin: Tuple[float, f
 
 def _within_caps(metrics: Dict[str, Any]) -> bool:
     """GR-R3 (<=420 total), GR-R4 (<=5 stops, enforced by callers via candidate-set size,
-    not here), GR-R5 (>=180 travel-only floor -- RE-CONFIRMED 2026-08-12 by the v7
-    Outcome Example, reversing an earlier same-day "ceiling" reading; see R1_2_MIN_TRAVEL_MINUTES)."""
+    not here), GR-R5 (<=180 travel-only ceiling -- CORRECTED 2026-09-06 via Routing_
+    Agent_Configuration_Sheet_v9.xlsx, see R1_2_MAX_TRAVEL_MINUTES)."""
     total_minutes = metrics["total_travel_min"] + metrics["total_visit_min"]
-    return metrics["total_travel_min"] >= R1_2_MIN_TRAVEL_MINUTES and total_minutes <= R1_1_FIELD_MINUTES_CAP
+    return metrics["total_travel_min"] <= R1_2_MAX_TRAVEL_MINUTES and total_minutes <= R1_1_FIELD_MINUTES_CAP
 
 
 def _two_opt(order: List[Dict[str, Any]], origin: Tuple[float, float], avg_speed_kmph: float) -> List[Dict[str, Any]]:
@@ -3259,16 +3261,18 @@ def build_route_priority_max(
     skip-penalty, since arc cost is set to 0 (Model 1 has "No distance cap," per OQ-13 --
     time/count are hard constraints here, never part of the objective).
 
-    R1.2's >=180-min travel floor is deliberately NOT hard-constrained inside the solver
-    (unlike R1.1/R1.7 above): GR-R5 asks to "fail safe rather than force artificial
-    detours" when the floor can't be met, and forcing a lower bound on the solver's own
-    Time Dimension would instead make the whole problem infeasible whenever the
-    priority-maximal stop set is geographically clustered -- silently discarding a
-    perfectly good, high-priority route rather than showing it with an honest shortfall
-    noted. So: solve for max-priority under the real hard caps first, exactly like
-    Models 2/3 already do, then check the floor post-hoc via _within_caps() and flag
-    (not discard) if the resulting route falls short -- same pattern, same honesty,
-    across all 3 models."""
+    R1.2's <=180-min travel ceiling (CORRECTED 2026-09-06 -- was previously read as a
+    floor, see R1_2_MAX_TRAVEL_MINUTES) is deliberately NOT hard-constrained inside the
+    solver's own dimensions (unlike R1.1/R1.7 above): the solver's objective has no
+    travel-time cost at all (arc cost is 0, per OQ-13's "no distance cap"), so it has no
+    incentive to prefer a shorter-travel stop-set over a higher-priority-but-farther one
+    -- adding a hard upper-bound Time Dimension here would work, but GR-R5's own
+    prescribed remedy is explicit and more transparent: solve for max-priority under the
+    real hard caps first (unchanged), then if the result breaches the 180-min ceiling,
+    trim stops by ASCENDING Priority_Score (lowest-priority first) until it fits --
+    same remedy Models 2/3 get "for free" from their own K-descending search, applied
+    here as an explicit post-solve loop since Model 1's search doesn't naturally
+    shrink the stop-set the same way."""
     from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
     if not candidates:
@@ -3361,14 +3365,24 @@ def build_route_priority_max(
     visited_ids = {c["dc"]["DC_ID"] for c in visited_order}
     dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Not_Selected_By_Solver"} for c in with_coords if c["dc"]["DC_ID"] not in visited_ids]
 
+    # GR-R5 remedy (CORRECTED 2026-09-06): trim the lowest-priority visited stop,
+    # recompute, repeat -- until the route fits the 180-min travel ceiling or nothing is
+    # left. Removing a stop can only reduce total_travel_min (fewer legs), so this
+    # always terminates feasible (worst case: the empty route, 0 travel).
     metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
+    while visited_order and metrics["total_travel_min"] > R1_2_MAX_TRAVEL_MINUTES:
+        lowest = min(visited_order, key=lambda c: c["priority_score"])
+        visited_order = [c for c in visited_order if c is not lowest]
+        dropped.append({"dc_id": lowest["dc"]["DC_ID"], "reason": "Travel_Ceiling_Exceeded"})
+        metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
+
     feasible = _within_caps(metrics)
     return {
         "stops": metrics["stops"], "dropped": dropped,
         "total_distance_km": metrics["total_distance_km"], "total_travel_min": metrics["total_travel_min"],
         "total_visit_min": metrics["total_visit_min"], "priority_score_captured": metrics["priority_score_captured"],
         "feasible": feasible,
-        "infeasibility_reason": "" if feasible else "Travel_Floor_Not_Met: solver's own max-priority route falls short of the 180-min travel floor (or exceeds the 420-min total) -- shown as best available, not forced into artificial detours (GR-R5)",
+        "infeasibility_reason": "" if feasible else "Field_Time_Cap_Exceeded: even after trimming to the lowest-travel stop-set possible, the route still exceeds the 420-min field-time cap (GR-R3, hard, no bypass)",
     }
 
 
@@ -3401,45 +3415,29 @@ def build_route_distance_min(
 
     best_metrics = None
     best_k = 0
-    computed_by_k: Dict[int, Dict[str, Any]] = {}
     for k in range(max_k, 0, -1):
         top_k = by_priority[:k]
         order = _or_opt(_two_opt(_greedy_nearest_neighbor(top_k, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
         metrics = _route_metrics(order, origin, avg_speed_kmph)
-        computed_by_k[k] = metrics
         if _within_caps(metrics):
             best_metrics, best_k = metrics, k
             break
 
     if best_metrics is None and by_priority:
-        # No K satisfied both R1.2's >=180-min floor and R1.1's <=420-min total cap
-        # together. These need DIFFERENT fallbacks -- picking "more stops" (max_k)
-        # unconditionally, as before, helps only a floor shortfall (more stops -> more
-        # cumulative travel, closer to 180) and actively makes a cap breach WORSE (more
-        # stops -> more total time, further past 420). GR-R3's cap is a hard "no bypass"
-        # (Plan rejected/re-solved, marked Infeasible), unlike R1.2's floor, which GR-R5
-        # explicitly says to fail-safe and show anyway -- so only ever fall back to a K
-        # that actually respects the 420-min cap; if none does, show no route at all
-        # rather than one that breaches it.
-        under_cap_ks = [k for k, m in computed_by_k.items() if (m["total_travel_min"] + m["total_visit_min"]) <= R1_1_FIELD_MINUTES_CAP]
-        if under_cap_ks:
-            best_k = max(under_cap_ks)
-            best_metrics = computed_by_k[best_k]
-            feasible = False
-            reason = (
-                f"Travel_Floor_Not_Met: even using the largest cap-respecting candidate set (K={best_k} of {max_k}), "
-                "this route falls short of the 180-min travel floor -- shown as best available (GR-R5)"
-            )
-        else:
-            # Not even K=1 stays inside the 420-min hard cap -- GR-R3 has no bypass, so
-            # this is a genuine Infeasible, not a "show the fullest attempt anyway."
-            selected_ids: set = set()
-            dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords]
-            return {
-                "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
-                "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
-                "infeasibility_reason": "Field_Time_Cap_Exceeded: even a single-stop route exceeds the 420-min field-time cap (GR-R3, hard, no bypass) -- no route shown",
-            }
+        # Under a ceiling (CORRECTED 2026-09-06, was a floor), the K-descending search
+        # above already implements GR-R5's remedy -- each step down drops the lowest-
+        # priority stop. If not even K=1 respects both the 180-min travel ceiling and
+        # the 420-min total cap, the only genuinely honest fallback is the empty route
+        # (0 stops trivially satisfies both) -- unlike the old floor-era code, there is
+        # no "show it anyway despite breaching" option: showing a route that still
+        # breaches the ceiling is exactly the failure mode GR-R5 exists to prevent, not
+        # something to fall back to.
+        dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Travel_Ceiling_Exceeded"} for c in with_coords]
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
+            "infeasibility_reason": "Travel_Ceiling_Exceeded: even a single-stop route exceeds the 180-min travel ceiling (or the 420-min total cap) given this candidate pool's geography -- no route shown rather than one that breaches it",
+        }
     elif best_metrics is None:
         return {
             "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
@@ -3581,25 +3579,20 @@ def build_route_balanced(
         blended, best_k, best_metrics, feasible = max(feasible_options, key=lambda e: e[0])
         reason = ""
     else:
-        # Nothing reaches R1.2's >=180-min floor together with R1.1's <=420-min total
-        # cap. These need DIFFERENT fallbacks -- picking whichever K got closest to the
-        # floor (highest travel time) unconditionally, as before, actively picks a WORSE
-        # option when the real problem is a cap breach (more travel -> further past 420,
-        # not closer to feasible). GR-R3's cap is hard/"no bypass" (Infeasible, not
-        # shown), unlike R1.2's floor, which GR-R5 says to fail-safe and show anyway --
-        # so only ever fall back to a K that respects the 420-min cap.
-        under_cap = [e for e in evaluated if (e[2]["total_travel_min"] + e[2]["total_visit_min"]) <= R1_1_FIELD_MINUTES_CAP]
-        if under_cap:
-            blended, best_k, best_metrics, feasible = max(under_cap, key=lambda e: e[2]["total_travel_min"])
-            reason = f"Travel_Floor_Not_Met: no cap-respecting candidate set reaches the 180-min travel floor -- shown is the closest (K={best_k} of {max_k}), per GR-R5"
-        else:
-            dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords]
-            return {
-                "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
-                "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
-                "infeasibility_reason": "Field_Time_Cap_Exceeded: even K=1 exceeds the 420-min field-time cap (GR-R3, hard, no bypass) -- no route shown",
-                "alpha_used": round(alpha, 3),
-            }
+        # Under a ceiling (CORRECTED 2026-09-06, was a floor), no K reaches both the
+        # 180-min travel ceiling and the 420-min total cap together. Unlike the old
+        # floor-era code, there's no "pick whichever K got closest anyway" fallback that
+        # makes sense here -- every remaining K still breaches the ceiling (that's why
+        # feasible_options is empty), so showing any of them would be exactly the
+        # failure mode GR-R5 exists to prevent. The only genuinely honest fallback is
+        # the empty route (0 stops trivially satisfies both caps).
+        dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Travel_Ceiling_Exceeded"} for c in with_coords]
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
+            "infeasibility_reason": "Travel_Ceiling_Exceeded: even a single-stop route exceeds the 180-min travel ceiling (or the 420-min total cap) given this candidate pool's geography -- no route shown rather than one that breaches it",
+            "alpha_used": round(alpha, 3),
+        }
 
     selected_ids = {c["dc"]["DC_ID"] for c in by_priority[:best_k]}
     dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords if c["dc"]["DC_ID"] not in selected_ids]
@@ -4690,7 +4683,7 @@ def generate_se_daily_plan(
     else:
         # Routing Agent path (planning/routing.py) -- every ranked_pool candidate gets a
         # fully-formed row (no capacity trimming here; that's the Routing Agent's job,
-        # against the real 420-min-total/180-min-travel-floor/5-task caps per Models
+        # against the real 420-min-total/180-min-travel-ceiling/5-task caps per Models
         # 1-3), tagged with its Priority_Score so the router can rank/select/sequence
         # for real.
         candidates = [

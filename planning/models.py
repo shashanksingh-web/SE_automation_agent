@@ -461,8 +461,10 @@ class RoutePlan(models.Model):
     alpha_used = models.FloatField(blank=True, null=True)
 
     feasible = models.BooleanField(default=True)
-    # e.g. Travel_Floor_Not_Met when even the best model can't reach the 180-min
-    # travel floor (R1.2) with a non-trivial stop set (GR-R5, fail-safe not a hard reject).
+    # e.g. Travel_Ceiling_Exceeded when even the best available stop-set still exceeds
+    # the 180-min travel ceiling (R1.2, corrected 2026-09-06 from an earlier floor
+    # reading) -- GR-R5's remedy trims stops first, this only fires if trimming to an
+    # empty route was still needed.
     infeasibility_reason = models.CharField(max_length=255, blank=True, default="")
 
     # Model 1 (Priority-Max) is the default auto-selected plan -- matches today's
@@ -533,11 +535,13 @@ class FocusProductTargetRun(models.Model):
 
 class RouteDroppedDC(models.Model):
     """A DC from the Ranked_Pool that didn't make it into a given RoutePlan (R6.1's
-    Dropped_DCs) -- e.g. Geo_Incomplete (GR-R1), Legal_Hold (GR-R2), or
-    Capacity_Exceeded (couldn't fit within the 420-min-total/5-task caps -- R1.2's
-    180-min figure is a travel FLOOR, not a capacity ceiling, so it never drops a DC by
-    itself; it shows up as a plan-level Travel_Floor_Not_Met instead, see RoutePlan).
-    Never a silent omission -- every candidate the Ranked_Pool offered either appears in
+    Dropped_DCs) -- e.g. Geo_Incomplete (GR-R1), Legal_Hold (GR-R2), Capacity_Exceeded
+    (couldn't fit within the 420-min-total/5-task caps), or Travel_Ceiling_Exceeded
+    (R1.2, corrected 2026-09-06 from an earlier floor reading -- this DC was the lowest-
+    priority stop trimmed to bring the route back under the 180-min travel ceiling,
+    GR-R5's own remedy; a genuine "even one stop breaches it" case shows up as a
+    plan-level Travel_Ceiling_Exceeded instead, see RoutePlan). Never a silent omission
+    -- every candidate the Ranked_Pool offered either appears in
     RouteStop or here, with why."""
 
     route_plan = models.ForeignKey(RoutePlan, related_name="dropped_dcs", on_delete=models.CASCADE)
