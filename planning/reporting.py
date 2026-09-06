@@ -54,12 +54,11 @@ def _format_health_score(t) -> str:
     if t.negative_gm_flag:
         entry += " (Negative_GM_Flag)"
     if t.health_focus_track:
-        # Credit/OD excluded -- hardcoded 0/Worst for every DC (data-access-blocked, not
-        # a real reading), never the actual reason a DC qualifies -- see
-        # compute_dc_health_score. Listing them here would be meaningless on every row.
+        # Both Credit and OD are real, live-computed components as of 2026-09-07 -- see
+        # compute_dc_health_score -- either genuinely landing in Weak/Worst belongs here.
         weak = [
             name for name, data in (t.health_sub_scores or {}).items()
-            if data.get("bucket") in ("Weak", "Worst") and name not in ("Credit", "OD")
+            if data.get("bucket") in ("Weak", "Worst")
         ]
         entry += f" [Focus: {', '.join(weak)}]" if weak else " [Focus: GR-28]"
     return entry

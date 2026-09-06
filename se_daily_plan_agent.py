@@ -73,6 +73,15 @@ logger = logging.getLogger("se_daily_plan_agent")
 REDSHIFT_DB_ID = int(os.environ.get("SE_AGENT_REDSHIFT_DB_ID", "41"))          # "Redshift"
 INPUT_BACKEND_DB_ID = int(os.environ.get("SE_AGENT_INPUT_BACKEND_DB_ID", "31"))  # "input-backend"
 KHETI_DB_ID = int(os.environ.get("SE_AGENT_KHETI_DB_ID", "4"))                 # "kheti"
+# LOCUS_DB_ID (27) -- CORRECTED 2026-09-07: previously assumed unreachable from this
+# environment ("no known database mapping"). Confirmed live this round: the "locus"
+# database is a THIRD database on the SAME Redshift cluster as dev/input_backend_db --
+# same host/port/credentials, just a different dbname -- it was simply never wired into
+# _db_name_for before, not actually inaccessible. Hosts ledger_ledgerentry (OD_Score's
+# real source) and the full Credit_Score chain (payment_payment/loan_paymentloanmap/
+# loan_loan/credit_line_customercreditline/credit_line_customer) -- both confirmed live
+# and wired 2026-09-07, see compute_dc_health_score.
+LOCUS_DB_ID = int(os.environ.get("SE_AGENT_LOCUS_DB_ID", "27"))                # "locus"
 
 DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAnk.csv"))
 # Added 2026-09-04, explicit user request -- an independent allowlist on top of
@@ -192,7 +201,10 @@ class RedshiftDirectClient:
     dc_mapping_club_scheme, dc_club_slabs, hyperlocal_order -- i.e. everything under
     Metabase db_id 41), "input_backend_db" (task_management_*, users_user, sale_orderrequest,
     customer_management_customer, attendance_attendance, payments_paymenttransaction --
-    i.e. Metabase db_id 31's tables), and "locus" (unrelated, not used here).
+    i.e. Metabase db_id 31's tables), and "locus" (CORRECTED 2026-09-07 -- previously
+    assumed "unrelated, not used here"; confirmed live this round to be genuinely
+    reachable through this exact same connection, hosting ledger_ledgerentry -- see
+    LOCUS_DB_ID).
 
     KNOWN GAP, confirmed live: customer_management_input_outstanding does NOT exist on
     this cluster in either database -- it appears to be Postgres-only (reachable via
@@ -225,6 +237,7 @@ class RedshiftDirectClient:
         self.password = os.environ.get("REDSHIFT_PASSWORD", "")
         self.db_dev = os.environ.get("REDSHIFT_DB_DEV", "dev")
         self.db_input_backend = os.environ.get("REDSHIFT_DB_INPUT_BACKEND", "input_backend_db")
+        self.db_locus = os.environ.get("REDSHIFT_DB_LOCUS", "locus")
         self._connections: Dict[str, Any] = {}  # dbname -> open psycopg2 connection
 
     @property
@@ -238,6 +251,8 @@ class RedshiftDirectClient:
             # KHETI_DB_ID (hyperlocal_order) is also present under "dev" on this cluster;
             # input-backend tables live under input_backend_db.
             return self.db_input_backend if database_id == INPUT_BACKEND_DB_ID else self.db_dev
+        if database_id == LOCUS_DB_ID:
+            return self.db_locus
         raise ValueError(f"No known Redshift database mapping for Metabase db_id {database_id}")
 
     def _connect(self, dbname: str):
@@ -857,11 +872,14 @@ class BusinessConstants:
     total_capacity_min: int = 480  # 8.2 confirmed: 60 min calls + 420 min field = 480 (8hr day)
     # Source 3k -- DC Composite Health Score (added 2026-09-06, business-confirmed via
     # BO_Configuration_Sheet_v3.xlsx's dedicated sheet -- weights sum to exactly 1.0, all
-    # 7 formulas confirmed; Credit/OD are formula-confirmed but data-access-blocked on a
-    # Locus-to-sap_partner_id bridge gap, so they contribute 0 via the missing-component
-    # rule below until that bridge exists). Health_Score(1-100) = 100 x sum(weight x
-    # sub_score). A separate, parallel model from BO1-5 -- does NOT feed Section 7's
-    # Priority_Score (explicitly reverted to stay untouched); only affects a separate
+    # 7 formulas confirmed; Credit and OD were initially data-access-blocked on a
+    # Locus-to-sap_partner_id bridge gap (contributing 0 via the missing-component rule
+    # below) but both are now fully unblocked and live-computed, see
+    # compute_dc_health_score). Health_Score(1-100) = 100 x sum(weight x sub_score). A
+    # separate, parallel model from BO1-5 -- GR-31 override (2026-09-06, explicit user
+    # request) makes it the PREFERRED Priority_Score/BO_Composite_Score source when a DC
+    # has a real Health_Gap, falling back to the original BO1-5 formula otherwise (see
+    # generate_se_daily_plan/_build_candidate_row); also independently drives the
     # "Health-Focus" qualification track that pool-merges with the BO-driven candidates
     # (see _qualify_health_focus/compute_dc_health_score and services.py's pool-merge).
     health_weight_nrv: float = 0.20
@@ -2555,16 +2573,34 @@ def _health_urgency(score_pct: Optional[float], c: BusinessConstants) -> float:
 def compute_dc_health_score(
     nrv_score: Optional[float], gm_score: Optional[float], gm_pct_score: Optional[float],
     pl_contribution_score: Optional[float], return_score: Optional[float],
-    negative_gm_flag: bool, c: BusinessConstants,
+    negative_gm_flag: bool, c: BusinessConstants, od_score: Optional[float] = None,
+    credit_score: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Source 3k -- DC Composite Health Score, business-confirmed master formula:
     Health_Score(1-100) = 100 x [0.20xNRV + 0.20xGM + 0.20xGM% + 0.10xPL_Contribution +
-    0.10xReturn + 0.10xCredit + 0.10xOD]. Credit_Score/OD_Score are hardcoded 0 here --
-    both are formula-confirmed but data-access-blocked on a Locus-to-sap_partner_id
-    bridge gap the business itself describes as "purely data-access, not design" (see
-    BusinessConstants docstring) -- NOT guessed, NOT omitted from the weighted sum
-    (missing-component rule: treated as 0, DC not excluded, remaining weights NOT
-    redistributed to compensate).
+    0.10xReturn + 0.10xCredit + 0.10xOD].
+
+    OD_Score UNBLOCKED 2026-09-07 (explicit user request) -- LOCUS_DB_ID (27, "locus")
+    turned out to be reachable from this environment via the same Redshift connection/
+    credentials as everything else (previously assumed unreachable -- see
+    RedshiftDirectClient's own docstring correction). od_score is now a real,
+    live-computed caller-supplied value (planning/services.py's _sql_od_bridge/
+    _sql_od_aging) -- None only when the bridge or aging query genuinely found nothing
+    for this DC (missing-component rule: treated as 0 in the weighted sum, same as any
+    other missing component, never a guess).
+
+    Credit_Score UNBLOCKED 2026-09-07 (explicit user request, formula + worked example
+    business-confirmed) -- credit_score is a real, live-computed caller-supplied value
+    (planning/services.py's _sql_credit_payments, reusing OD's own sap_partner_id ->
+    ledger_partner_id bridge -- same table, same GR-32 resolution, per the business's own
+    spec). Formula: pct_paid_in_due x ard_factor, where ard_factor grades a DC's average
+    repayment delay (ard, days) -- full weight (1.0) up to 120 days late on average,
+    decaying 2%/day past that, floored at exactly 0 at 170 days; a negative ard (pays
+    early on average) is clamped to 0 (not rewarded above the on-time baseline). Only
+    DCs with >=5 qualifying (POSTED+RECONCILED) payments in the trailing windows are
+    scored at all -- below that, credit_score is None for this DC (missing-component
+    rule: treated as 0 in the weighted sum, same as any other missing component, never a
+    guess/fallback value).
 
     negative_gm_flag (business-confirmed edge case): if the DC's raw GM_FY_Value or GM%
     is negative, gm_score/gm_pct_score are NOT run through the normal 0-1 formula by the
@@ -2576,27 +2612,23 @@ def compute_dc_health_score(
     not a binary Weak/Worst split), the 1-100 composite, Health_Gap (100 - score), and
     Qualify_HealthFocus.
 
-    IMPORTANT: Qualify_HealthFocus is decided ONLY from the 5 live-computable components
-    (NRV/GM/GM%/PL_Contribution/Return) -- NOT from Credit/OD. Credit/OD are hardcoded 0
-    for literally every DC in the network right now (data-access-blocked, not a real
-    reading), so their bucket is unconditionally "Worst" for everyone -- if that were
-    allowed to trigger qualification, EVERY DC would qualify for Health-Focus regardless
-    of its real financial health, which would defeat the entire point of the track
-    (caught live 2026-09-06: a first version of this function did exactly that, and a
-    live Bihar run showed literally every eligible DC qualifying). Credit/OD still fully
-    participate in the weighted composite SUM (0.10 each, per the missing-component
-    rule) and still show their real "Worst" bucket/urgency in Sub_Scores for
-    transparency -- they just can't be the REASON a DC enters the Health-Focus track on
-    their own. GR-28 (current_od>0, live via pathik_report) remains the correct,
-    separate, business-confirmed way an overdue-driven DC still gets force-included."""
+    Qualify_HealthFocus is now decided from all 7 components (NRV/GM/GM%/PL_Contribution/
+    Return/OD/Credit) -- Credit was excluded from qualification while it was hardcoded 0
+    for every DC (would have flooded every DC into Health-Focus regardless of real
+    financial health; caught live 2026-09-06, see git history), but now that credit_score
+    is a real, differentiated, live-computed value (unblocked 2026-09-07), that flooding
+    risk no longer applies and Credit qualifies like any other component. GR-28
+    (current_od>0, live via pathik_report) remains the correct, separate, business-
+    confirmed way an overdue-driven DC still gets force-included, independent of this
+    function's own OD_Score."""
     components = {
         "NRV": (nrv_score, c.health_weight_nrv),
         "GM": (gm_score, c.health_weight_gm),
         "GM_Pct": (gm_pct_score, c.health_weight_gm_pct),
         "PL_Contribution": (pl_contribution_score, c.health_weight_pl_contribution),
         "Return": (return_score, c.health_weight_return),
-        "Credit": (0.0, c.health_weight_credit),  # blocked -- see docstring
-        "OD": (0.0, c.health_weight_od),          # blocked -- see docstring
+        "Credit": (credit_score, c.health_weight_credit),  # unblocked 2026-09-07 -- see docstring
+        "OD": (od_score, c.health_weight_od),               # unblocked 2026-09-07 -- see docstring
     }
     composite_raw = sum((v or 0.0) * w for v, w in components.values())
     health_score_100 = composite_raw * 100.0
@@ -2608,8 +2640,6 @@ def compute_dc_health_score(
         bucket = _health_bucket(v, c)
         urgency = _health_urgency(v, c)
         sub_scores[name] = {"score_pct": v, "bucket": bucket, "urgency": round(urgency, 4)}
-        if name in ("Credit", "OD"):
-            continue  # blocked, always-0 -- excluded from qualification, see docstring
         if bucket in ("Weak", "Worst"):
             qualifies = True
             max_urgency = max(max_urgency, urgency)
@@ -4394,13 +4424,14 @@ def generate_se_daily_plan(
         # candidate pool, overriding normal 8.5 qualification thresholds" -- checked
         # first, force-qualifies regardless of balance/promise. This is the real,
         # live-data substitute for GR-31's literal "OD_Score bucket qualifies
-        # Outstanding" language: OD_Score itself is hardcoded 0 (blocked, data-access
-        # gap) for every DC right now, so using its bucket directly here would qualify
-        # the entire network on that basis alone -- the exact flooding bug already
-        # caught and fixed for Health-Focus qualification (see compute_dc_health_score
-        # docstring). GR-28's real pathik_report.overdue signal is what actually stands
-        # in for OD_Score today; its own Priority_Score rank-#1 requirement is enforced
-        # separately, see the pool-merge section below (gr28_priority_score).
+        # Outstanding" language -- kept as a SEPARATE mechanism even after OD_Score itself
+        # was unblocked and made real (2026-09-07): GR-28 uses pathik_report.overdue as
+        # a same-day interim signal specifically decoupled from Health Score's own 60-day
+        # eligibility gate (business-confirmed, so an overdue DC not otherwise Health-
+        # Score-eligible still gets force-included), rather than OD_Score's bucket, which
+        # only exists for the narrower 60-day-eligible subset. Its own Priority_Score
+        # rank-#1 requirement is enforced separately, see the pool-merge section below
+        # (gr28_priority_score).
         if dc_health_scores.get(dc["DC_ID"], {}).get("GR28_Force_Include"):
             return True
         # Promise To Pay override (2026-09-04, explicit user request) -- checked BEFORE
@@ -4440,9 +4471,11 @@ def generate_se_daily_plan(
         cross-check caught this session's first Health Score implementation had missed
         it): "8.5 Qualify_PL now uses PL_Contribution_Score buckets" -- a DC ALSO
         qualifies if its PL_Contribution_Score (Source 3k, a real, live-computed
-        component -- unlike OD_Score/Credit_Score, which stay excluded from qualifying
-        anything on their own, see _qualify_outstanding's own GR-31 note) lands in the
-        Weak or Worst bucket, independent of the PL_Ratio-grade check above."""
+        component) lands in the Weak or Worst bucket, independent of the PL_Ratio-grade
+        check above. (OD_Score/Credit_Score are also real, live-computed components as
+        of 2026-09-07, but Outstanding's own qualification uses GR-28's separate
+        pathik_report.overdue signal instead of OD_Score's bucket directly -- see
+        _qualify_outstanding's own GR-28 note for why.)"""
         grade = dc_bo_scores.get(dc["DC_ID"], {}).get("PL", {}).get("grade")
         if grade in ("C", "D"):
             return True
@@ -4681,13 +4714,12 @@ def generate_se_daily_plan(
                 if health.get("GR28_Bypassed_60Day_Gate"):
                     health_note += " (bypassing the Health Score's own 60-day-recent-sale eligibility gate -- no full composite computed for this DC)"
             else:
-                # Credit/OD excluded here -- they're hardcoded 0/Worst for every DC
-                # (data-access-blocked, not a real reading) and never independently
-                # cause qualification (see compute_dc_health_score), so listing them as
-                # a "reason" would be meaningless noise repeated on every single row.
+                # Both Credit and OD are real, live-computed components as of
+                # 2026-09-07 (see compute_dc_health_score) -- either genuinely landing
+                # in Weak/Worst belongs in this reason list, no exclusions left.
                 weak_components = [
                     name for name, data in health["Sub_Scores"].items()
-                    if data["bucket"] in ("Weak", "Worst") and name not in ("Credit", "OD")
+                    if data["bucket"] in ("Weak", "Worst")
                 ]
                 health_note = f", Health-Focus: Weak/Worst on {', '.join(weak_components)} (urgency {health['Health_Focus_Urgency']:.0%})"
         reason = (

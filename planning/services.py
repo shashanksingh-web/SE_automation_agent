@@ -516,6 +516,54 @@ def _fifo_net_aging(row: Dict[str, object]) -> Dict[str, float]:
     return {"od_90plus": od_90plus, "overall_outstanding": overall_outstanding}
 
 
+def _sql_credit_payments(ledger_partner_ids: List[str]) -> str:
+    # Credit_Score's real formula, wired 2026-09-07 (explicit user request, business-
+    # confirmed formula + worked example). Runs against LOCUS_DB_ID ("locus" database,
+    # Postgres) -- reuses OD_Score's own sap_partner_id -> ledger_partner_id bridge
+    # (_sql_od_bridge, same GR-32 resolution) since credit_line_customer.
+    # source_identifier_id IS that same ledger_partner_id value (confirmed live: querying
+    # this table for source_identifier_id='378988', OD's own worked-example
+    # ledger_partner_id, returns a real matching row) -- no separate bridge query needed.
+    #
+    # AVG((p.payment_date - l.overdue_date)::numeric) is DELIBERATELY NOT used here --
+    # caught live: Redshift's AVG() over an integer/date-diff silently truncates to a
+    # whole number (returned exactly -36 for the real worked example, ledger_partner_id
+    # 378988) instead of the true decimal average (-36.1546, confirmed by computing
+    # SUM(...)::numeric / COUNT(*) manually, which matches the business's own reported
+    # figure exactly) -- the same "runs without erroring but silently wrong" class of bug
+    # as OD_Score's to_date/overdue_date trap. SUM/COUNT division avoids it.
+    return f"""
+    SELECT
+      c.source_identifier_id AS ledger_partner_id,
+      COUNT(*) AS num_payments,
+      SUM(p.payment_date - l.overdue_date)::numeric / COUNT(*) AS ard,
+      100.0 * SUM(CASE WHEN p.payment_date <= l.overdue_date THEN 1 ELSE 0 END) / COUNT(*) AS pct_paid_in_due
+    FROM payment_payment p
+    JOIN loan_paymentloanmap lpm ON lpm.payment_id = p.id
+    JOIN loan_loan l ON l.id = lpm.loan_id
+    JOIN credit_line_customercreditline ccl ON ccl.id = l.customer_credit_line_id
+    JOIN credit_line_customer c ON c.id = ccl.customer_id
+    WHERE p.status = 'POSTED'
+      AND p.sub_status = 'RECONCILED'
+      AND l.overdue_date IS NOT NULL
+      AND l.disbursement_date >= CURRENT_DATE - INTERVAL '395 days'
+      AND p.payment_date >= CURRENT_DATE - INTERVAL '365 days'
+      AND c.source_identifier_id IN ({_sql_list(ledger_partner_ids)})
+    GROUP BY c.source_identifier_id
+    HAVING COUNT(*) >= 5
+    """
+
+
+def _credit_score_from_payments(ard: float, pct_paid_in_due: float) -> float:
+    """Business-confirmed: pct_paid_in_due x ard_factor. ard_factor is full weight (1.0)
+    up to 120 days average repayment delay, decays 2%/day past that, floors at exactly 0
+    at 170 days. A negative ard (pays early on average) is clamped to 0 rather than
+    rewarded above the on-time baseline -- early and exactly-on-time read the same."""
+    ard_clamped = max(ard, 0.0)
+    ard_factor = 1.0 if ard_clamped <= 120 else max(0.0, 1.0 - 0.02 * (ard_clamped - 120))
+    return (pct_paid_in_due / 100.0) * ard_factor
+
+
 def _sql_pl_metrics(dc_ids: List[str], plan_date: str) -> str:
     # Real per-DC BO1 (PL) scoring -- same confirmed PRIVATE LABEL source as
     # _sql_ytd_pl above (see its comment for the join chain/status filter), replacing
@@ -1596,6 +1644,40 @@ def generate_plan_for_scope(
             except Exception as e:
                 run_exceptions.append({"source": "ledger_ledgerentry", "reason_code": "Live_Pull_Failed", "detail": f"Health Score OD: {type(e).__name__}: {e}"})
 
+            # Credit_Score, UNBLOCKED 2026-09-07 (explicit user request, business-
+            # confirmed formula + worked example) -- reuses the same sap_partner_id ->
+            # ledger_partner_id bridge as OD (_sql_od_bridge, same GR-32 resolution) since
+            # credit_line_customer.source_identifier_id turns out to be that same
+            # ledger_partner_id value (confirmed live). Re-resolved independently here
+            # (rather than sharing OD's own ledger_partner_id_by_dc) so a failure in
+            # either component's own query can't take the other down with it -- same
+            # per-source failure-isolation convention as every other Health Score
+            # component in this function.
+            credit_score_by_dc: Dict[str, float] = {}
+            try:
+                credit_ledger_partner_id_by_dc: Dict[str, str] = {}
+                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_od_bridge(health_eligible_dc_ids)):
+                    dc_id = agent.normalize_id(row.get("sap_partner_id"))
+                    ledger_pid = row.get("ledger_partner_id")
+                    if dc_id and ledger_pid:
+                        credit_ledger_partner_id_by_dc[dc_id] = ledger_pid
+                if credit_ledger_partner_id_by_dc:
+                    payments_by_ledger_pid: Dict[str, Dict[str, float]] = {}
+                    for row in client.execute_sql(agent.LOCUS_DB_ID, _sql_credit_payments(list(credit_ledger_partner_id_by_dc.values()))):
+                        ledger_pid = row.get("ledger_partner_id")
+                        if ledger_pid:
+                            payments_by_ledger_pid[ledger_pid] = {
+                                "ard": agent.parse_number(row.get("ard")) or 0.0,
+                                "pct_paid_in_due": agent.parse_number(row.get("pct_paid_in_due")) or 0.0,
+                            }
+                    for dc_id, ledger_pid in credit_ledger_partner_id_by_dc.items():
+                        payments = payments_by_ledger_pid.get(ledger_pid)
+                        if not payments:
+                            continue  # <5 qualifying payments (or none) -- None, not a guessed fallback
+                        credit_score_by_dc[dc_id] = _credit_score_from_payments(payments["ard"], payments["pct_paid_in_due"])
+            except Exception as e:
+                run_exceptions.append({"source": "payment_payment", "reason_code": "Live_Pull_Failed", "detail": f"Health Score Credit: {type(e).__name__}: {e}"})
+
             for dc_id in health_eligible_dc_ids:
                 dc = dc_master_by_id.get(dc_id, {})
                 gm_fy_value = dc.get("GM_FY2526")
@@ -1610,6 +1692,7 @@ def generate_plan_for_scope(
                     nrv_by_dc.get(dc_id), gm_score, gm_pct_score,
                     pl_contribution_by_dc.get(dc_id), return_score_by_dc.get(dc_id),
                     negative_gm_flag, constants, od_score=od_score_by_dc.get(dc_id),
+                    credit_score=credit_score_by_dc.get(dc_id),
                 )
                 # GR-28 (business-confirmed): current_od>0 always force-includes the DC
                 # in the candidate pool regardless of composite score, bypassing the
