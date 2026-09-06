@@ -4526,7 +4526,27 @@ def generate_se_daily_plan(
         # displayed multiplier can never drift from what actually affected ranking.
         attempts = recent_attempts_by_dc.get(dc["DC_ID"], 0)
         fatigue_multiplier = (1 - constants.contact_fatigue_priority_cut) if attempts >= constants.contact_fatigue_max_attempts else 1.0
-        priority_score = sum(w * gap for w, (gap, _) in zip(weights, gap_by_obj)) * fatigue_multiplier
+        # CHANGED 2026-09-07, explicit user request, deliberately OVERRIDING GR-31's
+        # confirmed "Section 7 stays on original BO1-5 logic" scope: ranking now prefers
+        # DC_Health_Score/Health_Gap over the weighted-BO-gap sum whenever a real Health
+        # Score exists for this DC. Health Score has no equivalent at all for Visits/
+        # Long-Term (BO2/BO5) -- per direct instruction those two stay eligibility-only
+        # (still gate whether a DC is a candidate via _qualify_visits/Farmer Meeting
+        # exclusivity) and simply don't participate in this replaced ranking number.
+        # FALLBACK, also explicit user request ("so they eligible for visit"): a DC
+        # failing Health Score's own active/Days_Since_Last_Sale<=60 eligibility gate
+        # has no Health_Gap to rank by at all -- confirmed live this is 68% of currently
+        # -selected tasks (2,891 of 4,229 on 2026-09-05), overwhelmingly DCs qualifying
+        # via Visits precisely BECAUSE they haven't been visited/sold to recently, so
+        # this is not a rare edge case. Those DCs keep the ORIGINAL weighted-BO-gap
+        # formula unchanged, exactly as before this change -- never left unranked or
+        # silently deprioritized to zero.
+        health_for_priority = dc_health_scores.get(dc["DC_ID"], {})
+        health_gap_for_priority = health_for_priority.get("Health_Gap")
+        if health_gap_for_priority is not None:
+            priority_score = (health_gap_for_priority / 100.0) * fatigue_multiplier
+        else:
+            priority_score = sum(w * gap for w, (gap, _) in zip(weights, gap_by_obj)) * fatigue_multiplier
         # 90+ day aged overdue queue-jump (explicit user request 2026-09-04) -- same
         # current_overdue>0 + os_90_plus>0 gate _build_candidate_row uses for Overdue_
         # Aging_Bucket, so this never fires on a genuine Rs0-overdue/aging-mismatch case.
@@ -4543,11 +4563,10 @@ def generate_se_daily_plan(
             priority_score += constants.overdue_90_plus_priority_boost
         pool.append((dc, [o for _, o in gap_by_obj], priority_score, fatigue_multiplier))
 
-    # Source 3k -- Health-Focus pool-merge (Layer 2.5, business-confirmed 2026-09-06):
-    # Final_Candidate_Pool = Ranked_Pool (BO-driven, above) UNION Qualify_HealthFocus.
-    # A POOL MERGE, not a score-blend -- Health_Gap never feeds the BO Priority_Score
-    # formula above (explicitly reverted to stay untouched, per the business's own
-    # sheet). A DC qualifying via BOTH tracks has Health-Focus WIN the tie-break
+    # Source 3k -- Health-Focus pool-merge (Layer 2.5, business-confirmed 2026-09-06).
+    # Final_Candidate_Pool = Ranked_Pool (BO-driven, above -- itself now Health_Gap-
+    # driven when a Health Score exists, per the 2026-09-07 change above) UNION
+    # Qualify_HealthFocus. A DC qualifying via BOTH tracks has Health-Focus WIN the tie-break
     # (business-confirmed): its priority_score is replaced outright for ranking purposes,
     # but its BO-matched objectives/purposes stay attached too (bundled per 8.12, see
     # _build_candidate_row) -- "wins" governs ranking, not erasure of the BO match. GR-28
@@ -4697,7 +4716,14 @@ def generate_se_daily_plan(
             Promise_To_Pay_Amount=promise.get("Promise_Amount"),
             Promise_Status=promise_status,
             BO_Scores=per_dc_scores or None,
-            BO_Composite_Score=_bo_composite_score(per_dc_scores),
+            # CHANGED 2026-09-07, explicit user request (same override as priority_score
+            # above): prefers DC_Health_Score/100 when a real Health Score exists for
+            # this DC, falling back to the original BO-objective average otherwise --
+            # same "never leave a DC unranked" reasoning, same fallback condition.
+            BO_Composite_Score=(
+                (health["DC_Health_Score"] / 100.0) if health and health.get("DC_Health_Score") is not None
+                else _bo_composite_score(per_dc_scores)
+            ),
             Last_Payment_Join_Key_Unconfirmed=False,
             Overdue_Aging_Bucket=overdue_aging,
             Avg_Repayment_Days=avg_repayment_days,
