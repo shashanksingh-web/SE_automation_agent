@@ -430,6 +430,25 @@ def _serialize_turnover_detail(detail: dict):
     }
 
 
+def _serialize_health_score_detail(detail: dict):
+    """DCCard.health_score_detail (planning/models.py) -> the API's PascalCase shape.
+    None when this DC had no Health Score computed this run (the dict is {} in that
+    case -- e.g. failed the active/Days_Since_Last_Sale<=60 eligibility gate). Sub_Scores
+    keeps its own inner per-component shape (score_pct/bucket/urgency, e.g. "NRV")
+    unchanged -- same lowercase passthrough convention as DailyTask.Health_Sub_Scores/
+    BO_Scores, not remapped to PascalCase like the outer keys here."""
+    if not detail:
+        return None
+    return {
+        "DC_Health_Score": detail.get("dc_health_score"),
+        "Health_Gap": detail.get("health_gap"),
+        "Sub_Scores": detail.get("sub_scores") or {},
+        "Negative_GM_Flag": detail.get("negative_gm_flag", False),
+        "Health_Focus_Track": detail.get("health_focus_track", False),
+        "Health_Focus_Purposes": detail.get("health_focus_purposes", ""),
+    }
+
+
 @require_GET
 def dc_card(request, daily_task_id: int):
     """GET /api/planning/dc-card/<daily_task_id>/ -- the DC Card (Preface, "Dehaat
@@ -447,6 +466,12 @@ def dc_card(request, daily_task_id: int):
         "DC_Name": card.daily_task.dc_name,
         "Who_Section": card.who_section,
         "Where_DC_Stands_Section": card.where_dc_stands_section,
+        # Structured form of card_hindi's "3. Health Score" block (Source 3k, added
+        # 2026-09-06) - null when this DC had no Health Score computed this run. Section
+        # is the same Hindi narrative already embedded in Card_Hindi below, exposed on
+        # its own so the frontend isn't forced to re-parse the combined text.
+        "Health_Score_Section": card.health_score_section or None,
+        "Health_Score_Detail": _serialize_health_score_detail(card.health_score_detail),
         "Card_Hindi": card.card_hindi,
         # Structured form of Who_Section's "Business Area Strength" bullet - null when
         # this DC has no current-year business-area data at all. Prior is independently
