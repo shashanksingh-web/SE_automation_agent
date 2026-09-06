@@ -1,11 +1,14 @@
 """The DC Card (Preface) -- "Dehaat Center Ko Jaano" -- a second, complementary
 pre-pitch briefing framework for the Pitching Agent (SE_DC_Data_Normalization_Agent_Prompt;
 pitch_config's "DC Card (Preface)" CSV). Shown to the SE when they open a DC's card,
-BEFORE any Ask/Tell/Wish pitch -- 2 sections: 1. कौन (Who), 2. DC कहां खड़ा है (Where
-DC Stands). The CSV's own Section 3 (प्राइवेट लेबल / Private Label) was removed from
-this card per direct instruction (2026-09-03) -- the same recommended-products signal
-still reaches the SE via PitchScript's own Recommended_Products (planning/pitching.py),
-just not duplicated here.
+BEFORE any Ask/Tell/Wish pitch -- 3 sections: 1. कौन (Who), 2. DC कहां खड़ा है (Where
+DC Stands), 3. Health Score (Source 3k, added 2026-09-06 -- the business doc's own "DC
+Health Card" data contract, see _health_score_section). The CSV's own original Section
+3 (प्राइवेट लेबल / Private Label) was removed from this card per direct instruction
+(2026-09-03) -- the same recommended-products signal still reaches the SE via
+PitchScript's own Recommended_Products (planning/pitching.py), just not duplicated
+here; today's Section 3 (Health Score) is a genuinely new section, not a repurposing of
+that vacated slot.
 
 Generated automatically alongside PitchScript (planning/pitching.py) -- same trigger
 point (planning.services.generate_plan_for_scope, right after DailyTask rows exist),
@@ -238,6 +241,64 @@ def _upcoming_to_sell_proxy(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return " और ".join(parts) + " -- यह एक अनुमान है, पक्का crop-calendar डेटा नहीं।", "Upcoming_To_Sell_Proxy"
 
 
+_HEALTH_BUCKET_HINDI = {"Strong": "मजबूत", "Fine": "ठीक", "Weak": "कमजोर", "Worst": "सबसे कमजोर"}
+_HEALTH_COMPONENT_LABEL = {
+    "NRV": "Net Revenue Value (NRV)",
+    "GM": "Gross Margin (GM)",
+    "GM_Pct": "Gross Margin %",
+    "PL_Contribution": "Private Label योगदान",
+    "Return": "Return दर",
+    "Credit": "Credit Score",
+    "OD": "Overdue (OD) Score",
+}
+
+
+def _health_score_section(task: DailyTask) -> Optional[Tuple[str, str]]:
+    """Source 3k -- DC Composite Health Score (added 2026-09-06), the business doc's own
+    "DC Health Card" data contract: DC_Health_Score (1-100) + Health_Gap, all 7 sub-
+    scores with their real value and grading bucket (Strong/Fine/Weak/Worst, business-
+    confirmed cutoffs), Negative_GM_Flag when set, and whether this DC is ALSO in
+    today's Health-Focus track -- a separate, parallel model from BO1-5, never
+    conflated with it (see se_daily_plan_agent.compute_dc_health_score). Credit/OD
+    always show Worst here (hardcoded 0, data-access-blocked on a confirmed Locus-to-
+    sap_partner_id bridge gap) -- shown for transparency same as every other component,
+    but never the reason this DC qualified for Health-Focus on their own (that
+    function's own qualification logic excludes them for exactly this reason). None
+    when this DC had no Health Score computed this run (failed the active/Days_Since_
+    Last_Sale<=60 eligibility gate) -- reads directly off `task`, not `ctx`, since this
+    data lives on DailyTask's own fields, not the shared extra_data_by_dc context."""
+    if task.dc_health_score is None:
+        return None
+    lines = [f"कुल Health Score: {task.dc_health_score:.0f}/100 (Health Gap: {task.health_gap:.0f})"]
+    if task.negative_gm_flag:
+        lines.append("घाटे में (Negative GM) -- सामान्य फॉर्मूले से स्कोर नहीं किया गया, मैन्युअल रिव्यू के लिए फ्लैग किया गया।")
+    for name, data in (task.health_sub_scores or {}).items():
+        label = _HEALTH_COMPONENT_LABEL.get(name, name)
+        bucket_hi = _HEALTH_BUCKET_HINDI.get(data.get("bucket"), data.get("bucket") or "N/A")
+        score_pct = data.get("score_pct")
+        pct_str = f"{score_pct:.0%}" if score_pct is not None else "N/A"
+        lines.append(f"- {label}: {pct_str} ({bucket_hi})")
+    if task.health_focus_track:
+        lines.append(f"आज इस DC को Health-Focus track के तहत भी चुना गया है ({task.health_focus_purposes or 'GR-28'})।")
+    return "\n".join(lines), "DC_Health_Score"
+
+
+def _health_score_detail(task: DailyTask) -> Dict[str, Any]:
+    """Structured form of _health_score_section()'s text (same who_section/business_
+    area_detail pairing every other card section already uses). {} when this DC had no
+    Health Score computed this run."""
+    if task.dc_health_score is None:
+        return {}
+    return {
+        "dc_health_score": task.dc_health_score,
+        "health_gap": task.health_gap,
+        "sub_scores": task.health_sub_scores or {},
+        "negative_gm_flag": task.negative_gm_flag,
+        "health_focus_track": task.health_focus_track,
+        "health_focus_purposes": task.health_focus_purposes,
+    }
+
+
 def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Returns the DCCard.objects.create()-ready field dict for one DailyTask."""
     dc_name = (task.dc_name or "").strip() or "यह DC"
@@ -269,13 +330,28 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
     who_section = "\n".join(who_lines) if who_lines else "(कोई डेटा उपलब्ध नहीं इस रन में)"
     where_dc_stands_section = "\n".join(where_lines) if where_lines else "(कोई डेटा उपलब्ध नहीं इस रन में)"
 
+    # Section 3 -- Health Score (Source 3k, added 2026-09-06). A NEW section, not a
+    # repurposing of the vacated प्राइवेट लेबल slot (private_label_section stays exactly
+    # as it was -- removed 2026-09-03, still deliberately unused, see below). Reads
+    # `task` directly rather than going through the run()/ctx pattern above, since this
+    # data lives on DailyTask's own fields (see _health_score_section's docstring).
+    health_score_result = _health_score_section(task)
+    if health_score_result is None:
+        skipped.append("Health Score (no data available this run)")
+        health_score_section = "(कोई डेटा उपलब्ध नहीं इस रन में)"
+    else:
+        text, code = health_score_result
+        used.append(code)
+        health_score_section = text
+
     card_hindi = "\n\n".join([
         f"{dc_name} -- Dehaat Center Ko Jaano",
         "1. कौन (Who)\n" + who_section,
         "2. DC कहां खड़ा है (Where DC Stands)\n" + where_dc_stands_section,
+        "3. Health Score\n" + health_score_section,
     ])
 
-    # Section 3 (प्राइवेट लेबल / Private Label) removed 2026-09-03, per direct
+    # Old Section 3 (प्राइवेट लेबल / Private Label) removed 2026-09-03, per direct
     # instruction -- recommended_products/private_label_section deliberately left off
     # this dict so DCCard.objects.update_or_create's defaults= overwrites any stale value
     # from before this change with the model's own empty default, not just omits them.
@@ -289,6 +365,8 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "turnover_detail": _turnover_detail(ctx),
         "club_detail": ctx.get("club") or {},
         "private_label_section": "",
+        "health_score_section": health_score_section,
+        "health_score_detail": _health_score_detail(task),
         "card_hindi": card_hindi,
         "data_sources_used": used,
         "data_sources_skipped": skipped,

@@ -370,6 +370,18 @@ class DCCard(models.Model):
     # DC_Club_Participation. {} when club data wasn't available this run.
     club_detail = models.JSONField(default=dict, blank=True)
 
+    # Source 3k -- DC Composite Health Score (added 2026-09-06). The business doc's own
+    # "DC Health Card" data contract (DC_Health_Score, all 7 sub-scores, Negative_GM_Flag,
+    # Health-Focus track membership) -- its own note calls this "New - not yet built as a
+    # UI, but the data contract is defined here." health_score_section is the Hindi
+    # narrative (planning.dc_card._health_score_section); health_score_detail is its
+    # structured form, same who_section/business_area_detail pairing every other card
+    # section already uses. Both blank/{} when this DC had no Health Score computed this
+    # run (failed the active/Days_Since_Last_Sale<=60 eligibility gate) -- a real,
+    # separate card section from private_label_section above, not a repurposing of it.
+    health_score_section = models.TextField(blank=True, default="")
+    health_score_detail = models.JSONField(default=dict, blank=True)
+
     data_sources_used = models.JSONField(default=list, blank=True)
     data_sources_skipped = models.JSONField(default=list, blank=True)
     generated_at = models.DateTimeField(auto_now_add=True)
