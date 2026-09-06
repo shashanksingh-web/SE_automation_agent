@@ -2618,25 +2618,37 @@ def compute_dc_health_score(
 
 # Purpose mapping (business-confirmed, row 27 of the DC Composite Health Score sheet):
 # Credit_Score or OD_Score in Weak/Worst -> Promise_To_Pay/Collection; PL_Contribution_
-# Score in Weak/Worst -> PL Sale; NRV/GM/GM%/Return in Weak/Worst -> Sale (general).
-# When multiple components qualify at once, Collection outranks the others (business-
+# Score in Weak/Worst -> "PL Sale" per the sheet's own descriptive label; NRV/GM/GM%/
+# Return in Weak/Worst -> Sale (general). CORRECTED 2026-09-06 (caught live: Pitching
+# Agent integration): "PL Sale" is the sheet's own label, not a real system purpose --
+# the confirmed pitch_config taxonomy (planning/pitching.py's single_purpose keys) only
+# has Promise To Bill, Promise To Pay/Collection, Query Resolution, Sale, Stock at DC --
+# no "PL Sale" entry exists anywhere, same as BO1's own PURPOSE_BY_OBJECTIVE already
+# maps "PL" -> plain "Sale", not a PL-specific purpose. Mapping PL_Contribution to the
+# sheet's literal "PL Sale" label would have silently produced an unmatched purpose_key
+# (None) for every PL_Contribution-driven Health-Focus task -- a real gap, not just a
+# naming quibble, since _match_script() can't find a script for a purpose that doesn't
+# exist in its config. PL_Contribution now maps to "Sale", same as every other
+# non-Collection component -- they were always going to collapse into one real "Sale"
+# purpose per DC anyway (health_focus_purposes de-duplicates), so this loses nothing.
+# When multiple components qualify at once, Collection outranks Sale (business-
 # confirmed priority order) -- per 8.12, a single visit can still bundle more than one
 # purpose if the caller chooses to attach every qualifying purpose, not just the winner.
 HEALTH_FOCUS_PURPOSE_BY_COMPONENT: Dict[str, str] = {
     "Credit": "Promise To Pay / Collection",
     "OD": "Promise To Pay / Collection",
-    "PL_Contribution": "PL Sale",
+    "PL_Contribution": "Sale",
     "NRV": "Sale",
     "GM": "Sale",
     "GM_Pct": "Sale",
     "Return": "Sale",
 }
-HEALTH_FOCUS_PURPOSE_PRIORITY = ["Promise To Pay / Collection", "PL Sale", "Sale"]
+HEALTH_FOCUS_PURPOSE_PRIORITY = ["Promise To Pay / Collection", "Sale"]
 
 
 def health_focus_purposes(sub_scores: Dict[str, Dict[str, Any]]) -> List[str]:
     """Every qualifying (Weak/Worst) component's mapped purpose, de-duplicated and
-    ordered Collection > PL Sale > Sale (business-confirmed priority when multiple
+    ordered Collection > Sale (business-confirmed priority when multiple
     components qualify at once) -- bundled per 8.12, not just the single top purpose."""
     triggered = {
         HEALTH_FOCUS_PURPOSE_BY_COMPONENT[name]
