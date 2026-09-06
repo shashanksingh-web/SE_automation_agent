@@ -412,6 +412,110 @@ def _sql_pathik_overdue(dc_ids: List[str]) -> str:
     """
 
 
+def _sql_od_bridge(dc_ids: List[str]) -> str:
+    # OD_Score's real formula, wired 2026-09-07 (explicit user request, after a live
+    # cross-check found LOCUS_DB_ID (27, "locus") IS reachable from this environment via
+    # the same Redshift connection/credentials as everything else -- previously assumed
+    # unreachable, see se_daily_plan_agent.RedshiftDirectClient's own docstring
+    # correction. Two-step cross-database process: this query is Step 1 (bridge,
+    # Redshift-41), _sql_od_aging below is Step 2 (aging, the separate "locus" database,
+    # LOCUS_DB_ID) -- no single query can do both since they're genuinely different
+    # physical database connections.
+    #
+    # PARTITION BY kunnr (sap_partner_id), not ledger_partner_id -- caught live: an
+    # earlier version of this query partitioned by ledger_partner_id (matching GR-28's
+    # own bridge query, which needs the OPPOSITE direction and is correct as written
+    # there), which for THIS direction let pure noise through. Confirmed real case:
+    # kunnr 1000015534 has two candidate ledger_partner_ids in the source table --
+    # '378988' (16,737 occurrences) and '967629' (1 occurrence) -- partitioning by
+    # ledger_partner_id ranks each of those two as "its own top row" independently
+    # (trivially true for a partition of size 1), returning BOTH as if they were
+    # equally valid. Partitioning by kunnr instead correctly keeps only '378988' as
+    # this DC's single dominant ledger_partner_id, discarding '967629' as noise.
+    return f"""
+    WITH ranked AS (
+        SELECT ledger_partner_id, kunnr AS sap_partner_id, COUNT(*) AS cnt,
+               ROW_NUMBER() OVER (PARTITION BY kunnr ORDER BY COUNT(*) DESC) AS rn
+        FROM sap_locus_document_check
+        WHERE kunnr IS NOT NULL AND ledger_partner_id IS NOT NULL
+          AND kunnr::text IN ({_sql_list(dc_ids)})
+        GROUP BY ledger_partner_id, kunnr
+    )
+    SELECT ledger_partner_id, sap_partner_id FROM ranked WHERE rn = 1
+    """
+
+
+def _sql_od_aging(ledger_partner_ids: List[str]) -> str:
+    # Step 2 (aging calculation) -- runs against LOCUS_DB_ID ("locus" database), NOT
+    # Redshift-41 -- see _sql_od_bridge's docstring. Keyed by ledger_ledgerentry's own
+    # partner_id (the Locus-internal ID, i.e. _sql_od_bridge's ledger_partner_id), NOT
+    # sap_partner_id directly -- caller bridges the two in Python (see the composite-
+    # scoring wiring below). Field names confirmed live against information_schema.
+    # columns this round (partner_id, type, amount, active, visible, overdue_date all
+    # real columns) -- overdue_date specifically, NOT to_date (a real but different
+    # column on this same table that silently returns zero aged debt for every DC if
+    # used by mistake -- caught live before wiring this in).
+    #
+    # Returns GROSS bucketed invoice amounts (incl. aged_0_90) plus the separately
+    # netted lifetime total -- caller (_fifo_net_aging) allocates net_payment_incl_credits
+    # against these buckets oldest-first to get the actually-still-owed amount per
+    # bucket. Fixed 2026-09-07 (business-confirmed) after live sampling showed every
+    # one of 181 real DCs scoring od_score=0.0 (Worst): summing GROSS aged-90+ invoice
+    # volume against NET overall_outstanding meant any DC with real trading history had
+    # od_90plus >>> overall_outstanding (confirmed case: partner 378988, aged-90+
+    # invoiced ~Rs3.64cr vs. net outstanding today just Rs67,093 -- most of that old
+    # invoicing had long since been paid off, but the un-netted bucket sum couldn't see
+    # that). Netting the buckets themselves (not just the total) fixes this.
+    return f"""
+    WITH aging AS (
+      SELECT partner_id,
+        SUM(CASE WHEN CURRENT_DATE - overdue_date < 90 THEN amount ELSE 0 END) AS aged_0_90,
+        SUM(CASE WHEN CURRENT_DATE - overdue_date BETWEEN 90 AND 119 THEN amount ELSE 0 END) AS aged_90_120,
+        SUM(CASE WHEN CURRENT_DATE - overdue_date BETWEEN 120 AND 179 THEN amount ELSE 0 END) AS aged_120_180,
+        SUM(CASE WHEN CURRENT_DATE - overdue_date BETWEEN 180 AND 364 THEN amount ELSE 0 END) AS aged_180_365,
+        SUM(CASE WHEN CURRENT_DATE - overdue_date >= 365 THEN amount ELSE 0 END) AS aged_before_365,
+        SUM(amount) AS amount_invoiced_till_date
+      FROM ledger_ledgerentry
+      WHERE type ILIKE 'Invoice' AND active = 'true'
+        AND partner_id IN ({_sql_list(ledger_partner_ids)})
+      GROUP BY partner_id
+    ),
+    netting AS (
+      SELECT partner_id, SUM(amount) AS net_payment_incl_credits
+      FROM ledger_ledgerentry
+      WHERE (type ILIKE 'Payment' OR type ILIKE 'credit_note') AND visible = 'true'
+        AND partner_id IN ({_sql_list(ledger_partner_ids)})
+      GROUP BY partner_id
+    )
+    SELECT a.partner_id,
+           a.aged_0_90, a.aged_90_120, a.aged_120_180, a.aged_180_365, a.aged_before_365,
+           a.amount_invoiced_till_date,
+           COALESCE(n.net_payment_incl_credits, 0) AS net_payment_incl_credits
+    FROM aging a
+    LEFT JOIN netting n ON n.partner_id = a.partner_id
+    """
+
+
+def _fifo_net_aging(row: Dict[str, object]) -> Dict[str, float]:
+    """Allocate a DC's lifetime net payments against its aged invoice buckets,
+    oldest-first (standard AR-aging convention: a customer's payments are assumed to
+    clear their oldest outstanding invoices before their newest). Returns the
+    still-owed amount per bucket after that allocation, so od_90plus reflects real
+    current overdue exposure rather than gross invoiced-ever volume.
+    """
+    buckets = ["aged_before_365", "aged_180_365", "aged_120_180", "aged_90_120", "aged_0_90"]
+    payment = float(row.get("net_payment_incl_credits") or 0.0)
+    remaining: Dict[str, float] = {}
+    for b in buckets:
+        gross = float(row.get(b) or 0.0)
+        applied = min(payment, gross) if gross > 0 else 0.0
+        remaining[b] = max(0.0, gross - applied)
+        payment = max(0.0, payment - applied)
+    od_90plus = remaining["aged_before_365"] + remaining["aged_180_365"] + remaining["aged_120_180"] + remaining["aged_90_120"]
+    overall_outstanding = od_90plus + remaining["aged_0_90"]
+    return {"od_90plus": od_90plus, "overall_outstanding": overall_outstanding}
+
+
 def _sql_pl_metrics(dc_ids: List[str], plan_date: str) -> str:
     # Real per-DC BO1 (PL) scoring -- same confirmed PRIVATE LABEL source as
     # _sql_ytd_pl above (see its comment for the join chain/status filter), replacing
@@ -1442,6 +1546,56 @@ def generate_plan_for_scope(
             except Exception as e:
                 run_exceptions.append({"source": "b2b_sales_return", "reason_code": "Live_Pull_Failed", "detail": f"Health Score Return: {type(e).__name__}: {e}"})
 
+            # OD_Score, UNBLOCKED 2026-09-07 (explicit user request) -- two-step
+            # cross-database process, see _sql_od_bridge/_sql_od_aging docstrings.
+            # Step 1: bridge sap_partner_id -> ledger_partner_id (Redshift-41). Step 2:
+            # aging calculation for those ledger_partner_ids (LOCUS_DB_ID, "locus" db).
+            # Combined in Python since the two queries hit genuinely different physical
+            # database connections -- no single SQL statement can join across them.
+            od_score_by_dc: Dict[str, float] = {}
+            try:
+                ledger_partner_id_by_dc: Dict[str, str] = {}
+                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_od_bridge(health_eligible_dc_ids)):
+                    dc_id = agent.normalize_id(row.get("sap_partner_id"))
+                    ledger_pid = row.get("ledger_partner_id")
+                    if dc_id and ledger_pid:
+                        ledger_partner_id_by_dc[dc_id] = ledger_pid
+                if ledger_partner_id_by_dc:
+                    aging_by_ledger_pid: Dict[str, Dict[str, float]] = {}
+                    for row in client.execute_sql(agent.LOCUS_DB_ID, _sql_od_aging(list(ledger_partner_id_by_dc.values()))):
+                        ledger_pid = row.get("partner_id")
+                        if ledger_pid:
+                            parsed = {
+                                "aged_0_90": agent.parse_number(row.get("aged_0_90")) or 0.0,
+                                "aged_90_120": agent.parse_number(row.get("aged_90_120")) or 0.0,
+                                "aged_120_180": agent.parse_number(row.get("aged_120_180")) or 0.0,
+                                "aged_180_365": agent.parse_number(row.get("aged_180_365")) or 0.0,
+                                "aged_before_365": agent.parse_number(row.get("aged_before_365")) or 0.0,
+                                "net_payment_incl_credits": agent.parse_number(row.get("net_payment_incl_credits")) or 0.0,
+                            }
+                            aging_by_ledger_pid[ledger_pid] = _fifo_net_aging(parsed)
+                    for dc_id, ledger_pid in ledger_partner_id_by_dc.items():
+                        aging = aging_by_ledger_pid.get(ledger_pid)
+                        if not aging:
+                            continue
+                        od_90plus = aging["od_90plus"]
+                        overall_outstanding = aging["overall_outstanding"]
+                        # Business-confirmed CASE logic -- clean case (nothing aged 90+)
+                        # is a perfect 1 regardless of total size; stale-bad-debt case
+                        # (aged debt exists but current outstanding is 0/negative, e.g.
+                        # already written off) floors to 0 rather than a nonsensical
+                        # ratio; otherwise clamp 1-od_pct to [0,1] (a real live case,
+                        # partner 378988/sap_partner_id 1000015534, hits od_pct=542
+                        # without this clamp).
+                        if od_90plus <= 0:
+                            od_score_by_dc[dc_id] = 1.0
+                        elif not overall_outstanding or overall_outstanding <= 0:
+                            od_score_by_dc[dc_id] = 0.0
+                        else:
+                            od_score_by_dc[dc_id] = max(0.0, min(1.0, 1.0 - (od_90plus / overall_outstanding)))
+            except Exception as e:
+                run_exceptions.append({"source": "ledger_ledgerentry", "reason_code": "Live_Pull_Failed", "detail": f"Health Score OD: {type(e).__name__}: {e}"})
+
             for dc_id in health_eligible_dc_ids:
                 dc = dc_master_by_id.get(dc_id, {})
                 gm_fy_value = dc.get("GM_FY2526")
@@ -1455,7 +1609,7 @@ def generate_plan_for_scope(
                 result = agent.compute_dc_health_score(
                     nrv_by_dc.get(dc_id), gm_score, gm_pct_score,
                     pl_contribution_by_dc.get(dc_id), return_score_by_dc.get(dc_id),
-                    negative_gm_flag, constants,
+                    negative_gm_flag, constants, od_score=od_score_by_dc.get(dc_id),
                 )
                 # GR-28 (business-confirmed): current_od>0 always force-includes the DC
                 # in the candidate pool regardless of composite score, bypassing the
@@ -1484,6 +1638,7 @@ def generate_plan_for_scope(
             if dc_id in dc_health_scores or (pathik_overdue_by_dc.get(dc_id) or 0.0) <= 0:
                 continue
             run_exceptions.append({
+                "dc_id": dc_id,
                 "source": "GR-28", "reason_code": "GR28_Bypassed_60Day_Eligibility",
                 "detail": (
                     f"DC {dc_id}: force-included for Outstanding via GR-28 (real overdue balance, "

@@ -264,11 +264,26 @@ def _health_score_section(task: DailyTask) -> Optional[Tuple[str, str]]:
     sap_partner_id bridge gap) -- shown for transparency same as every other component,
     but never the reason this DC qualified for Health-Focus on their own (that
     function's own qualification logic excludes them for exactly this reason). None
-    when this DC had no Health Score computed this run (failed the active/Days_Since_
-    Last_Sale<=60 eligibility gate) -- reads directly off `task`, not `ctx`, since this
-    data lives on DailyTask's own fields, not the shared extra_data_by_dc context."""
+    only when this DC had no Health Score computed AND wasn't selected via Health-Focus
+    either -- reads directly off `task`, not `ctx`, since this data lives on DailyTask's
+    own fields, not the shared extra_data_by_dc context.
+
+    GR-28's 60-day-bypass case (se_daily_plan_agent.py, added 2026-09-06): a DC can have
+    health_focus_track=True with dc_health_score=None at the same time -- force-included
+    via a real overdue balance despite failing the Health Score's own active/Days_Since_
+    Last_Sale<=60 eligibility gate, so no full composite was ever computed for it. That's
+    a real, explainable state, not "no data" -- surfaced explicitly below instead of
+    silently returning None and discarding health_focus_track/health_focus_purposes,
+    which do exist on `task` regardless of dc_health_score (caught 2026-09-07 checking
+    why an SE's Health Score section was missing for exactly this kind of DC)."""
     if task.dc_health_score is None:
-        return None
+        if not task.health_focus_track:
+            return None
+        return (
+            "इस रन में कोई Health Score कैलकुलेट नहीं हुआ (60-दिन की हालिया-बिक्री पात्रता शर्त पूरी नहीं "
+            f"हुई)। फिर भी आज इस DC को Health-Focus track के तहत चुना गया है ({task.health_focus_purposes or 'GR-28'}), "
+            "GR-28 के वास्तविक overdue override के आधार पर।"
+        ), "GR28_Bypassed_60Day_Gate"
     lines = [f"कुल Health Score: {task.dc_health_score:.0f}/100 (Health Gap: {task.health_gap:.0f})"]
     if task.negative_gm_flag:
         lines.append("घाटे में (Negative GM) -- सामान्य फॉर्मूले से स्कोर नहीं किया गया, मैन्युअल रिव्यू के लिए फ्लैग किया गया।")
@@ -285,10 +300,21 @@ def _health_score_section(task: DailyTask) -> Optional[Tuple[str, str]]:
 
 def _health_score_detail(task: DailyTask) -> Dict[str, Any]:
     """Structured form of _health_score_section()'s text (same who_section/business_
-    area_detail pairing every other card section already uses). {} when this DC had no
-    Health Score computed this run."""
+    area_detail pairing every other card section already uses). {} only when this DC had
+    no Health Score computed AND wasn't selected via Health-Focus either -- same GR-28
+    60-day-bypass exception as _health_score_section above (dc_health_score=None,
+    health_focus_track=True can both be true at once)."""
     if task.dc_health_score is None:
-        return {}
+        if not task.health_focus_track:
+            return {}
+        return {
+            "dc_health_score": None,
+            "health_gap": None,
+            "sub_scores": {},
+            "negative_gm_flag": False,
+            "health_focus_track": task.health_focus_track,
+            "health_focus_purposes": task.health_focus_purposes,
+        }
     return {
         "dc_health_score": task.dc_health_score,
         "health_gap": task.health_gap,
