@@ -3666,9 +3666,9 @@ def build_route_balanced(
 #     pretended to be live.
 # =====================================================================================
 
-PLAN_B_MAX_DAILY_DISTANCE_KM = 80.0    # Section 5 Constraints -- standard-case budget; Stage 3's conditional ceiling check (Sheets 3/5/10) reclassifies a cluster exceeding this as Exceptional (BO Rule) instead of dropping it
-PLAN_B_MAX_DAILY_TRAVEL_MINUTES = 180.0  # Section 5 -- hard ceiling for the standard case only; soft/informational once a cluster is reclassified Exceptional (Sheet 10)
-PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM = PLAN_B_MAX_DAILY_DISTANCE_KM * 0.45  # Section 3.2: "no more than ~40-50% of the 80km budget just to traverse internally" -- midpoint of that stated range
+PLAN_B_MAX_DAILY_DISTANCE_KM = 100.0   # CHANGED 2026-09-06, explicit user request: round-trip distance budget raised 80km->100km, replacing the old figure everywhere in Plan B (standard-cluster accumulation AND the Exceptional-cluster threshold below).
+PLAN_B_MAX_DAILY_TRAVEL_MINUTES = 180.0  # Section 5 -- hard ceiling, both constraints must be satisfied together (explicit user request 2026-09-06 -- neither one alone controls)
+PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM = PLAN_B_MAX_DAILY_DISTANCE_KM * 0.45  # Section 3.2: "no more than ~40-50% of the daily budget just to traverse internally" -- midpoint of that stated range, now against the 100km figure
 PLAN_B_TARGET_CLUSTER_SIZE = 6          # not numerically specified by the workbook ("comparable count of BOs per km2, until BO-count-per-cluster converges within a target band") -- a mid-sized daily-beat count, flagged as a chosen default, not a confirmed figure
 PLAN_B_RECENCY_DECAY_RATE = 1.0 / 30.0  # Edge Case #2/#11: bounded, smooth decay, full cycle within ~30 days
 PLAN_B_RECENCY_DECAY_CAP = 2.0          # Edge Case #2: caps decay so a cluster can't be weighted away forever
@@ -3820,12 +3820,14 @@ def build_route_cluster_based(
     All 3 share every other rule below unchanged; only Step 2's ranking key (and the
     matching key used by Step 5's individual-BO fallback) changes.
 
-    Stage 3's ordered criteria, applied exactly as the workbook specifies (its own
-    Section 3, "Route Selection Criteria (Applied in Order)", updated 2026-08-31 to the
-    Conditional Ceiling Model -- Sheets 3/5/9/10):
+    Stage 3's ordered criteria (updated 2026-09-06, explicit user request, replacing the
+    2026-08-31 Conditional Ceiling Model's uncapped BO Rule -- see Step 1 below and the
+    workbook's own "0. Alignment vs Config v3" sheet for why):
       1. Conditional ceiling check -- a cluster whose own closed-tour distance/time
-         alone exceeds 80km/180min is reclassified Exceptional and routed via the BO
-         Rule (Sheet 10, see below) in place of Steps 2-4, never dropped.
+         alone exceeds 100km/180min (BOTH checked together) is reclassified Exceptional;
+         instead of a full uncapped multi-stop route, it collapses to its single
+         highest-priority DC only (tier/recency/distance tie-break, see _bo_rule_key),
+         never dropped entirely.
       2. Rank by ranking_criterion (see above), descending for efficiency/score_max,
          ascending for distance_min -- cluster's own closed-tour distance/time computed
          via Clarke-Wright + 2-opt + or-opt from Origin_Point, same sequencing
@@ -3903,15 +3905,21 @@ def build_route_cluster_based(
             "score_per_km": score_per_km, "mean_recency_urgency": mean_recency_urgency, "mean_potential": mean_potential,
         })
 
-    # Step 1 (rewritten 2026-08-31, updated workbook -- Sheets 3/5/9/10, "Conditional
-    # Ceiling Model"): a cluster whose own closed-tour distance/time alone exceeds the
-    # 80km/180min ceiling is no longer dropped -- it's reclassified "Exceptional" and
-    # STILL gets a mandatory route, sequenced by the BO Rule (Sheet 10) instead of
-    # Score-per-km efficiency. The workbook's own "DC" (with multiple "BOs" inside it)
-    # maps directly onto this function's "cluster" (with multiple candidate DCs inside
-    # it) -- every other reference in this codebase already uses DC_ID/DC_Name for the
-    # individual outlet, matching the workbook's "BO," so Sheet 10's hierarchy is simply
-    # this function's cluster/candidate hierarchy under different names.
+    # Step 1 (CORRECTED 2026-09-06, explicit user request, replacing the 2026-08-31
+    # "Conditional Ceiling Model"): a cluster whose own closed-tour distance/time alone
+    # exceeds the 100km/180min ceiling (BOTH checked, either one triggers this) is no
+    # longer given a full uncapped BO-tier route -- that behavior directly conflicted
+    # with the Routing Agent's own authoritative GR-R5 ("trim stops until the route
+    # fits, never let it exceed the ceiling"), a conflict the Beat Planning workbook's
+    # own newly-added "0. Alignment vs Config v3" sheet flagged rather than silently
+    # picking a side. The business's own resolution: instead of GR-R5's literal
+    # ascending-priority trim, an exceeding cluster collapses to its SINGLE highest-
+    # priority DC only (by the same tier/recency/distance ordering the old BO Rule
+    # already used, see _bo_rule_key) -- visit just that one, drop the rest of the
+    # cluster. The workbook's own "DC" (with multiple "BOs" inside it) maps directly
+    # onto this function's "cluster" (with multiple candidate DCs inside it) -- every
+    # other reference in this codebase already uses DC_ID/DC_Name for the individual
+    # outlet, matching the workbook's "BO."
     standard, exceptional = [], []
     for sc in scored_clusters:
         m = sc["metrics"]
@@ -3921,51 +3929,44 @@ def build_route_cluster_based(
             standard.append(sc)
 
     if exceptional:
-        # BO Rule (Sheet 10, Steps 1-4): strict priority-tier sequencing, not distance
-        # minimization -- Clarke-Wright/2-opt/or-opt are Score-per-km's tools and are
-        # deliberately NOT used here, since they'd optimize away exactly the
-        # tier-first guarantee the BO Rule exists to provide. This codebase has no
-        # separate discrete "BO1..BO5" field per DC (the workbook's own tier concept) --
-        # priority_score IS already "the confirmed 0.40/0.35/0.25-weighted BO1-BO5 tier
-        # score" (see _cumulative_bo_score's docstring), so it's reused directly as the
-        # tier-ordering signal rather than inventing a second, redundant tiering scheme.
-        # Recency/distance tie-breaks per Sheet 10 Step 2; distance tie-break uses each
-        # candidate's straight-line distance from Origin_Point as a stable static proxy
-        # for "nearest," since true nearest-to-previous-stop depends on a sequence this
-        # sort is still deciding.
+        # Same tier/recency/distance ordering the old BO Rule used to sequence its full
+        # route -- now only ITS FIRST ELEMENT is kept (the single highest-priority DC),
+        # not the whole cluster. priority_score IS already "the confirmed 0.40/0.35/
+        # 0.25-weighted BO1-BO5 tier score" (see _cumulative_bo_score's docstring), so
+        # it's reused directly as the tier-ordering signal.
         def _bo_rule_key(c: Dict[str, Any]) -> Tuple[float, float, float]:
             days_since = c["dc"].get("Days_Since_Last_Visit")
             recency = PLAN_B_NEW_BO_RECENCY_WEIGHT if days_since is None else min(1.0 + days_since * PLAN_B_RECENCY_DECAY_RATE, PLAN_B_RECENCY_DECAY_CAP)
             dist_from_origin = circuity_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0
             return (-c["priority_score"], -recency, dist_from_origin)
 
-        # Multiple exceptional clusters can't all fit one SE's one working day (each
-        # already exceeds the FULL daily budget alone) -- cover the single most
-        # valuable one (highest CBS) this cycle; the rest defer to a future cycle,
-        # same "recency decay eventually forces a visit" logic Edge Case #2 already
-        # relies on for starvation prevention, not a new mechanism.
+        # Multiple exceptional clusters can't all fit one SE's one working day -- cover
+        # the single most valuable one (highest CBS) this cycle; the rest defer to a
+        # future cycle, same "recency decay eventually forces a visit" logic Edge Case
+        # #2 already relies on for starvation prevention, not a new mechanism.
         #
         # Forced distinctness (2026-09-01): try every exceptional cluster in CBS order,
-        # skipping any whose own (task-cap-trimmed) BO Rule stop-set exactly matches one
-        # this call must avoid (exclude_stop_sets, from an earlier ranking_criterion
-        # call's result) -- so ranking_criterion calls that would otherwise all collapse
-        # onto the same dominant Exceptional cluster instead surface the next-best one as
-        # a genuine alternative.
+        # skipping any whose single chosen DC exactly matches one this call must avoid
+        # (exclude_stop_sets, from an earlier ranking_criterion call's result) -- so
+        # ranking_criterion calls that would otherwise all collapse onto the same
+        # dominant Exceptional cluster instead surface the next-best one as a genuine
+        # alternative.
         candidates_by_cbs = sorted(exceptional, key=lambda sc: -sc["cbs"])
         chosen = None
         chosen_bo_rule_order = None
         for candidate in candidates_by_cbs:
-            trial_order = sorted(candidate["cluster"], key=_bo_rule_key)[:task_cap]
+            trial_order = sorted(candidate["cluster"], key=_bo_rule_key)[:1]
             trial_stop_set = tuple(c["dc"]["DC_ID"] for c in trial_order)
             if not exclude_stop_sets or trial_stop_set not in exclude_stop_sets:
                 chosen, chosen_bo_rule_order = candidate, trial_order
                 break
 
         if chosen is None and standard:
-            # Every exceptional cluster's own route is already claimed by an earlier
-            # route this cycle, but standard clusters exist -- offer the standard-combo
-            # path as this route's genuinely different alternative instead of duplicating
-            # an already-shown Exceptional route. Falls through to Step 2 below.
+            # Every exceptional cluster's own single-DC pick is already claimed by an
+            # earlier route this cycle, but standard clusters exist -- offer the
+            # standard-combo path as this route's genuinely different alternative
+            # instead of duplicating an already-shown Exceptional route. Falls through
+            # to Step 2 below.
             for sc in exceptional:
                 dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Exceptional_DC_Deferred_Route_Diversity"} for c in sc["cluster"]]
         else:
@@ -3975,31 +3976,42 @@ def build_route_cluster_based(
                 # valuable one anyway (unavoidable duplicate, same as before this
                 # parameter existed).
                 chosen = candidates_by_cbs[0]
-                chosen_bo_rule_order = sorted(chosen["cluster"], key=_bo_rule_key)[:task_cap]
+                chosen_bo_rule_order = sorted(chosen["cluster"], key=_bo_rule_key)[:1]
             for sc in exceptional:
                 if sc is not chosen:
                     dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Exceptional_DC_Deferred_Lower_Priority"} for c in sc["cluster"]]
             for sc in standard:
                 dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Standard_Cluster_Deferred_Exceptional_DC_Prioritized"} for c in sc["cluster"]]
 
-            # Sheet 10 Step 3's "defined maximum operational cap" -- _bo_rule_key already
-            # sorted tier-first (then recency, then nearest-distance), so chosen_bo_rule_
-            # order (computed in the selection loop above) already kept exactly the
-            # highest-tier/most-urgent/closest BOs; record what the cap dropped.
+            # Every DC in the chosen cluster EXCEPT the single one kept is dropped --
+            # not a task-cap trim (task_cap no longer applies to this path at all, since
+            # exactly 1 DC is kept regardless of task_cap's value).
             full_bo_rule_order = sorted(chosen["cluster"], key=_bo_rule_key)
-            if len(full_bo_rule_order) > task_cap:
-                dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Exceptional_DC_Daily_Task_Cap"} for c in full_bo_rule_order[task_cap:]]
+            if len(full_bo_rule_order) > 1:
+                dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Exceptional_DC_Single_DC_Fallback"} for c in full_bo_rule_order[1:]]
+            # full_cluster_metrics captured BEFORE recomputing for just the kept DC --
+            # caught live: an earlier version of this reason text reused the post-trim
+            # single-DC `metrics` while still labeling it "for the FULL cluster", which
+            # is exactly backwards (the single DC's own round trip is almost always
+            # smaller than the full cluster's).
+            full_cluster_metrics = chosen["metrics"]
             metrics = _route_metrics(chosen_bo_rule_order, origin, avg_speed_kmph)
-            exceeds = metrics["total_distance_km"] > PLAN_B_MAX_DAILY_DISTANCE_KM or metrics["total_travel_min"] > PLAN_B_MAX_DAILY_TRAVEL_MINUTES
+            single_dc_still_exceeds = metrics["total_distance_km"] > PLAN_B_MAX_DAILY_DISTANCE_KM or metrics["total_travel_min"] > PLAN_B_MAX_DAILY_TRAVEL_MINUTES
             return {
                 "stops": metrics["stops"], "dropped": dropped,
                 "total_distance_km": metrics["total_distance_km"], "total_travel_min": metrics["total_travel_min"],
                 "total_visit_min": metrics["total_visit_min"], "priority_score_captured": metrics["priority_score_captured"],
-                "feasible": True,  # BO Rule routes are never infeasible by design (Sheet 10) -- the ceiling is informational only here
+                # Single-DC fallback is never infeasible by design when the DC's own
+                # round trip stays within the ceiling; True even if it doesn't --
+                # visiting your single highest-priority DC is still better than
+                # visiting none, but that residual case is worth an honest flag.
+                "feasible": True,
                 "infeasibility_reason": (
-                    f"Exceptional_DC_BO_Rule: this cluster's own travel ({metrics['total_distance_km']}km/{metrics['total_travel_min']}min) "
-                    f"exceeds the standard 80km/180min ceiling -- sequenced by strict BO-tier priority (BO Rule, Beat Planning Sheet 10) "
-                    f"instead of Score-per-km efficiency; ceiling shown for visibility only, not enforced" if exceeds else ""
+                    f"Exceptional_DC_Single_DC_Fallback: this cluster's own travel ({full_cluster_metrics['total_distance_km']}km/"
+                    f"{full_cluster_metrics['total_travel_min']}min for the FULL cluster) exceeds the {PLAN_B_MAX_DAILY_DISTANCE_KM:.0f}km/"
+                    f"{PLAN_B_MAX_DAILY_TRAVEL_MINUTES:.0f}min ceiling -- only the single highest-priority DC in it is kept "
+                    f"(its own round trip: {metrics['total_distance_km']}km/{metrics['total_travel_min']}min)"
+                    + (", which still exceeds the ceiling on its own" if single_dc_still_exceeds else "")
                 ),
                 "clusters_evaluated": len(scored_clusters),
                 "is_exceptional_dc": True,
