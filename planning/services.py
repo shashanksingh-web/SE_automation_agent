@@ -517,69 +517,53 @@ def _sql_od_aging(ledger_partner_ids: List[str]) -> str:
     # partner_id (the Locus-internal ID, i.e. _sql_od_bridge's ledger_partner_id), NOT
     # sap_partner_id directly -- caller bridges the two in Python (see the composite-
     # scoring wiring below). Field names confirmed live against information_schema.
-    # columns this round (partner_id, type, amount, active, visible, overdue_date all
-    # real columns) -- overdue_date specifically, NOT to_date (a real but different
-    # column on this same table that silently returns zero aged debt for every DC if
-    # used by mistake -- caught live before wiring this in).
+    # columns this round (partner_id, type, amount, active, visible, overdue_date,
+    # is_paid all real columns) -- overdue_date specifically, NOT to_date (a real but
+    # different column on this same table that silently returns zero aged debt for
+    # every DC if used by mistake -- caught live before wiring this in).
     #
-    # Returns GROSS bucketed invoice amounts (incl. aged_0_90) plus the separately
-    # netted lifetime total -- caller (_fifo_net_aging) allocates net_payment_incl_credits
-    # against these buckets oldest-first to get the actually-still-owed amount per
-    # bucket. Fixed 2026-09-07 (business-confirmed) after live sampling showed every
-    # one of 181 real DCs scoring od_score=0.0 (Worst): summing GROSS aged-90+ invoice
-    # volume against NET overall_outstanding meant any DC with real trading history had
-    # od_90plus >>> overall_outstanding (confirmed case: partner 378988, aged-90+
-    # invoiced ~Rs3.64cr vs. net outstanding today just Rs67,093 -- most of that old
-    # invoicing had long since been paid off, but the un-netted bucket sum couldn't see
-    # that). Netting the buckets themselves (not just the total) fixes this.
+    # REWRITTEN 2026-09-07 -- the original approach (still visible in git history)
+    # summed GROSS aged-invoice buckets, then FIFO-netted a DC's lifetime Payment/
+    # credit_note total against those buckets oldest-first (standard AR-aging
+    # convention). Caught live on a real, verified case (ledger_partner_id 1362680/
+    # sap_partner_id 1000020693): FIFO netting scored this DC od_90plus=0 (OD_Score=1.0,
+    # "Strong") because its lifetime payments summed close to its lifetime invoicing --
+    # but its own per-invoice is_paid flag shows real invoices sitting UNPAID in the
+    # 90-120/120-180/180-365-day buckets (Rs4,55,832 total 90+, verified: SUM(amount)
+    # split by is_paid true/false reconciles to the penny with total invoiced,
+    # 96,06,279.61 + 6,60,885.22 = 1,02,67,164.83) while various NEWER invoices got paid
+    # instead. FIFO's oldest-first assumption is simply wrong for how this real customer
+    # pays -- netting aggregates can't see which SPECIFIC invoices are unpaid, only
+    # whether the totals happen to balance.
+    #
+    # Fixed by reading is_paid directly, per invoice, instead of any aggregate-vs-
+    # aggregate netting -- no Payment/credit_note query needed anymore at all.
+    # outstanding_amount/paid_amount (would have been the ideal per-invoice remaining-
+    # balance columns, avoiding even the "unpaid = full amount, no partial-payment
+    # visibility" caveat below) are confirmed DEAD on this table -- read exactly 0.00 on
+    # every single row regardless of is_paid, including invoices flagged unpaid with a
+    # real amount -- so is_paid is the most granular reliable signal actually available
+    # here. Caveat: a genuinely PARTIALLY paid invoice still reads is_paid=false and
+    # counts its FULL amount as unpaid (no way to see the partial-payment remainder
+    # specifically, since the columns that would show it are the broken ones) -- an
+    # overstatement risk in that case, but far smaller and more defensible than FIFO's
+    # proven understatement.
+    #
+    # Conditional SUM (not a WHERE is_paid='false' filter) so a DC with real invoice
+    # history that's ALL paid off still returns a row (correctly all-zero buckets, a
+    # genuine Strong/1.0) -- distinct from a DC with NO invoice rows at all, which
+    # returns no row here and stays a real missing-component None downstream, never
+    # silently upgraded to "Strong" for having nothing to check.
     return f"""
-    WITH aging AS (
-      SELECT partner_id,
-        SUM(CASE WHEN CURRENT_DATE - overdue_date < 90 THEN amount ELSE 0 END) AS aged_0_90,
-        SUM(CASE WHEN CURRENT_DATE - overdue_date BETWEEN 90 AND 119 THEN amount ELSE 0 END) AS aged_90_120,
-        SUM(CASE WHEN CURRENT_DATE - overdue_date BETWEEN 120 AND 179 THEN amount ELSE 0 END) AS aged_120_180,
-        SUM(CASE WHEN CURRENT_DATE - overdue_date BETWEEN 180 AND 364 THEN amount ELSE 0 END) AS aged_180_365,
-        SUM(CASE WHEN CURRENT_DATE - overdue_date >= 365 THEN amount ELSE 0 END) AS aged_before_365,
-        SUM(amount) AS amount_invoiced_till_date
-      FROM ledger_ledgerentry
-      WHERE type ILIKE 'Invoice' AND active = 'true'
-        AND partner_id IN ({_sql_list(ledger_partner_ids)})
-      GROUP BY partner_id
-    ),
-    netting AS (
-      SELECT partner_id, SUM(amount) AS net_payment_incl_credits
-      FROM ledger_ledgerentry
-      WHERE (type ILIKE 'Payment' OR type ILIKE 'credit_note') AND visible = 'true'
-        AND partner_id IN ({_sql_list(ledger_partner_ids)})
-      GROUP BY partner_id
-    )
-    SELECT a.partner_id,
-           a.aged_0_90, a.aged_90_120, a.aged_120_180, a.aged_180_365, a.aged_before_365,
-           a.amount_invoiced_till_date,
-           COALESCE(n.net_payment_incl_credits, 0) AS net_payment_incl_credits
-    FROM aging a
-    LEFT JOIN netting n ON n.partner_id = a.partner_id
+    SELECT partner_id,
+      SUM(CASE WHEN is_paid = 'false' AND CURRENT_DATE - overdue_date < 90 THEN amount ELSE 0 END) AS aged_0_90,
+      SUM(CASE WHEN is_paid = 'false' AND CURRENT_DATE - overdue_date >= 90 THEN amount ELSE 0 END) AS aged_90_plus,
+      SUM(CASE WHEN is_paid = 'false' THEN amount ELSE 0 END) AS overall_outstanding
+    FROM ledger_ledgerentry
+    WHERE type ILIKE 'Invoice' AND active = 'true'
+      AND partner_id IN ({_sql_list(ledger_partner_ids)})
+    GROUP BY partner_id
     """
-
-
-def _fifo_net_aging(row: Dict[str, object]) -> Dict[str, float]:
-    """Allocate a DC's lifetime net payments against its aged invoice buckets,
-    oldest-first (standard AR-aging convention: a customer's payments are assumed to
-    clear their oldest outstanding invoices before their newest). Returns the
-    still-owed amount per bucket after that allocation, so od_90plus reflects real
-    current overdue exposure rather than gross invoiced-ever volume.
-    """
-    buckets = ["aged_before_365", "aged_180_365", "aged_120_180", "aged_90_120", "aged_0_90"]
-    payment = float(row.get("net_payment_incl_credits") or 0.0)
-    remaining: Dict[str, float] = {}
-    for b in buckets:
-        gross = float(row.get(b) or 0.0)
-        applied = min(payment, gross) if gross > 0 else 0.0
-        remaining[b] = max(0.0, gross - applied)
-        payment = max(0.0, payment - applied)
-    od_90plus = remaining["aged_before_365"] + remaining["aged_180_365"] + remaining["aged_120_180"] + remaining["aged_90_120"]
-    overall_outstanding = od_90plus + remaining["aged_0_90"]
-    return {"od_90plus": od_90plus, "overall_outstanding": overall_outstanding}
 
 
 def _sql_credit_payments(ledger_partner_ids: List[str]) -> str:
@@ -1779,28 +1763,25 @@ def generate_plan_for_scope(
                     for row in client.execute_sql(agent.LOCUS_DB_ID, _sql_od_aging(list(ledger_partner_id_by_dc.values()))):
                         ledger_pid = row.get("partner_id")
                         if ledger_pid:
-                            parsed = {
-                                "aged_0_90": agent.parse_number(row.get("aged_0_90")) or 0.0,
-                                "aged_90_120": agent.parse_number(row.get("aged_90_120")) or 0.0,
-                                "aged_120_180": agent.parse_number(row.get("aged_120_180")) or 0.0,
-                                "aged_180_365": agent.parse_number(row.get("aged_180_365")) or 0.0,
-                                "aged_before_365": agent.parse_number(row.get("aged_before_365")) or 0.0,
-                                "net_payment_incl_credits": agent.parse_number(row.get("net_payment_incl_credits")) or 0.0,
+                            aging_by_ledger_pid[ledger_pid] = {
+                                "od_90plus": agent.parse_number(row.get("aged_90_plus")) or 0.0,
+                                "overall_outstanding": agent.parse_number(row.get("overall_outstanding")) or 0.0,
                             }
-                            aging_by_ledger_pid[ledger_pid] = _fifo_net_aging(parsed)
                     for dc_id, ledger_pid in ledger_partner_id_by_dc.items():
                         aging = aging_by_ledger_pid.get(ledger_pid)
                         if not aging:
                             continue
                         od_90plus = aging["od_90plus"]
                         overall_outstanding = aging["overall_outstanding"]
-                        # Business-confirmed CASE logic -- clean case (nothing aged 90+)
-                        # is a perfect 1 regardless of total size; stale-bad-debt case
-                        # (aged debt exists but current outstanding is 0/negative, e.g.
-                        # already written off) floors to 0 rather than a nonsensical
-                        # ratio; otherwise clamp 1-od_pct to [0,1] (a real live case,
-                        # partner 378988/sap_partner_id 1000015534, hits od_pct=542
-                        # without this clamp).
+                        # od_90plus<=0 (no unpaid invoice aged 90+) is a perfect 1
+                        # regardless of total unpaid size. The elif below is now
+                        # effectively unreachable given _sql_od_aging's own formula
+                        # (overall_outstanding = od_90plus + aged_0_90, both non-negative
+                        # sums, so overall_outstanding can never be < a positive
+                        # od_90plus) -- kept as a defensive guard against a genuinely
+                        # negative amount slipping through, not a real business case
+                        # anymore (it WAS reachable under the old FIFO-netted formula,
+                        # replaced 2026-09-07 -- see _sql_od_aging's docstring).
                         if od_90plus <= 0:
                             od_score_by_dc[dc_id] = 1.0
                         elif not overall_outstanding or overall_outstanding <= 0:
