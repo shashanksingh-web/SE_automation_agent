@@ -2483,7 +2483,14 @@ def score_bo1_private_label(
         return {"score_pct": None, "grade": None, "reason": "PL_Expected undefined -- Config_Ambiguous"}
     weight_multiplier = max(0.7, min(1.3, weight_multiplier))
     yoy_growth_multiplier = max(0.9, min(1.1, yoy_growth_multiplier))
-    pct = (pl_value / pl_expected) * weight_multiplier * yoy_growth_multiplier
+    raw_pct = (pl_value / pl_expected) * weight_multiplier * yoy_growth_multiplier
+    # Capped at 100% (added 2026-09-07, explicit user request) -- a DC selling well
+    # past its expected PL baseline still just reads as a perfect score, not an
+    # unbounded number. Matters beyond display: an uncapped pct > 1.0 fed a NEGATIVE
+    # gap into _objective_gap (1 - pct), which could distort Priority_Score's weighted
+    # sum for that objective -- Outstanding's own formula was already implicitly capped
+    # via its own min(1.0, ...) health_pct clamp, PL's was the one genuinely uncapped.
+    pct = min(raw_pct, 1.0)
     grade = "A" if pct >= c.bo1_grade_a else "B" if pct >= c.bo1_grade_b else "C" if pct >= c.bo1_grade_c else "D"
     reason = f"PL at {pct:.0%} of trailing baseline" if pct >= 0 else f"net PL negative this window ({pct:.0%} of baseline -- returns exceeding new PL billing)"
     if weight_multiplier != 1.0:
