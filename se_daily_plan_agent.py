@@ -1282,12 +1282,17 @@ def load_dc_master(path: Path = DC_MASTER_CSV) -> Tuple[Table, Exceptions]:
                     "PL_Percent": parse_number(row.get("PL%")),
                     "Avg_Repayment_Days": parse_number(row.get("Avg Repayment days")),
                     "Credit_Score": parse_number(row.get("Credit Score")),
-                    # Source 3k (DC Composite Health Score, added 2026-09-06) -- GM_Score
-                    # and GM%_Score are read directly from this file's own precomputed
+                    # GM_Score_File/GM_Percent_Score_File -- this file's own precomputed
                     # columns (confirmed file-based source, R^2 0.998+ against the
-                    # business's own formula) rather than recomputed here -- this file
-                    # IS PDC_Selection_RANK_Working.csv byte-for-byte (confirmed live,
-                    # zero differing rows across all 10,195 shared Partner Ids).
+                    # business's own formula; this file IS PDC_Selection_RANK_Working.csv
+                    # byte-for-byte, confirmed live, zero differing rows across all
+                    # 10,195 shared Partner Ids). Kept loaded for reference/cross-check,
+                    # but no longer what Source 3k's Health Score actually uses for its
+                    # GM/GM% components as of 2026-09-07 (explicit user request) --
+                    # planning/services.py's generate_plan_for_scope now computes those
+                    # live as this DC's own GM_FY2526/GM% (still from this same sheet)
+                    # peer-relative to its block-then-node group, see
+                    # gm_score_by_dc/gm_pct_score_by_dc and _peer_relative_score there.
                     "GM_Score_File": parse_number(row.get("GM Score")),
                     "GM_Percent_Score_File": parse_number(row.get("GM% Score")),
                     "In_Scope_Flag": None,  # resolved in apply_dc_exclusion_rules() once Source 4 status is known

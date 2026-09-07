@@ -349,6 +349,72 @@ def _sql_nrv_network_max(plan_date: str) -> str:
     """
 
 
+def _peer_group_indices(geo_mapping: List[Dict[str, Any]]) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, List[str]], Dict[str, List[str]]]:
+    """Peer benchmarking (2026-09-07, explicit user request) -- block, then node
+    fallback, reusing the exact same peer-grouping shape the Pitching Agent's S1
+    PL_Recommendation already established further down in generate_plan_for_scope (see
+    its own block_by_dc/node_by_dc/peer_dc_ids/node_peer_dc_ids). geo_mapping is the
+    full, unscoped Source 1c table -- every DC appears in its own block/node group
+    (including itself), so a DC's own value is always one of the candidates its
+    peer-max is taken over, keeping the resulting ratio naturally in [0,1]."""
+    block_by_dc: Dict[str, str] = {}
+    node_by_dc: Dict[str, str] = {}
+    dc_ids_by_block: Dict[str, List[str]] = {}
+    dc_ids_by_node: Dict[str, List[str]] = {}
+    for row in geo_mapping:
+        dc_id = row.get("dc_id")
+        if not dc_id:
+            continue
+        block, node = row.get("block"), row.get("node")
+        if block:
+            block_by_dc[dc_id] = block
+            dc_ids_by_block.setdefault(block, []).append(dc_id)
+        if node:
+            node_by_dc[dc_id] = node
+            dc_ids_by_node.setdefault(node, []).append(dc_id)
+    return block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node
+
+
+def _peer_group_for(
+    dc_id: str, block_by_dc: Dict[str, str], node_by_dc: Dict[str, str],
+    dc_ids_by_block: Dict[str, List[str]], dc_ids_by_node: Dict[str, List[str]],
+) -> List[str]:
+    """Block first; node fallback only when the block has no other DC in it at all (a
+    real, common gap for small/single-DC blocks -- same fallback trigger reasoning as
+    Pitching Agent's own S1 peer logic: block is more locally relevant when it has
+    data, node is only used when block yields nothing)."""
+    block = block_by_dc.get(dc_id)
+    if block:
+        peers = dc_ids_by_block.get(block, [])
+        if len(peers) > 1:
+            return peers
+    node = node_by_dc.get(dc_id)
+    return dc_ids_by_node.get(node, []) if node else []
+
+
+def _peer_relative_score(
+    dc_id: str, raw_value_by_dc: Dict[str, Optional[float]],
+    block_by_dc: Dict[str, str], node_by_dc: Dict[str, str],
+    dc_ids_by_block: Dict[str, List[str]], dc_ids_by_node: Dict[str, List[str]],
+    fallback_max: Optional[float] = None,
+) -> Optional[float]:
+    """own-value / MAX(peer-group's own values), clamped [0,1]. fallback_max (e.g. the
+    old network-wide max) is used only when this DC has no peer group at all, or every
+    peer (including itself) has no value in raw_value_by_dc -- never silently drops to
+    a guessed number; returns None (missing-component rule) if even that fails."""
+    own = raw_value_by_dc.get(dc_id)
+    if own is None:
+        return None
+    peers = _peer_group_for(dc_id, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node)
+    peer_values = [raw_value_by_dc[p] for p in peers if raw_value_by_dc.get(p) is not None]
+    peer_max = max(peer_values) if peer_values else None
+    if not peer_max:
+        peer_max = fallback_max
+    if not peer_max or peer_max <= 0:
+        return None
+    return max(0.0, min(1.0, own / peer_max))
+
+
 def _sql_pl_contribution(dc_ids: List[str], plan_date: str) -> str:
     # PL_Contribution input: PL% = SUM(price*qty WHERE PRIVATE LABEL) / SUM(price*qty),
     # trailing 365 days -- same confirmed join chain as _sql_pl_metrics above, but a
@@ -1522,6 +1588,38 @@ def generate_plan_for_scope(
         pathik_overdue_by_dc: Dict[str, float] = {}
         nrv_raw_by_dc: Dict[str, float] = {}
 
+        # Peer benchmarking for NRV/GM/GM% (2026-09-07, explicit user request) -- block,
+        # then node fallback (_peer_group_indices/_peer_group_for/_peer_relative_score
+        # above). geo_mapping is the same full, unscoped Source 1c table the Pitching
+        # Agent's own S1 peer logic uses further down in this function -- routed through
+        # geo_mapping_cache so this is the SAME single live pull, not a duplicate.
+        block_by_dc: Dict[str, str] = {}
+        node_by_dc: Dict[str, str] = {}
+        dc_ids_by_block: Dict[str, List[str]] = {}
+        dc_ids_by_node: Dict[str, List[str]] = {}
+        gm_score_by_dc: Dict[str, float] = {}
+        gm_pct_score_by_dc: Dict[str, float] = {}
+        if health_eligible_dc_ids:
+            try:
+                geo_mapping = _resolve_geo_mapping(client, geo_mapping_cache)
+                block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node = _peer_group_indices(geo_mapping)
+                # GM/GM% peer-relative scores computed entirely from DC_RAnk.csv's own
+                # raw GM_FY2526/GM% columns (explicit user request, "use the rank
+                # working sheet only for this") -- no live query, dc_master is already
+                # the full, network-wide load (not scope-filtered like scoped_dcs), so
+                # a DC's peers outside today's scope are still available for the max.
+                gm_raw_by_dc = {d["DC_ID"]: d.get("GM_FY2526") for d in dc_master}
+                gm_pct_raw_by_dc = {d["DC_ID"]: d.get("GM_Percent") for d in dc_master}
+                for dc_id in health_eligible_dc_ids:
+                    gm_v = _peer_relative_score(dc_id, gm_raw_by_dc, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node)
+                    if gm_v is not None:
+                        gm_score_by_dc[dc_id] = gm_v
+                    gm_pct_v = _peer_relative_score(dc_id, gm_pct_raw_by_dc, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node)
+                    if gm_pct_v is not None:
+                        gm_pct_score_by_dc[dc_id] = gm_pct_v
+            except Exception as e:
+                run_exceptions.append({"source": "input_partner_details", "reason_code": "Live_Pull_Failed", "detail": f"Health Score GM/GM% peer benchmarking: {type(e).__name__}: {e}"})
+
         # GR-28 (DECOUPLED 2026-09-06, explicit user request): the Guardrails sheet's own
         # text is an unqualified "ANY DC with overdue > 0" -- no 60-day-recent-sale
         # precondition. Scoped to active_dc_ids (still requires active=TRUE, the one
@@ -1549,15 +1647,32 @@ def generate_plan_for_scope(
             # this round: b2b_sales_return can't be joined to sale_orderrequest in one
             # query the way _sql_return_score originally assumed).
             try:
+                # NRV_Score, CHANGED 2026-09-07 (explicit user request, "replace with
+                # peer-relative") -- was this DC's nrv_12m / the single network-wide
+                # MAX; now this DC's nrv_12m / MAX(nrv_12m among its own block-then-node
+                # peer group, see _peer_group_indices above). network_max_nrv is kept
+                # only as the final fallback for a DC with no peer group at all (never
+                # silently dropped, just no longer the primary denominator for anyone
+                # who has real peers). Needs nrv_12m for the PEERS too, not just
+                # health_eligible_dc_ids, so the pull is widened before querying.
+                peer_dc_ids: set = set()
+                for dc_id in health_eligible_dc_ids:
+                    peer_dc_ids.update(_peer_group_for(dc_id, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node))
+                nrv_pull_dc_ids = sorted(set(health_eligible_dc_ids) | peer_dc_ids)
                 max_row = next(iter(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_nrv_network_max(plan_date))), None)
                 network_max_nrv = agent.parse_number(max_row.get("network_max_nrv")) if max_row else None
-                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_nrv_score(health_eligible_dc_ids, plan_date)):
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_nrv_score(nrv_pull_dc_ids, plan_date)):
                     dc_id = agent.normalize_id(row.get("dc_id"))
                     v = agent.parse_number(row.get("nrv_12m"))
                     if dc_id and v is not None:
                         nrv_raw_by_dc[dc_id] = v
-                if network_max_nrv:
-                    nrv_by_dc = {dc_id: min(v / network_max_nrv, 1.0) for dc_id, v in nrv_raw_by_dc.items()}
+                for dc_id in health_eligible_dc_ids:
+                    v = _peer_relative_score(
+                        dc_id, nrv_raw_by_dc, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node,
+                        fallback_max=network_max_nrv,
+                    )
+                    if v is not None:
+                        nrv_by_dc[dc_id] = v
             except Exception as e:
                 run_exceptions.append({"source": "sale_orderrequest", "reason_code": "Live_Pull_Failed", "detail": f"Health Score NRV: {type(e).__name__}: {e}"})
 
@@ -1686,8 +1801,16 @@ def generate_plan_for_scope(
                 # are NOT run through the normal formula -- flagged for manual review
                 # instead, rather than producing a score that breaks the 0-1 convention.
                 negative_gm_flag = (gm_fy_value is not None and gm_fy_value < 0) or (gm_pct is not None and gm_pct < 0)
-                gm_score = None if negative_gm_flag else dc.get("GM_Score_File")
-                gm_pct_score = None if negative_gm_flag else dc.get("GM_Percent_Score_File")
+                # GM/GM% peer-relative scores, CHANGED 2026-09-07 (explicit user
+                # request, "replace with peer-relative", "use the rank working sheet
+                # only for this") -- was DC_RAnk.csv's own precomputed GM Score/GM%
+                # Score columns (an external, business-computed methodology this
+                # codebase had no visibility into); now this DC's own GM_FY2526/GM%
+                # (still from that same Rank Working sheet, no new query) divided by
+                # its block-then-node peer group's max, see gm_score_by_dc/
+                # gm_pct_score_by_dc above.
+                gm_score = None if negative_gm_flag else gm_score_by_dc.get(dc_id)
+                gm_pct_score = None if negative_gm_flag else gm_pct_score_by_dc.get(dc_id)
                 result = agent.compute_dc_health_score(
                     nrv_by_dc.get(dc_id), gm_score, gm_pct_score,
                     pl_contribution_by_dc.get(dc_id), return_score_by_dc.get(dc_id),
