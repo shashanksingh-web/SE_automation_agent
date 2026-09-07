@@ -4714,6 +4714,10 @@ def generate_se_daily_plan(
         # Confirmed 2026-08-18 -- cross-cutting "cover this one first" signal, computed
         # from data already gathered above (no new query): chronic miss escalation,
         # 90+ day aged overdue, or credit-on-hold. See DailyTaskRow.Critical docstring.
+        # Broken-promise REMOVED 2026-09-07, explicit user request -- a broken promise is
+        # still visible via its own Promise_To_Pay_Date/Amount/Status fields (and still
+        # force-qualifies Outstanding via _qualify_outstanding), just no longer flagged
+        # in this cross-cutting Critical banner.
         misses = consecutive_misses_by_dc.get(dc_id, 0)
         critical_reasons = []
         if misses >= DC_VISIT_ESCALATION_THRESHOLD:
@@ -4733,10 +4737,6 @@ def generate_se_daily_plan(
             critical_reasons.append("Credit on hold")
         promise_status = _promise_status(dc_id)
         promise = promise_by_dc.get(dc_id) or {}
-        if promise_status == "Broken":
-            critical_reasons.append(
-                f"Broke promise to pay ₹{promise.get('Promise_Amount') or 0:,.0f} by {promise.get('Promise_Date')}"
-            )
 
         # Source 3k -- Health-Focus purposes bundle in alongside any BO-matched ones
         # (8.12), never replace them -- see generate_se_daily_plan's pool-merge for why
