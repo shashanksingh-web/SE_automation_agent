@@ -105,6 +105,54 @@ def _tp_ytd_pl(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return f"इस साल का आपका प्राइवेट लेबल सेल अभी तक ₹{val:,.0f} हुआ है।", "S8"
 
 
+def _tp_club_standing(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """DC Club/Scheme motivation, added 2026-09-07 (explicit user request, "add the dc
+    club motivation part and status"). Not one of pitch_config's own S1-S8 Applicable
+    Sources for the Sale purpose (that column -- DC Visit Pitch Scripts.csv -- lists only
+    S1/S2a/S2b/S3/S4/S7/S8), but the same CSV's "Dehaat Center Ko Jaano (Heading)" column
+    for Sale explicitly says "Who: Business Area Strength + Turnover + Scheme Tier" --
+    Scheme Tier IS part of the confirmed spec for this purpose, it was just documented as
+    belonging to the DC Card shown before the pitch (planning.dc_card._scheme_standing),
+    never surfaced inside the pitch script's own Ask/Tell/Wish text. Added here as a
+    motivational hook the SE can use directly in the Sale conversation, not a duplicate
+    of the DC Card -- phrased as "what you get" rather than the DC Card's plainer status
+    statement. Same club dict, same normalize_dc_club() cases as dc_card.py's own
+    _scheme_standing (shared extra_data_by_dc context) -- not applied to Promise To Pay /
+    Collection, whose own CSV row cites only Repayment Cycle, no Scheme Tier mention."""
+    club = ctx.get("club")
+    if not club:
+        return None
+    if not club.get("Is_Club_Enrolled"):
+        return "अभी क्लब स्कीम में एनरोल्ड नहीं हैं -- एनरोल होते ही टर्नओवर के हिसाब से TOD और रिवॉर्ड्स मिलने शुरू हो जाएंगे।", "Club"
+    tier = club.get("Club_Tier")
+    if tier:
+        bits = [f"अभी {tier} टियर में हैं"]
+        if club.get("TOD_Percent") is not None:
+            bits.append(f"{club['TOD_Percent']:.2f}% TOD मिल रहा है")
+        if club.get("Reward"):
+            bits.append(f"रिवॉर्ड: {club['Reward']}")
+        return ", ".join(bits) + "।", "Club"
+    if club.get("Outstanding_Cleared") is False:
+        eligible = club.get("Eligible_Tier_If_Outstanding_Cleared")
+        if eligible:
+            benefit_bits = []
+            if club.get("Eligible_Tier_TOD_Percent_If_Cleared") is not None:
+                benefit_bits.append(f"{club['Eligible_Tier_TOD_Percent_If_Cleared']:.2f}% TOD")
+            if club.get("Eligible_Tier_Reward_If_Cleared"):
+                benefit_bits.append(club["Eligible_Tier_Reward_If_Cleared"])
+            benefit_note = f" ({', '.join(benefit_bits)})" if benefit_bits else ""
+            return (
+                f"अभी क्लब स्कीम में कोई टियर नहीं है (आउटस्टैंडिंग क्लियर नहीं है) -- "
+                f"आउटस्टैंडिंग क्लियर होते ही {eligible} टियर मिल जाएगा{benefit_note} -- आज इसी बात पर ऑर्डर/पेमेंट पुश करें।",
+                "Club",
+            )
+        return "अभी क्लब स्कीम में कोई टियर नहीं है (आउटस्टैंडिंग क्लियर नहीं है)।", "Club"
+    turnover = club.get("Qualifying_Turnover")
+    if turnover is not None:
+        return f"अभी क्लब स्कीम में कोई टियर नहीं है (टर्नओवर ₹{turnover:,.0f} एंट्री थ्रेशोल्ड से कम है) -- आज का ऑर्डर टियर के करीब ले जाएगा।", "Club"
+    return "अभी क्लब स्कीम में कोई टियर नहीं है (इस स्कीम वर्ष में कोई क्वालिफाइंग टर्नओवर दर्ज नहीं है)।", "Club"
+
+
 def _tp_historical_purchase(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     py, ytd = ctx.get("purchase_last_fy"), ctx.get("purchase_ytd")
     parts = []
@@ -144,11 +192,15 @@ def _tp_suggested_discount(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 def _format_product_list(products: List[Dict[str, Any]]) -> str:
     """Renders recommended_products (planning.services' _peer_stats/
-    _attach_nearby_product_recommendations, 0-5 items, highest value first) as
-    'NAME (Brand: X, Sub-category: Y) (₹V), NAME2 (...), ...'. Shared by pitching.py's
-    S1 and dc_card.py's PL_Recommendation so a product's phrasing can't drift between
-    them. Replaces the old singular _product_enrichment_note(ctx, prefix) now that a DC
-    can have up to 5 recommended products, not 1 -- widened 2026-08-18."""
+    _attach_nearby_product_recommendations, 0-5 items, highest value first) as one
+    "- "-prefixed line per product, newline-joined -- CHANGED 2026-09-07 (explicit user
+    request, "these thing also in pointer"): was one comma-joined clause ('NAME (Brand:
+    X, Sub-category: Y) (₹V), NAME2 (...), ...') that read as a single dense run-on
+    sentence with up to 5 real products in it, same class of issue as the multi-
+    talking-point [बताना] join fixed earlier the same day (see _tell_lines). Callers
+    (_tp_block_comparison) embed this multi-line result inside their own sentence text;
+    _tell_lines splits on "\\n" before deciding how to bullet the overall Tell block, so
+    each product surfaces as its own bullet rather than one clause of a longer one."""
     parts = []
     for p in products:
         bits = []
@@ -160,8 +212,8 @@ def _format_product_list(products: List[Dict[str, Any]]) -> str:
             bits.append(f"Segment: {p['business_segment']}")
         enrichment = f" ({', '.join(bits)})" if bits else ""
         value_note = f" (₹{p['value']:,.0f})" if p.get("value") else ""
-        parts.append(f"{p['name']}{enrichment}{value_note}")
-    return ", ".join(parts)
+        parts.append(f"- {p['name']}{enrichment}{value_note}")
+    return "\n".join(parts)
 
 
 def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
@@ -184,7 +236,8 @@ def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
             dc_amt = ctx.get("dc_category_purchase") or 0
             return (
                 f"आपके {scope_label} में बाकी दुकानदारों ने इस महीने {category} में औसतन ₹{block_avg:,.0f} का बिज़नेस किया है -- "
-                f"सबसे ज़्यादा बिकने वाले प्रोडक्ट्स: {_format_product_list(products)} ({scope_label} में), "
+                f"सबसे ज़्यादा बिकने वाले प्रोडक्ट्स ({scope_label} में):\n"
+                f"{_format_product_list(products)}\n"
                 f"आपकी तरफ से अभी तक ₹{dc_amt:,.0f} हुआ है।",
                 "S1",
             )
@@ -193,8 +246,8 @@ def _tp_block_comparison(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         # peer data), so this widened outward rather than showing nothing.
         basis_label = "आसपास के (200km के अंदर) DCs" if scope == "nearby_radius" else "आसपास के नज़दीकी Nodes"
         return (
-            f"इस DC/ब्लॉक/नोड में इस महीने कोई खरीद डेटा नहीं है -- {basis_label} में लोकप्रिय प्रोडक्ट्स के आधार पर सुझाव: "
-            f"{_format_product_list(products)}।",
+            f"इस DC/ब्लॉक/नोड में इस महीने कोई खरीद डेटा नहीं है -- {basis_label} में लोकप्रिय प्रोडक्ट्स के आधार पर सुझाव:\n"
+            f"{_format_product_list(products)}",
             "S1",
         )
     if not block_avg or not category:
@@ -219,7 +272,20 @@ _TALKING_POINTS = {
     "S6": _tp_historical_purchase,
     "S7": _tp_historical_purchase,
     "S8": _tp_ytd_pl,
+    # "Club" is NOT one of pitch_config's own S1-S8 sources (no CSV Applicable-Sources
+    # entry) -- added 2026-09-07, see _tp_club_standing's own docstring for why it's
+    # still wired in for Sale specifically. Registered here so it's reachable via the
+    # same sentence_for()/_TALKING_POINTS.get() lookup every other code uses; never
+    # reached through _applicable_sources() (CSV-driven), only appended explicitly by
+    # _compose()/_compose_sale_ptp_combo() for the Sale purpose.
+    "Club": _tp_club_standing,
 }
+
+# Human-readable label for codes with no CSV Applicable-Sources entry (currently just
+# "Club" -- see _TALKING_POINTS's own comment) -- without this, cfg.data_source_labels.
+# get(code, code) falls back to the bare code itself, and Data_Sources_Used would show
+# the redundant "Club Club" instead of a real label.
+_EXTRA_LABELS = {"Club": "DC Club / Scheme Standing"}
 
 
 def _order_for_purposes(purposes: List[str], ctx: Dict[str, Any]) -> List[str]:
@@ -278,16 +344,24 @@ def _tell_lines(sentences: List[str]) -> List[str]:
     [बताना] label (e.g. product recommendation + suggested discount + purchase trend +
     YTD target all mashed together for Sale, or S3/S5/S6 for Collection), hard to scan
     at a glance same as the DC Card's own product-list join fixed earlier. A single
-    sentence still renders inline on the [बताना] line itself (no bullet needed for one
-    point); 2+ sentences get their own "- "-prefixed line each, with [बताना] on its own
+    point still renders inline on the [बताना] line itself (no bullet needed for one
+    point); 2+ points get their own "- "-prefixed line each, with [बताना] on its own
     line above them -- PitchPanel.tsx's parseScript() detects an empty-text label line
     followed by "- "-prefixed lines and renders them as a bullet list, same convention
-    DCCardPanel.tsx's parseSectionItems() already uses for its own bulleted sections."""
-    if not sentences:
+    DCCardPanel.tsx's parseSectionItems() already uses for its own bulleted sections.
+
+    A "point" isn't always one whole sentence from the caller's list -- a single sentence
+    can itself be multi-line (_tp_block_comparison's product recommendation embeds
+    _format_product_list's own "- "-per-product lines, added same day per direct
+    instruction "these thing also in pointer"), so every sentence is split on "\\n" first
+    and each resulting line counted as its own point, rather than nesting a whole
+    product list inside one bullet of the outer list."""
+    points = [line for s in sentences for line in s.split("\n") if line]
+    if not points:
         return []
-    if len(sentences) == 1:
-        return [f"[बताना] {sentences[0]}"]
-    return ["[बताना]"] + [f"- {s}" for s in sentences]
+    if len(points) == 1:
+        return [f"[बताना] {points[0]}"]
+    return ["[बताना]"] + [p if p.startswith("- ") else f"- {p}" for p in points]
 
 
 def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
@@ -305,7 +379,7 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
 
     def sentence_for(code: str) -> Optional[str]:
         builder = _TALKING_POINTS[code]
-        label = cfg.data_source_labels.get(code, code)
+        label = cfg.data_source_labels.get(code) or _EXTRA_LABELS.get(code, code)
         result = builder(ctx)
         if result is None:
             skipped.append(f"{code} {label} (no data available this run)")
@@ -318,7 +392,9 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
     # sheet's own worked-example order (block/peer comparison, suggested discount on
     # that same product, historical purchase trend, then YTD-vs-target). S2b wired
     # 2026-08-24, right after S1 since it's a discount ON the product S1 just named.
-    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S2b", "S3", "S8")) if s]
+    # Club wired 2026-09-07, last -- a motivational closer once the product ask and
+    # numbers are already on the table, not competing with them for attention.
+    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S2b", "S3", "S8", "Club")) if s]
 
     skipped.append("S4 Current Inventory (no DC-level data source exists anywhere in this system)")
 
@@ -372,6 +448,12 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     applicable = _applicable_sources(purposes)
     ordered = _order_for_purposes(purposes, ctx)
     ordered_codes = [c for c in ordered if c in applicable] + [c for c in applicable if c not in ordered]
+    # Club, added 2026-09-07 -- not in pitch_config's own Applicable Sources (`applicable`
+    # above is CSV-driven), so never reachable through the two list comprehensions above;
+    # appended directly, last, only for a standalone Sale purpose (see _tp_club_standing's
+    # docstring for why Sale specifically, not Promise To Pay / Collection).
+    if "Sale" in purposes:
+        ordered_codes = ordered_codes + ["Club"]
 
     cfg = get_pitch_config()
     used, skipped, tell_sentences = [], [], []
@@ -388,7 +470,7 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     seen_labels: Dict[str, str] = {}
     for code in ordered_codes:
         builder = _TALKING_POINTS.get(code)
-        label = cfg.data_source_labels.get(code, code)
+        label = cfg.data_source_labels.get(code) or _EXTRA_LABELS.get(code, code)
         if not builder:
             # An applicable code pitch_config lists but this module has no builder for
             # yet -- recorded as skipped, not silently dropped, so a future pitch_config
