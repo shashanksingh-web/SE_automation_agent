@@ -1551,8 +1551,10 @@ def generate_plan_for_scope(
         # dc_datamart (dev, Redshift) via the same `client` as everything else -- see
         # _sql_outstanding() for why this replaced customer_management_input_outstanding.
         outstanding_raw: agent.Table = []
+        dc_datamart_query_ok = False
         try:
             outstanding_raw = client.execute_sql(agent.REDSHIFT_DB_ID, _sql_outstanding(dc_ids))
+            dc_datamart_query_ok = True
         except Exception as e:
             run_exceptions.append({"source": "dc_datamart", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
@@ -1639,13 +1641,31 @@ def generate_plan_for_scope(
                 # working sheet only for this") -- no live query, dc_master is already
                 # the full, network-wide load (not scope-filtered like scoped_dcs), so
                 # a DC's peers outside today's scope are still available for the max.
+                #
+                # GAP FIXED 2026-09-07 (caught in a self-audit): 6,537 of 19,317 DCs
+                # (34%) have NO block AND no node in geo_mapping at all -- confirmed
+                # live. Without a fallback, every one of those DCs' GM/GM% would
+                # silently read as missing (0%, Worst bucket) purely for lacking a geo
+                # mapping, not because of real margin performance -- the same
+                # network-wide-max fallback NRV already gets below, so the peer-
+                # relative family stays consistent (block -> node -> network), never
+                # reverting to the old file-based score this change was asked to
+                # replace.
                 gm_raw_by_dc = {d["DC_ID"]: d.get("GM_FY2526") for d in dc_master}
                 gm_pct_raw_by_dc = {d["DC_ID"]: d.get("GM_Percent") for d in dc_master}
+                gm_network_max = max((v for v in gm_raw_by_dc.values() if v is not None), default=None)
+                gm_pct_network_max = max((v for v in gm_pct_raw_by_dc.values() if v is not None), default=None)
                 for dc_id in health_eligible_dc_ids:
-                    gm_v = _peer_relative_score(dc_id, gm_raw_by_dc, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node)
+                    gm_v = _peer_relative_score(
+                        dc_id, gm_raw_by_dc, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node,
+                        fallback_max=gm_network_max,
+                    )
                     if gm_v is not None:
                         gm_score_by_dc[dc_id] = gm_v
-                    gm_pct_v = _peer_relative_score(dc_id, gm_pct_raw_by_dc, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node)
+                    gm_pct_v = _peer_relative_score(
+                        dc_id, gm_pct_raw_by_dc, block_by_dc, node_by_dc, dc_ids_by_block, dc_ids_by_node,
+                        fallback_max=gm_pct_network_max,
+                    )
                     if gm_pct_v is not None:
                         gm_pct_score_by_dc[dc_id] = gm_pct_v
             except Exception as e:
@@ -2309,11 +2329,19 @@ def generate_plan_for_scope(
     # (already fetched above, dc_datamart's own is_active column) rather than a fresh
     # query -- same raw rows normalize_sales_transactions() already consumed, just kept
     # here before that function drops the is_active value once it's done filtering.
-    dc_active_by_id: Dict[str, bool] = {}
-    for row in outstanding_raw:
-        row_dc_id = agent.normalize_id(row.get("dc_id"))
-        if row_dc_id:
-            dc_active_by_id[row_dc_id] = str(row.get("is_active")).lower() == "true"
+    #
+    # BUG FIXED 2026-09-07 (caught in a self-audit): None (not {}) when the dc_datamart
+    # QUERY ITSELF failed above -- apply_dc_exclusion_rules() treats None as "skip the
+    # Active check entirely" vs. a real (possibly empty) dict as "enforce it strictly".
+    # Collapsing a query failure into {} would fail-closed EVERY DC network-wide on a
+    # single transient dc_datamart hiccup, not just withhold Outstanding-financial data
+    # the way every other consumer of this same query already degrades.
+    dc_active_by_id: Optional[Dict[str, bool]] = {} if dc_datamart_query_ok else None
+    if dc_active_by_id is not None:
+        for row in outstanding_raw:
+            row_dc_id = agent.normalize_id(row.get("dc_id"))
+            if row_dc_id:
+                dc_active_by_id[row_dc_id] = str(row.get("is_active")).lower() == "true"
     excl_exc = agent.Exceptions(agent.utc_now_iso())
     agent.apply_dc_exclusion_rules(
         scoped_dcs, excl_exc, constants, last_visit_by_dc, plan_date,

@@ -1385,7 +1385,18 @@ def apply_dc_exclusion_rules(
     existing is_active filter inside normalize_sales_transactions, which only ever
     withheld Outstanding-financial data for an inactive DC -- it never excluded the DC
     from selection entirely the way this does."""
+    # BUG FIXED 2026-09-07 (caught in a self-audit, before any real run hit it): the
+    # original version collapsed dc_active_by_id=None (the dc_datamart QUERY ITSELF
+    # failed -- e.g. a transient Redshift timeout) into the exact same {} used for "the
+    # query succeeded but returned zero rows for this DC" -- meaning a single dc_datamart
+    # hiccup would fail-closed EVERY DC network-wide (zero tasks for the whole run),
+    # not just withhold Outstanding-financial data the way every other consumer of this
+    # same query already degrades. None now means "skip this check entirely, same as
+    # before this feature existed" -- fail-closed is reserved for the confirmed-live case
+    # (a DC genuinely absent from a SUCCESSFULLY returned dc_datamart result), not for an
+    # infrastructure failure unrelated to whether the DC is actually active.
     today_dt = datetime.fromisoformat(today)
+    active_check_enabled = dc_active_by_id is not None
     dc_active_by_id = dc_active_by_id or {}
     for dc in dc_master:
         legal_hold = dc.get("DC_Status") == "Legal_Hold"
@@ -1408,20 +1419,31 @@ def apply_dc_exclusion_rules(
             )
         else:
             exc.ok("DC_Not_In_Top_List")
-        is_active = dc_active_by_id.get(dc["DC_ID"])
-        active_eligible = bool(is_active)
-        if top_list_eligible and dc["DC_ID"] not in dc_active_by_id:
-            exc.flag(
-                dc["DC_ID"], "dc_datamart", "DC_Active_Status_Unavailable",
-                "DC has no dc_datamart row at all -- treated as not-active (fail-closed), excluded from DC selection",
-            )
-        elif top_list_eligible and not active_eligible:
-            exc.flag(
-                dc["DC_ID"], "dc_datamart", "DC_Not_Active",
-                "dc_datamart marks this DC is_active=false -- excluded from all agents' DC selection",
-            )
-        elif top_list_eligible:
-            exc.ok("DC_Active_Status")
+        if not active_check_enabled:
+            active_eligible = True
+            if top_list_eligible:
+                exc.flag(
+                    dc["DC_ID"], "dc_datamart", "DC_Active_Status_Query_Failed",
+                    "dc_datamart query itself failed this run -- Active check skipped entirely (not "
+                    "enforced with no data), same degrade-gracefully treatment as every other consumer "
+                    "of this query, NOT fail-closed the way a genuinely-missing row is",
+                )
+        else:
+            is_active = dc_active_by_id.get(dc["DC_ID"])
+            active_eligible = bool(is_active)
+            if top_list_eligible and dc["DC_ID"] not in dc_active_by_id:
+                exc.flag(
+                    dc["DC_ID"], "dc_datamart", "DC_Active_Status_Unavailable",
+                    "DC has no dc_datamart row at all (query succeeded, this DC just isn't in the "
+                    "result) -- treated as not-active (fail-closed), excluded from DC selection",
+                )
+            elif top_list_eligible and not active_eligible:
+                exc.flag(
+                    dc["DC_ID"], "dc_datamart", "DC_Not_Active",
+                    "dc_datamart marks this DC is_active=false -- excluded from all agents' DC selection",
+                )
+            elif top_list_eligible:
+                exc.ok("DC_Active_Status")
         in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and top_list_eligible and active_eligible
         dc["In_Scope_Flag"] = in_scope
         dc["Days_Since_Last_Visit"] = days_since_visit
@@ -5046,11 +5068,22 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
     # normalize_sales_transactions() consumes below for dc_financials), just read here
     # before that function drops the is_active value -- same pattern as the Django
     # command path (planning/services.py's generate_plan_for_scope).
-    dc_active_by_id: Dict[str, bool] = {}
-    for row in live.get("Outstanding_3d", []):
-        row_dc_id = normalize_id(row.get("dc_id"))
-        if row_dc_id:
-            dc_active_by_id[row_dc_id] = str(row.get("is_active")).lower() == "true"
+    #
+    # BUG FIXED 2026-09-07 (caught in a self-audit): None (not {}) when the Outstanding_3d
+    # query itself failed (see load_live_sources' own Live_Pull_Failed flag, checked here
+    # via exc.rows) -- apply_dc_exclusion_rules() treats None as "skip the Active check
+    # entirely" vs. a real (possibly empty) dict as "enforce it strictly". Collapsing a
+    # query failure into {} would fail-closed EVERY DC network-wide on a single transient
+    # dc_datamart hiccup, not just withhold Outstanding-financial data.
+    outstanding_3d_query_ok = not any(
+        r["Record_ID"] == "Outstanding_3d" and r["Reason_Code"] == "Live_Pull_Failed" for r in exc.rows
+    )
+    dc_active_by_id: Optional[Dict[str, bool]] = {} if outstanding_3d_query_ok else None
+    if dc_active_by_id is not None:
+        for row in live.get("Outstanding_3d", []):
+            row_dc_id = normalize_id(row.get("dc_id"))
+            if row_dc_id:
+                dc_active_by_id[row_dc_id] = str(row.get("is_active")).lower() == "true"
     excl_exc = Exceptions(run_ts)
     apply_dc_exclusion_rules(
         dc_master, excl_exc, constants, last_visit_by_dc, plan_date,
