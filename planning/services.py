@@ -630,6 +630,37 @@ def _credit_score_from_payments(ard: float, pct_paid_in_due: float) -> float:
     return (pct_paid_in_due / 100.0) * ard_factor
 
 
+def _sql_credit_line_details(ledger_partner_ids: List[str]) -> str:
+    # Raw credit_limit/available_credit_limit/status, added 2026-09-07 (explicit user
+    # request) -- runs against LOCUS_DB_ID, reuses the same credit_line_customer ->
+    # credit_line_customercreditline join as Credit_Score's own _sql_credit_payments,
+    # NOT derived from Credit_Score itself (independent raw fields).
+    #
+    # A customer can have MULTIPLE credit_line_customercreditline rows (confirmed live:
+    # up to 3 for a single customer_id) -- ROW_NUMBER() picks status='ACTIVE' first
+    # (the DC's real, currently-usable credit line), then most recent effective_from,
+    # then highest id as a final tiebreak, rather than picking an arbitrary/stale row.
+    # "Credit is active" maps to status='ACTIVE' specifically, NOT the active column --
+    # confirmed live that active is 'true' for essentially every row regardless of
+    # status (ACTIVE/ONHOLD/DORMANT all show active='true'), so active alone is not a
+    # useful signal for this.
+    return f"""
+    WITH ranked AS (
+        SELECT c.source_identifier_id AS ledger_partner_id,
+               cl.credit_limit, cl.available_credit_limit, cl.status,
+               ROW_NUMBER() OVER (
+                   PARTITION BY c.source_identifier_id
+                   ORDER BY (cl.status = 'ACTIVE') DESC, cl.effective_from DESC NULLS LAST, cl.id DESC
+               ) AS rn
+        FROM credit_line_customercreditline cl
+        JOIN credit_line_customer c ON c.id = cl.customer_id
+        WHERE c.source_identifier_id IN ({_sql_list(ledger_partner_ids)})
+    )
+    SELECT ledger_partner_id, credit_limit, available_credit_limit, status
+    FROM ranked WHERE rn = 1
+    """
+
+
 def _sql_pl_metrics(dc_ids: List[str], plan_date: str) -> str:
     # Real per-DC BO1 (PL) scoring -- same confirmed PRIVATE LABEL source as
     # _sql_ytd_pl above (see its comment for the join chain/status filter), replacing
@@ -1793,6 +1824,31 @@ def generate_plan_for_scope(
             except Exception as e:
                 run_exceptions.append({"source": "payment_payment", "reason_code": "Live_Pull_Failed", "detail": f"Health Score Credit: {type(e).__name__}: {e}"})
 
+            # Credit line detail (2026-09-07, explicit user request) -- credit_limit
+            # (total sanctioned), available_credit_limit (remaining/utilizable), and
+            # credit_active (status='ACTIVE'), raw from credit_line_customercreditline.
+            # Reuses credit_ledger_partner_id_by_dc from the block above (same bridge,
+            # already resolved) -- own try/except so a failure here can't take down
+            # Credit_Score itself, same isolation convention as every other component.
+            credit_details_by_dc: Dict[str, Dict[str, Any]] = {}
+            try:
+                if credit_ledger_partner_id_by_dc:
+                    details_by_ledger_pid: Dict[str, Dict[str, Any]] = {}
+                    for row in client.execute_sql(agent.LOCUS_DB_ID, _sql_credit_line_details(list(credit_ledger_partner_id_by_dc.values()))):
+                        ledger_pid = row.get("ledger_partner_id")
+                        if ledger_pid:
+                            details_by_ledger_pid[ledger_pid] = {
+                                "Credit_Limit": agent.parse_number(row.get("credit_limit")),
+                                "Available_Credit_Limit": agent.parse_number(row.get("available_credit_limit")),
+                                "Credit_Active": row.get("status") == "ACTIVE",
+                            }
+                    for dc_id, ledger_pid in credit_ledger_partner_id_by_dc.items():
+                        details = details_by_ledger_pid.get(ledger_pid)
+                        if details:
+                            credit_details_by_dc[dc_id] = details
+            except Exception as e:
+                run_exceptions.append({"source": "credit_line_customercreditline", "reason_code": "Live_Pull_Failed", "detail": f"Credit line detail: {type(e).__name__}: {e}"})
+
             for dc_id in health_eligible_dc_ids:
                 dc = dc_master_by_id.get(dc_id, {})
                 gm_fy_value = dc.get("GM_FY2526")
@@ -1831,6 +1887,10 @@ def generate_plan_for_scope(
                     result["Health_Focus_Purposes"] = agent.health_focus_purposes(result["Sub_Scores"])
                 else:
                     result["Health_Focus_Purposes"] = []
+                credit_details = credit_details_by_dc.get(dc_id, {})
+                result["Credit_Limit"] = credit_details.get("Credit_Limit")
+                result["Available_Credit_Limit"] = credit_details.get("Available_Credit_Limit")
+                result["Credit_Active"] = credit_details.get("Credit_Active")
                 dc_health_scores[dc_id] = result
 
         # GR-28 for DCs that are active but failed the Health Score's own 60-day-
@@ -2447,6 +2507,8 @@ def generate_plan_for_scope(
                 negative_gm_flag=t.get("Negative_GM_Flag", False),
                 health_focus_track=t.get("Health_Focus_Track", False),
                 health_focus_purposes=t.get("Health_Focus_Purposes", ""),
+                credit_limit=t.get("Credit_Limit"), available_credit_limit=t.get("Available_Credit_Limit"),
+                credit_active=t.get("Credit_Active"),
             ))
 
     DailyTask.objects.bulk_create(pending_tasks)

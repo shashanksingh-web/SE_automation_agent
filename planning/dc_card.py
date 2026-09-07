@@ -314,6 +314,9 @@ def _health_score_detail(task: DailyTask) -> Dict[str, Any]:
             "negative_gm_flag": False,
             "health_focus_track": task.health_focus_track,
             "health_focus_purposes": task.health_focus_purposes,
+            "credit_limit": task.credit_limit,
+            "available_credit_limit": task.available_credit_limit,
+            "credit_active": task.credit_active,
         }
     return {
         "dc_health_score": task.dc_health_score,
@@ -322,6 +325,9 @@ def _health_score_detail(task: DailyTask) -> Dict[str, Any]:
         "negative_gm_flag": task.negative_gm_flag,
         "health_focus_track": task.health_focus_track,
         "health_focus_purposes": task.health_focus_purposes,
+        "credit_limit": task.credit_limit,
+        "available_credit_limit": task.available_credit_limit,
+        "credit_active": task.credit_active,
     }
 
 

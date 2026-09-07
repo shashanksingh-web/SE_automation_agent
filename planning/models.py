@@ -171,6 +171,15 @@ class DailyTask(models.Model):
     health_focus_track = models.BooleanField(default=False)
     health_focus_purposes = models.CharField(max_length=200, blank=True, default="")
 
+    # Credit line detail (added 2026-09-07, explicit user request) -- raw fields from
+    # credit_line_customercreditline (Locus DB, same source Credit_Score's own
+    # pct_paid_in_due/ard formula reads from), NOT derived from Credit_Score itself.
+    # NULL when this DC has no credit line row at all (same missing-component
+    # convention as every other Health Score input -- never guessed).
+    credit_limit = models.FloatField(blank=True, null=True)
+    available_credit_limit = models.FloatField(blank=True, null=True)
+    credit_active = models.BooleanField(blank=True, null=True)
+
     # Feedback-loop outcome fields (Tier 1) -- populated later by `reconcile_outcomes`,
     # once plan_date has passed and real Visits/Sales/Payments data for that day exists.
     # UNKNOWN (not COMPLETED/MISSED) is the honest default until reconciliation runs --

@@ -3039,6 +3039,13 @@ class DailyTaskRow:
     # tracks are not mutually exclusive, Health-Focus just wins the tie-break on overlap.
     Health_Focus_Track: bool = False
     Health_Focus_Purposes: str = ""
+    # Credit line detail (added 2026-09-07, explicit user request) -- raw fields from
+    # credit_line_customercreditline (Locus DB), the same source Credit_Score's own
+    # pct_paid_in_due/ard formula reads from, NOT derived from Credit_Score itself.
+    # None when this DC has no credit line row at all.
+    Credit_Limit: Optional[float] = None
+    Available_Credit_Limit: Optional[float] = None
+    Credit_Active: Optional[bool] = None
 
 
 def haversine_km(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
@@ -4801,6 +4808,9 @@ def generate_se_daily_plan(
             Negative_GM_Flag=bool(health.get("Negative_GM_Flag")) if health else False,
             Health_Focus_Track=health_active,
             Health_Focus_Purposes=" + ".join(health_purposes),
+            Credit_Limit=health.get("Credit_Limit") if health else None,
+            Available_Credit_Limit=health.get("Available_Credit_Limit") if health else None,
+            Credit_Active=health.get("Credit_Active") if health else None,
         )
 
     if route_selector is None:

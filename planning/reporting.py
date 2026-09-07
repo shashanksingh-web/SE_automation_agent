@@ -64,6 +64,20 @@ def _format_health_score(t) -> str:
     return entry
 
 
+def _format_credit_line(t) -> str:
+    """Credit line detail (added 2026-09-07, explicit user request) -- raw fields from
+    credit_line_customercreditline (Locus DB), the same source Credit_Score's own
+    pct_paid_in_due/ard formula reads from, NOT derived from Credit_Score itself.
+    "₹34,60,000 / ₹0 avail (Active)". 'N/A' when this DC has no credit line row at all
+    (never a fake 0 or assumed-Inactive)."""
+    if t.credit_limit is None and t.available_credit_limit is None and t.credit_active is None:
+        return "N/A"
+    limit = f"₹{t.credit_limit:,.0f}" if t.credit_limit is not None else "N/A"
+    available = f"₹{t.available_credit_limit:,.0f}" if t.available_credit_limit is not None else "N/A"
+    status = "Active" if t.credit_active else ("Inactive" if t.credit_active is not None else "N/A")
+    return f"{limit} / {available} avail ({status})"
+
+
 def summary_lines(plan_run: PlanRun) -> List[str]:
     """The header block: PlanRun identity, counts, note, exceptions (first 10)."""
     lines = [
@@ -161,6 +175,10 @@ def table_lines(plan_run: PlanRun) -> List[str]:
     in both, since Health-Focus and BO1-5 qualification run independently and merge into
     one candidate pool (a DC needs only one track to get a task at all).
 
+    Credit Line column added 2026-09-07 (explicit user request) -- see
+    _format_credit_line for the exact display format. Raw fields from
+    credit_line_customercreditline, independent of Credit_Score's own computed value.
+
     Plain fixed-width columns, one line per task, single '-'-rule under the header --
     reverted 2026-08-07 back to this (the format used throughout this project's history)
     after a bordered/wrapped grid variant wasn't clearer. DC Name/Reason are truncated
@@ -203,12 +221,13 @@ def table_lines(plan_run: PlanRun) -> List[str]:
             f"{t.bo_rank} ({t.bo_composite_score:.0%})" if t.bo_rank is not None else "N/A",
             f"₹{t.promise_to_pay_amount:,.0f} by {t.promise_to_pay_date} ({t.promise_status})" if t.promise_to_pay_date else "N/A",
             _format_health_score(t),
+            _format_credit_line(t),
         ])
     headers = [
         "SE", "Sr", "Critical", "DC Name", "Km", "Task Type", "Purpose", "Reason",
         "Last Visit", "Outstanding", "Overdue (Aging)", "Last Order", "Order Value",
         "Last Payment", "YTD PL", "Club", "Finance", "BO Scores", "BO Rank", "Promise To Pay",
-        "Health Score",
+        "Health Score", "Credit Line",
     ]
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
 

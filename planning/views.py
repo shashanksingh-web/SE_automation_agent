@@ -102,6 +102,8 @@ def _serialize_task(t: DailyTask) -> dict:
         "DC_Health_Score": t.dc_health_score, "Health_Gap": t.health_gap,
         "Health_Sub_Scores": t.health_sub_scores, "Negative_GM_Flag": t.negative_gm_flag,
         "Health_Focus_Track": t.health_focus_track, "Health_Focus_Purposes": t.health_focus_purposes,
+        "Credit_Limit": t.credit_limit, "Available_Credit_Limit": t.available_credit_limit,
+        "Credit_Active": t.credit_active,
         # Outcome-reconciliation block (Tier 1 feedback loop) -- populated by
         # `manage.py reconcile_outcomes` once plan_date has passed; Outcome_Status stays
         # UNKNOWN (never guessed) until that runs, same honest-degrade discipline as the
@@ -446,6 +448,9 @@ def _serialize_health_score_detail(detail: dict):
         "Negative_GM_Flag": detail.get("negative_gm_flag", False),
         "Health_Focus_Track": detail.get("health_focus_track", False),
         "Health_Focus_Purposes": detail.get("health_focus_purposes", ""),
+        "Credit_Limit": detail.get("credit_limit"),
+        "Available_Credit_Limit": detail.get("available_credit_limit"),
+        "Credit_Active": detail.get("credit_active"),
     }
 
 
