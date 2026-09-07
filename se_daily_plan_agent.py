@@ -876,10 +876,12 @@ class BusinessConstants:
     # Locus-to-sap_partner_id bridge gap (contributing 0 via the missing-component rule
     # below) but both are now fully unblocked and live-computed, see
     # compute_dc_health_score). Health_Score(1-100) = 100 x sum(weight x sub_score). A
-    # separate, parallel model from BO1-5 -- GR-31 override (2026-09-06, explicit user
-    # request) makes it the PREFERRED Priority_Score/BO_Composite_Score source when a DC
-    # has a real Health_Gap, falling back to the original BO1-5 formula otherwise (see
-    # generate_se_daily_plan/_build_candidate_row); also independently drives the
+    # separate, parallel model from BO1-5 -- a 2026-09-06 GR-31 override briefly made it
+    # the preferred Priority_Score/BO_Composite_Score source, but that was REVERTED
+    # 2026-09-07 (explicit user request, "Health Score is a separate score, not related
+    # to BO scoring" -> fully decouple from ranking): Priority_Score/BO_Composite_Score
+    # are once again ALWAYS the original BO1-5 formulas, unconditionally -- Health Score
+    # no longer participates in ranking at all. It only drives the separate
     # "Health-Focus" qualification track that pool-merges with the BO-driven candidates
     # (see _qualify_health_focus/compute_dc_health_score and services.py's pool-merge).
     health_weight_nrv: float = 0.20
@@ -4649,27 +4651,15 @@ def generate_se_daily_plan(
         # displayed multiplier can never drift from what actually affected ranking.
         attempts = recent_attempts_by_dc.get(dc["DC_ID"], 0)
         fatigue_multiplier = (1 - constants.contact_fatigue_priority_cut) if attempts >= constants.contact_fatigue_max_attempts else 1.0
-        # CHANGED 2026-09-07, explicit user request, deliberately OVERRIDING GR-31's
-        # confirmed "Section 7 stays on original BO1-5 logic" scope: ranking now prefers
-        # DC_Health_Score/Health_Gap over the weighted-BO-gap sum whenever a real Health
-        # Score exists for this DC. Health Score has no equivalent at all for Visits/
-        # Long-Term (BO2/BO5) -- per direct instruction those two stay eligibility-only
-        # (still gate whether a DC is a candidate via _qualify_visits/Farmer Meeting
-        # exclusivity) and simply don't participate in this replaced ranking number.
-        # FALLBACK, also explicit user request ("so they eligible for visit"): a DC
-        # failing Health Score's own active/Days_Since_Last_Sale<=60 eligibility gate
-        # has no Health_Gap to rank by at all -- confirmed live this is 68% of currently
-        # -selected tasks (2,891 of 4,229 on 2026-09-05), overwhelmingly DCs qualifying
-        # via Visits precisely BECAUSE they haven't been visited/sold to recently, so
-        # this is not a rare edge case. Those DCs keep the ORIGINAL weighted-BO-gap
-        # formula unchanged, exactly as before this change -- never left unranked or
-        # silently deprioritized to zero.
-        health_for_priority = dc_health_scores.get(dc["DC_ID"], {})
-        health_gap_for_priority = health_for_priority.get("Health_Gap")
-        if health_gap_for_priority is not None:
-            priority_score = (health_gap_for_priority / 100.0) * fatigue_multiplier
-        else:
-            priority_score = sum(w * gap for w, (gap, _) in zip(weights, gap_by_obj)) * fatigue_multiplier
+        # REVERTED 2026-09-07, explicit user request ("Health Score is a separate score,
+        # not related to BO scoring" -> "Revert -- fully decouple from ranking"): the
+        # 2026-09-07 GR-31 override that made Priority_Score prefer DC_Health_Score/
+        # Health_Gap over the weighted-BO-gap sum is undone. Priority_Score is once again
+        # ALWAYS the original weighted-BO-gap formula, unconditionally, for every DC --
+        # Health Score no longer participates in ranking at all, only in its own separate
+        # Health-Focus qualification track (see the pool-merge below, unaffected by this
+        # revert).
+        priority_score = sum(w * gap for w, (gap, _) in zip(weights, gap_by_obj)) * fatigue_multiplier
         # 90+ day aged overdue queue-jump (explicit user request 2026-09-04) -- same
         # current_overdue>0 + os_90_plus>0 gate _build_candidate_row uses for Overdue_
         # Aging_Bucket, so this never fires on a genuine Rs0-overdue/aging-mismatch case.
@@ -4847,14 +4837,10 @@ def generate_se_daily_plan(
             Promise_To_Pay_Amount=promise.get("Promise_Amount"),
             Promise_Status=promise_status,
             BO_Scores=per_dc_scores or None,
-            # CHANGED 2026-09-07, explicit user request (same override as priority_score
-            # above): prefers DC_Health_Score/100 when a real Health Score exists for
-            # this DC, falling back to the original BO-objective average otherwise --
-            # same "never leave a DC unranked" reasoning, same fallback condition.
-            BO_Composite_Score=(
-                (health["DC_Health_Score"] / 100.0) if health and health.get("DC_Health_Score") is not None
-                else _bo_composite_score(per_dc_scores)
-            ),
+            # REVERTED 2026-09-07, explicit user request (same revert as priority_score
+            # above): BO_Composite_Score is once again ALWAYS the original BO-objective
+            # average, unconditionally -- no longer prefers DC_Health_Score/100.
+            BO_Composite_Score=_bo_composite_score(per_dc_scores),
             Last_Payment_Join_Key_Unconfirmed=False,
             Overdue_Aging_Bucket=overdue_aging,
             Avg_Repayment_Days=avg_repayment_days,
