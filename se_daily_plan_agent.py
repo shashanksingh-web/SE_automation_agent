@@ -4723,8 +4723,17 @@ def generate_se_daily_plan(
         critical_reasons = []
         if misses >= DC_VISIT_ESCALATION_THRESHOLD:
             critical_reasons.append(f"Escalated -- missed {misses}x running")
+        # FIXED 2026-09-07 (caught live investigating a real report: this banner said
+        # "₹2,71,151 overdue 90+ days" for a DC whose dc_datamart.os_90_plus was actually
+        # just ₹56,140 -- current_overdue is the FULL overdue balance across every aging
+        # bucket, not the 90+ portion specifically, so labeling all of it "90+ days" was
+        # wrong whenever real 1-90-day overdue coexisted with a smaller 90+ amount (the
+        # exact case overdue_aging=="90+ days" triggers on, since that's just "some 90+
+        # exists" -- see its own comment above). score_bo3_outstanding_live_proxy's own
+        # reason text already used os_90_plus correctly here; this banner was the only
+        # place still using the wrong variable.
         if overdue_aging == "90+ days":
-            critical_reasons.append(f"₹{current_overdue:,.0f} overdue 90+ days")
+            critical_reasons.append(f"₹{os_90_plus:,.0f} overdue 90+ days")
         if credit_on_hold:
             critical_reasons.append("Credit on hold")
         promise_status = _promise_status(dc_id)
