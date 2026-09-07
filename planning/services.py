@@ -2122,8 +2122,20 @@ def generate_plan_for_scope(
 
     top_dc_allowlist, top_dc_exc = agent.load_top_dc_allowlist()
     run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in top_dc_exc.rows)
+    # dc_active_by_id (2026-09-07, explicit user request) -- built from outstanding_raw
+    # (already fetched above, dc_datamart's own is_active column) rather than a fresh
+    # query -- same raw rows normalize_sales_transactions() already consumed, just kept
+    # here before that function drops the is_active value once it's done filtering.
+    dc_active_by_id: Dict[str, bool] = {}
+    for row in outstanding_raw:
+        row_dc_id = agent.normalize_id(row.get("dc_id"))
+        if row_dc_id:
+            dc_active_by_id[row_dc_id] = str(row.get("is_active")).lower() == "true"
     excl_exc = agent.Exceptions(agent.utc_now_iso())
-    agent.apply_dc_exclusion_rules(scoped_dcs, excl_exc, constants, last_visit_by_dc, plan_date, top_dc_allowlist=top_dc_allowlist)
+    agent.apply_dc_exclusion_rules(
+        scoped_dcs, excl_exc, constants, last_visit_by_dc, plan_date,
+        top_dc_allowlist=top_dc_allowlist, dc_active_by_id=dc_active_by_id,
+    )
     run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in excl_exc.rows)
     for dc in scoped_dcs:
         lat_lon = geo_by_dc.get(dc["DC_ID"])

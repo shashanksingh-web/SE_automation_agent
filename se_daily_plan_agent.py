@@ -887,8 +887,8 @@ class BusinessConstants:
     health_weight_gm_pct: float = 0.20
     health_weight_pl_contribution: float = 0.10
     health_weight_return: float = 0.10
-    health_weight_credit: float = 0.10  # blocked, always contributes 0 -- see docstring above
-    health_weight_od: float = 0.10      # blocked, always contributes 0 -- see docstring above
+    health_weight_credit: float = 0.10  # unblocked 2026-09-07, live-computed -- see docstring above
+    health_weight_od: float = 0.10      # unblocked 2026-09-07, live-computed -- see docstring above
     health_focus_days_since_last_sale_max: int = 60
     # Sub-score grading buckets (business-confirmed), applied to EACH of the 7 components
     # individually, never to the final 1-100 composite: Strong>80%, Fine 60-80%,
@@ -1342,7 +1342,7 @@ def load_top_dc_allowlist(path: Path = TOP_DC_LIST_XLSX) -> Tuple[Optional[Set[s
 
 def apply_dc_exclusion_rules(
     dc_master: Table, exc: Exceptions, constants: BusinessConstants, last_visit_by_dc: Dict[str, str], today: str,
-    top_dc_allowlist: Optional[Set[str]] = None,
+    top_dc_allowlist: Optional[Set[str]] = None, dc_active_by_id: Optional[Dict[str, bool]] = None,
 ) -> None:
     """Section 6: rules that remove a DC from consideration entirely.
     6.4 (Agent-Determined): always block Legal_Hold; Credit_Blocked/Blacklisted are
@@ -1361,12 +1361,27 @@ def apply_dc_exclusion_rules(
     column's eligibility role is gone.
 
     top_dc_allowlist (2026-09-04, explicit user request, "use that list only" then "go
-    to first updated TOP DC list file"): the ONLY DC-selection eligibility gate now,
-    beyond Has_Assigned_SE/not-Legal_Hold/not-too-recent. FAIL-CLOSED, not fail-open: if
-    the allowlist itself fails to load this run (None), every DC is excluded rather than
-    falling back to Rank -- a load failure is now loud (zero tasks network-wide that run)
-    rather than silently substituting a different, unconfirmed-for-this-purpose rule."""
+    to first updated TOP DC list file"): checked FIRST, before every other gate below.
+    FAIL-CLOSED, not fail-open: if the allowlist itself fails to load this run (None),
+    every DC is excluded rather than falling back to Rank -- a load failure is now loud
+    (zero tasks network-wide that run) rather than silently substituting a different,
+    unconfirmed-for-this-purpose rule.
+
+    dc_active_by_id (2026-09-07, explicit user request, "first go top dc list than
+    active in those set"): checked SECOND, only within the Top-DC-list-eligible set --
+    a DC must be marked active in dc_datamart (is_active='true') to be selected at all.
+    Live-verified (2026-09-07): of the 2,517 DCs in the Top DC list, 2,223 (88%) are
+    active, 294 (12%) are not, and every single one has a dc_datamart row (zero
+    missing). A DC with NO dc_datamart row at all is treated as not-active (fails
+    toward exclusion, same fail-closed philosophy as the Top DC list itself) rather than
+    silently passed through -- flagged with its own distinct reason code so a future
+    case where this DOES occur is visible, not silently indistinguishable from a
+    confirmed-inactive DC. This is separate from (and upstream of) dc_datamart's
+    existing is_active filter inside normalize_sales_transactions, which only ever
+    withheld Outstanding-financial data for an inactive DC -- it never excluded the DC
+    from selection entirely the way this does."""
     today_dt = datetime.fromisoformat(today)
+    dc_active_by_id = dc_active_by_id or {}
     for dc in dc_master:
         legal_hold = dc.get("DC_Status") == "Legal_Hold"
         last_visit = last_visit_by_dc.get(dc["DC_ID"])
@@ -1388,7 +1403,21 @@ def apply_dc_exclusion_rules(
             )
         else:
             exc.ok("DC_Not_In_Top_List")
-        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and top_list_eligible
+        is_active = dc_active_by_id.get(dc["DC_ID"])
+        active_eligible = bool(is_active)
+        if top_list_eligible and dc["DC_ID"] not in dc_active_by_id:
+            exc.flag(
+                dc["DC_ID"], "dc_datamart", "DC_Active_Status_Unavailable",
+                "DC has no dc_datamart row at all -- treated as not-active (fail-closed), excluded from DC selection",
+            )
+        elif top_list_eligible and not active_eligible:
+            exc.flag(
+                dc["DC_ID"], "dc_datamart", "DC_Not_Active",
+                "dc_datamart marks this DC is_active=false -- excluded from all agents' DC selection",
+            )
+        elif top_list_eligible:
+            exc.ok("DC_Active_Status")
+        in_scope = dc["Has_Assigned_SE"] and not legal_hold and not too_recent and top_list_eligible and active_eligible
         dc["In_Scope_Flag"] = in_scope
         dc["Days_Since_Last_Visit"] = days_since_visit
         dc["Last_Visit_Date"] = last_visit
@@ -4988,8 +5017,21 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
                 last_visit_by_dc[v["DC_ID"]] = v["Date"]
     top_dc_allowlist, top_dc_exc = load_top_dc_allowlist()
     merge(top_dc_exc)
+    # dc_active_by_id (2026-09-07, explicit user request) -- live["Outstanding_3d"] is
+    # dc_datamart's own raw rows, already fetched earlier in this run (same source
+    # normalize_sales_transactions() consumes below for dc_financials), just read here
+    # before that function drops the is_active value -- same pattern as the Django
+    # command path (planning/services.py's generate_plan_for_scope).
+    dc_active_by_id: Dict[str, bool] = {}
+    for row in live.get("Outstanding_3d", []):
+        row_dc_id = normalize_id(row.get("dc_id"))
+        if row_dc_id:
+            dc_active_by_id[row_dc_id] = str(row.get("is_active")).lower() == "true"
     excl_exc = Exceptions(run_ts)
-    apply_dc_exclusion_rules(dc_master, excl_exc, constants, last_visit_by_dc, plan_date, top_dc_allowlist=top_dc_allowlist)
+    apply_dc_exclusion_rules(
+        dc_master, excl_exc, constants, last_visit_by_dc, plan_date,
+        top_dc_allowlist=top_dc_allowlist, dc_active_by_id=dc_active_by_id,
+    )
     merge(excl_exc)
 
     ref_exc = Exceptions(run_ts)
