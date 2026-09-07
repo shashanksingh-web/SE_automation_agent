@@ -673,78 +673,12 @@ def _sql_pl_metrics(dc_ids: List[str], plan_date: str) -> str:
     """
 
 
-def _sql_bo4_momentum(dc_ids: List[str], plan_date: str) -> str:
-    # Real per-DC BO4 (Sales Momentum) scoring, wired 2026-08-06 -- 4.2's Momentum =
-    # Total_Sales_This_Period / Total_Working_Days_In_Period, graded against
-    # Baseline_Momentum x Category_Multiplier (4.4, GR-25). Same invoice_liquidation_with_pog
-    # source as Liquidation_Normalized (SQL_LIQUIDATION_3D in se_daily_plan_agent.py) --
-    # partner_id IS sap_partner_id directly here, no customer_management_customer bridge
-    # needed (confirmed live via a join to input_partner_details), unlike orders/payments.
-    # Grouped by business_category since 4.4's multiplier is category-specific; caller
-    # picks each DC's dominant category (highest combined this+baseline sales) in Python.
-    #
-    # CHANGED 2026-09-04, explicit user request: the SCORED baseline used to be "last
-    # month" (the prior 30-day window) -- switched to "the same 30-day window one year
-    # ago" instead. Confirmed live why this matters: a DC with an unusually quiet PRIOR
-    # month could show 800%+ "momentum" that was really just recovering off a depressed
-    # base, while its actual year-over-year trend was flat or declining (New Annapurna:
-    # 848% vs. last month, but only 80% vs. the same period last year -- its Crop
-    # Protection business is genuinely down from a year ago, the MoM number was
-    # misleading).
-    #
-    # sum_prior_30d ADDED BACK 2026-09-04 (explicit user request, same conversation) --
-    # NOT used for scoring/grading (that stays YoY-only, per the reasoning above), purely
-    # informational: a separate "vs. last month" trend number surfaced alongside the
-    # scored YoY percentage, so the genuine recent-momentum signal that motivated the
-    # original MoM formula isn't lost, just no longer conflated with the scored grade.
-    # See score_bo4_sales_momentum's caller for how mom_trend_pct gets attached.
-    #
-    # Three separate 30-day windows, non-contiguous (this year's, last month's, and last
-    # year's matching window are all disjoint) -- the WHERE clause pulls all three
-    # explicitly rather than one continuous range.
-    d = datetime.fromisoformat(plan_date).date()
-    period_start = (d - timedelta(days=30)).isoformat()
-    prior_start = (d - timedelta(days=60)).isoformat()
-    last_year_end = (d - timedelta(days=365)).isoformat()
-    last_year_start = (d - timedelta(days=395)).isoformat()
-    return f"""
-    SELECT partner_id AS dc_id, business_category,
-           SUM(CASE WHEN invoice_date >= '{period_start}' AND invoice_date <= '{plan_date}' THEN net_billed_amount ELSE 0 END) AS sum_this_30d,
-           SUM(CASE WHEN invoice_date >= '{prior_start}' AND invoice_date < '{period_start}' THEN net_billed_amount ELSE 0 END) AS sum_prior_30d,
-           SUM(CASE WHEN invoice_date >= '{last_year_start}' AND invoice_date <= '{last_year_end}' THEN net_billed_amount ELSE 0 END) AS sum_last_year_30d
-    FROM invoice_liquidation_with_pog
-    WHERE partner_id IN ({_sql_list(dc_ids)})
-      AND (
-        (invoice_date >= '{period_start}' AND invoice_date <= '{plan_date}')
-        OR (invoice_date >= '{prior_start}' AND invoice_date < '{period_start}')
-        OR (invoice_date >= '{last_year_start}' AND invoice_date <= '{last_year_end}')
-      )
-    GROUP BY partner_id, business_category
-    """
-
-
-def _sql_bo5_meetings(se_emails: List[str], plan_date: str) -> str:
-    # Real per-SE BO5 (Long-Term: farmer meetings) scoring, wired 2026-08-06 --
-    # farmer_in_meeting_vw (Redshift dev db) is real, live (max meeting_date = today),
-    # one row per (meeting, farmer). email matches Assigned_SE_Email directly, no bridge
-    # table needed (confirmed live -- a real SE from this project's own Jaipur data
-    # appears in it). The materialized view farmer_in_meeting_mv is permission-blocked;
-    # vw_extension_meeting's partner/agent_id columns don't match customer_management_
-    # customer.id/users_user.id at all (confirmed live, zero matches) -- this view is the
-    # one that actually joins. Attendee count aggregated in Python (caller groups by
-    # meeting_id) since Mega-tier (>=50 attendees) vs Regular-tier (>=10) determines
-    # what counts toward 5.3's "2 Mega meetings/month" target -- see score_bo5_long_term
-    # docstring for why the real meeting_type column can't be used for this (no value
-    # ever literally equals "Mega"/"Regular").
-    d = datetime.fromisoformat(plan_date).date()
-    period_start = (d - timedelta(days=30)).isoformat()
-    return f"""
-    SELECT email, meeting_id, COUNT(*) AS attendee_count
-    FROM farmer_in_meeting_vw
-    WHERE email IN ({_sql_list(se_emails)})
-      AND meeting_date >= '{period_start}' AND meeting_date <= '{plan_date}'
-    GROUP BY email, meeting_id
-    """
+# _sql_bo4_momentum/_sql_bo5_meetings REMOVED 2026-09-07, explicit user request ("Stop
+# computing Sales & Long-Term entirely") -- these exclusively fed score_bo4_sales_
+# momentum/score_bo5_long_term (both removed from se_daily_plan_agent.py), never used
+# for anything else. _sql_bo5_meetings_mtd below is a SEPARATE query (calendar
+# month-to-date, not a rolling 30 days) feeding FM_Urgency/compute_fm_urgency, which is
+# unaffected by this removal and stays.
 
 
 def _sql_bo5_meetings_mtd(se_emails: List[str], plan_date: str) -> str:
@@ -764,29 +698,15 @@ def _sql_bo5_meetings_mtd(se_emails: List[str], plan_date: str) -> str:
     """
 
 
-def _sql_bo5_first_orders(dc_ids: List[str]) -> str:
-    # 5.2: Onboarded = DC's first order ever placed. Reuses the customer_management_
-    # customer bridge _sql_orders() already established (sale_orderrequest.partner_id is
-    # the internal customer id, not sap_partner_id directly). Unrestricted by date --
-    # need the TRUE earliest order, not one inside a lookback window, same reasoning
-    # _sql_orders()/_sql_payments() already documented for why an unrestricted pull is
-    # fine once already scoped to a handful of dc_ids.
-    return f"""
-    SELECT dc_id, MIN(created_at) AS first_order_date
-    FROM (
-        SELECT cc.partner_id AS dc_id, o.created_at
-        FROM sale_orderrequest o
-        JOIN customer_management_customer cc ON cc.id = o.partner_id
-        WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND o.status = 'processed'
-    ) x
-    GROUP BY dc_id
-    """
+# _sql_bo5_first_orders REMOVED 2026-09-07, explicit user request ("Stop computing
+# Sales & Long-Term entirely") -- exclusively fed BO5's onboarding-count input, no
+# longer used anywhere.
 
 
 def _sql_dc_purchase_summary(dc_ids: List[str], plan_date: str) -> str:
     # Pitching Agent (S3 purchase-half / S6 / S7), wired 2026-08-08 -- reuses the
     # customer_management_customer bridge and status='processed' rule already
-    # established by _sql_orders()/_sql_bo5_first_orders(). Fiscal year = April-March,
+    # established by _sql_orders(). Fiscal year = April-March,
     # same inference _fiscal_year_start() already uses elsewhere in this file (confirmed
     # live query pattern from the normalization doc's own "Last Year/YTD DC Purchase"
     # sections -- not independently re-derived, same FY assumption, same caveat: an
@@ -1503,8 +1423,6 @@ def generate_plan_for_scope(
     prev_punch_in_by_se: Dict[int, tuple] = {}  # Routing Agent R0.4 -- Origin_Point
     attendance_ok_by_se: Dict[int, bool] = {}
     dc_bo_scores: Dict[str, Dict[str, Any]] = {}
-    meetings_held_by_se: Dict[str, int] = {}
-    dcs_onboarded_by_se: Dict[str, int] = {}
     fm_urgency_by_se: Dict[str, Dict[str, Any]] = {}
     farmer_meeting_confirmed_by_se: Dict[str, bool] = {}
 
@@ -2106,78 +2024,11 @@ def generate_plan_for_scope(
         except Exception as e:
             run_exceptions.append({"source": "sale_orderrequestline", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
-        # Real per-DC BO4 (Sales Momentum) scoring, wired 2026-08-06 -- see
-        # _sql_bo4_momentum()/score_bo4_sales_momentum() docstrings. Deliberately NOT
-        # added to QUALIFIERS in se_daily_plan_agent.py -- scored and available (e.g. via
-        # --json), zero effect on which DCs get selected for a daily task list, per
-        # 8.12/GR-25 (Sales/Liquidation stay out of the DC Visit candidate pool).
-        try:
-            bo4_rows_by_dc: Dict[str, List[Dict[str, Any]]] = {}
-            for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_bo4_momentum(dc_ids, plan_date)):
-                dc_id = agent.normalize_id(row.get("dc_id"))
-                if dc_id:
-                    bo4_rows_by_dc.setdefault(dc_id, []).append(row)
-            for dc_id, rows in bo4_rows_by_dc.items():
-                # Dominant category = highest combined this+same-period-last-year sales --
-                # a DC selling across multiple categories is graded on its largest one
-                # (documented simplification, same single-tag-per-DC pattern DC_RAnk's
-                # Cohort uses).
-                dominant = max(
-                    rows,
-                    key=lambda r: (agent.parse_number(r.get("sum_this_30d")) or 0.0) + (agent.parse_number(r.get("sum_last_year_30d")) or 0.0),
-                )
-                momentum_this = (agent.parse_number(dominant.get("sum_this_30d")) or 0.0) / constants.bo4_momentum_period_days
-                momentum_last_year = (agent.parse_number(dominant.get("sum_last_year_30d")) or 0.0) / constants.bo4_momentum_period_days
-                sales_result = agent.score_bo4_sales_momentum(
-                    momentum_this, momentum_last_year, dominant.get("business_category"), constants,
-                )
-                # mom_trend_pct (2026-09-04, explicit user request) -- informational
-                # only, never fed into score_pct/grade above. sum_this_30d ÷ sum_prior_30d
-                # (last MONTH, not last year) -- same category the DC was actually graded
-                # on, no growth multiplier applied (this is a plain trend read, not a
-                # target comparison). None (not 0%) when there's no real prior-month sales
-                # to compare against, same never-fabricate convention as every other gap.
-                sum_prior_30d = agent.parse_number(dominant.get("sum_prior_30d"))
-                sales_result["mom_trend_pct"] = (
-                    (agent.parse_number(dominant.get("sum_this_30d")) or 0.0) / sum_prior_30d
-                    if sum_prior_30d else None
-                )
-                dc_bo_scores.setdefault(dc_id, {})["Sales"] = sales_result
-        except Exception as e:
-            run_exceptions.append({"source": "invoice_liquidation_with_pog", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
-
-        # Real per-SE BO5 (Long-Term) scoring, wired 2026-08-06 -- see
-        # _sql_bo5_meetings()/_sql_bo5_first_orders() docstrings. Deliberately NOT added
-        # to QUALIFIERS in se_daily_plan_agent.py -- Long-Term was already dropped from
-        # Candidate_DCs in a prior session (GR-12: DC Visit / Farmer Meeting day-type
-        # exclusivity) to fix a real Day_Type-mixing bug. BO5's real effect on task
-        # generation runs through the separate farmer_meeting_scheduled_today gate
-        # (FM_Urgency, below), now live -- see that block's comment for why.
-        try:
-            meeting_attendee_counts: Dict[str, Dict[str, int]] = {}
-            for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_bo5_meetings(se_emails, plan_date)):
-                email = row.get("email")
-                meeting_id = row.get("meeting_id")
-                if email and meeting_id is not None:
-                    meeting_attendee_counts.setdefault(email, {})[meeting_id] = int(agent.parse_number(row.get("attendee_count")) or 0)
-            for email, meetings in meeting_attendee_counts.items():
-                meetings_held_by_se[email] = sum(1 for count in meetings.values() if count >= constants.bo5_mega_meeting_min_farmers)
-        except Exception as e:
-            run_exceptions.append({"source": "farmer_in_meeting_vw", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
-
-        try:
-            onboard_window_start = (datetime.fromisoformat(plan_date) - timedelta(days=30)).date().isoformat()
-            for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_bo5_first_orders(dc_ids)):
-                dc_id = agent.normalize_id(row.get("dc_id"))
-                first_order_date = agent.standardize_date(row.get("first_order_date"))
-                if not dc_id or not first_order_date or not (onboard_window_start <= first_order_date <= plan_date):
-                    continue
-                dc = next((d for d in scoped_dcs if d.get("DC_ID") == dc_id), None)
-                owner_email = dc.get("Assigned_SE_Email") if dc else None
-                if owner_email:
-                    dcs_onboarded_by_se[owner_email] = dcs_onboarded_by_se.get(owner_email, 0) + 1
-        except Exception as e:
-            run_exceptions.append({"source": "sale_orderrequest", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+        # BO4 (Sales Momentum) and BO5 (Long-Term) scoring REMOVED 2026-09-07, explicit
+        # user request ("Stop computing Sales & Long-Term entirely"). FM_Urgency below
+        # (Farmer Meeting scheduling pacing) is a SEPARATE mechanism from BO5's own
+        # grade and is unaffected -- it still governs the DC-Visit/Farmer-Meeting
+        # day-type choice, just no longer via a BO5 "score".
 
         # 8.11 Layer 0 (FM_Urgency), wired 2026-08-06, extended 2026-08-07 with an
         # explicit-override channel -- DC Visit is always prioritized by default; a
@@ -2408,9 +2259,7 @@ def generate_plan_for_scope(
             "Visits": agent.score_bo2_visits(len(visits_last30_by_se.get(uid, set())), len(se_dcs), constants),
             "PL": {"score_pct": None, "grade": None, "reason": "PL_Value/PL_Expected not wired into this endpoint"},
             "Outstanding": {"ratio": None, "grade": None, "reason": "BO3 ratio needs last-month-OS/growth% -- not wired"},
-            "Sales": {"score_pct": None, "grade": None},
             "Liquidation": {"score_pct": None, "grade": None, "reason": "no confirmed scoring formula exists (Source 3d Provisional)"},
-            "Long-Term": agent.score_bo5_long_term(meetings_held_by_se.get(email, 0), dcs_onboarded_by_se.get(email, 0), constants),
         }
         attendance_gate_ok = None if attendance_unknowable else attendance_ok_by_se.get(uid, False)
 

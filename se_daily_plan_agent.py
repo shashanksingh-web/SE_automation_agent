@@ -831,8 +831,10 @@ class BusinessConstants:
     bo5_onboarding_target_per_month: int = 2
     bo5_weight_meeting: float = 0.50
     bo5_weight_onboarding: float = 0.50
-    # Grade cutoffs -- Source 5 never defines these for BO5 at all; reusing BO1's bands
-    # for directional consistency only (see score_bo5_long_term() docstring).
+    # bo5_grade_*/bo5_weight_*/bo5_onboarding_target_per_month kept defined but unused
+    # (BO5/Long-Term scoring removed 2026-09-07, explicit user request) -- only
+    # bo5_mega_meeting_min_farmers/bo5_meeting_target_per_month below still do real work,
+    # feeding FM_Urgency (compute_fm_urgency), a separate mechanism from BO5's own grade.
     bo5_grade_a: float = 0.80
     bo5_grade_b: float = 0.60
     bo5_grade_c: float = 0.40
@@ -910,8 +912,6 @@ class BusinessConstants:
             "PL": "Order booked",
             "Visits": "Visit completed",
             "Outstanding": "Payment received",
-            "Sales": "Order placed",
-            "Long-Term": "Meeting held / DC onboarded",
             # No confirmed win condition exists for this -- Source 3d tags the underlying
             # liquidation proxy data itself Provisional pending a business definition.
             # User-added as a 6th ranked objective (2026-08-04); do not invent a formula.
@@ -964,8 +964,10 @@ class BusinessConstants:
     default_objective_priority: Tuple[str, ...] = ("Outstanding", "PL", "Visits", "Long-Term", "Sales", "Liquidation")
     # 7.4 rule (b), confirmed (not just default-applied like rule (a)): if every BO is
     # graded D, switch to this order instead of the normal ranking.
-    all_d_override_order: Tuple[str, ...] = ("Visits", "PL", "Sales", "Outstanding", "Long-Term")
-    # 4.4 BO4 growth target multipliers -- REPLACED 2026-08-06 (GR-25): the flat 1.05
+    all_d_override_order: Tuple[str, ...] = ("Visits", "PL", "Outstanding")
+    # bo4_category_multipliers/bo4_momentum_period_days/bo4_grade_* kept defined but
+    # unused (BO4/Sales scoring removed 2026-09-07, explicit user request) -- 4.4 BO4
+    # growth target multipliers -- REPLACED 2026-08-06 (GR-25): the flat 1.05
     # figure previously here matched nothing in Source 5 and has been retired. Real
     # category-specific values from the "All Parameters" sheet's confirmed answer (4.4).
     # Field Crop deliberately absent -- the sheet itself says "depends on seasonality (no
@@ -2546,60 +2548,14 @@ def score_bo3_outstanding_live_proxy(
     return {"score_pct": health_pct, "grade": grade, "reason": reason, "basis": "live_proxy_not_3_1_formula"}
 
 
-def score_bo4_sales_momentum(
-    momentum_this: Optional[float], momentum_last_year: Optional[float], business_category: Optional[str], c: BusinessConstants,
-) -> Dict[str, Any]:
-    """4.1-4.3: Momentum = Total_Sales_This_Period / Total_Working_Days_In_Period, graded
-    against Baseline_Momentum x Category_Multiplier (4.4, real per-category values -- see
-    BusinessConstants.bo4_category_multipliers). Wired 2026-08-06 from
-    invoice_liquidation_with_pog.net_billed_amount/business_category (confirmed live, see
-    GR-25). Deliberately excluded from Candidate_DCs (8.12) -- this scores a DC, it never
-    selects one; caller-side wiring only stores the result, doesn't qualify against it.
-
-    Baseline CHANGED 2026-09-04, explicit user request: momentum_last_year is the SAME
-    30-day window one year ago, not last month (the original "prior 30 days" reading).
-    Confirmed live why: a DC with an unusually quiet PRIOR MONTH could show 800%+
-    "momentum" that was really just recovering off a temporarily depressed base, while
-    its real year-over-year trend was flat or declining -- comparing against the same
-    calendar window a year back is a fairer read of genuine growth than comparing
-    against whatever the immediately preceding month happened to look like.
-
-    Category multiplier lookup is case-insensitive against the confirmed 4.4 categories.
-    An unmapped category (Field Crop -- seasonal factor undefined per the sheet itself,
-    or anything else business_category carries that 4.4 never priced) is an honest gap,
-    not a guess -- GR-20 requires exactly this "provisional" treatment for Field Crop."""
-    category_key = (business_category or "").strip().lower()
-    multiplier = c.bo4_category_multipliers.get(category_key)
-    if multiplier is None:
-        reason = (
-            "Field Crop growth multiplier is seasonal/undefined in Source 5 (4.4) -- provisional, pending seasonal table"
-            if category_key == "field crop"
-            else f"no 4.4 growth multiplier defined for category '{business_category}'"
-        )
-        return {"score_pct": None, "grade": None, "reason": reason, "basis": "provisional_no_multiplier"}
-    if not momentum_last_year or momentum_this is None:
-        return {"score_pct": None, "grade": None, "reason": "insufficient sales history for momentum comparison", "basis": "live_from_invoice_liquidation_with_pog"}
-    momentum_target = momentum_last_year * multiplier
-    if not momentum_target:
-        return {"score_pct": None, "grade": None, "reason": "momentum target is zero", "basis": "live_from_invoice_liquidation_with_pog"}
-    pct = momentum_this / momentum_target
-    grade = "A" if pct >= c.bo4_grade_a else "B" if pct >= c.bo4_grade_b else "C" if pct >= c.bo4_grade_c else "D"
-    reason = f"momentum at {pct:.0%} of target ({business_category} x{multiplier}, vs. same period last year)"
-    return {"score_pct": pct, "grade": grade, "reason": reason, "basis": "live_from_invoice_liquidation_with_pog"}
-
-
-def score_bo5_long_term(meetings_held: int, dcs_onboarded: int, c: BusinessConstants) -> Dict[str, Any]:
-    """5.5: BO5_Score = 0.50 x Meeting_Score_% + 0.50 x Onboarding_Score_%. Wired
-    2026-08-06 -- meetings_held/dcs_onboarded now come from real live data (see
-    planning/services.py's _sql_bo5_meetings()/_sql_bo5_first_orders() docstrings for the
-    Mega-tier-only meeting-count interpretation this depends on). Grade added here reusing
-    BO1's 0.80/0.60/0.40 bands -- Source 5 never defines a BO5 grade cutoff at all, same
-    "reuse for directional consistency only" treatment BO3/BO4 already got."""
-    meeting_pct = meetings_held / c.bo5_meeting_target_per_month
-    onboarding_pct = dcs_onboarded / c.bo5_onboarding_target_per_month
-    score = c.bo5_weight_meeting * meeting_pct + c.bo5_weight_onboarding * onboarding_pct
-    grade = "A" if score >= c.bo5_grade_a else "B" if score >= c.bo5_grade_b else "C" if score >= c.bo5_grade_c else "D"
-    return {"score": score, "grade": grade, "meeting_pct": meeting_pct, "onboarding_pct": onboarding_pct}
+# score_bo4_sales_momentum/score_bo5_long_term REMOVED 2026-09-07, explicit user
+# request ("comment from logic take only outstanding and pl" -> confirmed "Stop
+# computing Sales & Long-Term entirely") -- BO4 (Sales) and BO5 (Long-Term) scoring are
+# no longer computed anywhere in the pipeline. Outstanding and PL remain the only real
+# per-DC BO objectives. FM_Urgency (Farmer Meeting scheduling pacing, compute_fm_urgency
+# below) is a SEPARATE mechanism from BO5's own grade and is unaffected by this removal
+# -- it still governs the DC-Visit/Farmer-Meeting day-type choice, just no longer via a
+# BO5 "score".
 
 
 def _health_bucket(score_pct: Optional[float], c: BusinessConstants) -> str:
@@ -2924,11 +2880,11 @@ def resolve_dynamic_parameters(
 # order line, not by a separate Purpose value (per the bridge sheet's own note).
 TASK_TYPE_BY_OBJECTIVE = {
     "Visits": "DC Visit", "Outstanding": "DC Visit", "PL": "DC Visit",
-    "Sales": "DC Visit", "Liquidation": "DC Visit", "Long-Term": "Farmer Meeting",
+    "Liquidation": "DC Visit",
 }
 PURPOSE_BY_OBJECTIVE = {
     "Visits": "Sale", "Outstanding": "Promise To Pay / Collection", "PL": "Sale",
-    "Sales": "Sale", "Long-Term": "Farmer Meeting", "Liquidation": "Config_Ambiguous -- no confirmed purpose",
+    "Liquidation": "Config_Ambiguous -- no confirmed purpose",
 }
 
 
@@ -5144,9 +5100,7 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
             "Visits": score_bo2_visits(sum(1 for v in visits if v["SE_ID"] == se_id and v["Valid_Visit_Flag"]), len(se_dc_candidates), constants),
             "PL": {"score_pct": None, "grade": None, "reason": "PL_Value/PL_Expected need Sales_Transactions_Normalized joined by DC -- wire in once live"},
             "Outstanding": {"ratio": None, "grade": None},
-            "Sales": {"score_pct": None, "grade": None},
             "Liquidation": {"score_pct": None, "grade": None, "reason": "no confirmed scoring formula exists (Source 3d Provisional)"},
-            "Long-Term": score_bo5_long_term(0, 0, constants),
         }
         attendance_gate_ok = (se_id in attendance_by_se_today) if client.configured else None
         plan = generate_se_daily_plan(
