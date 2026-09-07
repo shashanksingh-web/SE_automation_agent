@@ -1864,11 +1864,20 @@ WHERE {_lookback_clause('p.created_at')}
 # Only the MOST RECENT promise per DC is kept (ROW_NUMBER, rn=1) -- older promises are
 # superseded, per direct instruction. paid_on_time is computed server-side: ANY real
 # SUCCESS payment landing between when the promise was logged (promise_created_at) and
-# its committed date (promise_date) counts -- not required to cover the full promised
-# amount, per direct instruction. Known trap, confirmed live (matches the doc's own
-# finding): ~32% of records have promise_amount = 0 (an SE logged the purpose without a
-# specific number) -- still carried through and still checked for a qualifying payment,
-# per direct instruction, not excluded as junk.
+# CURRENT_DATE counts -- not required to cover the full promised amount, per direct
+# instruction. Known trap, confirmed live (matches the doc's own finding): ~32% of
+# records have promise_amount = 0 (an SE logged the purpose without a specific number)
+# -- still carried through and still checked for a qualifying payment, per direct
+# instruction, not excluded as junk.
+#
+# Window WIDENED 2026-09-07 (explicit user request, same fix as planning/services.py's
+# _sql_promise_to_pay): was capped at the promise's own committed date (promise_date) --
+# a payment landing even a day late, but still before today, was never counted, and the
+# promise was marked Broken the moment its date passed regardless. Now runs through
+# CURRENT_DATE instead -- load_live_sources() doesn't thread plan_date through this
+# module-level query (it's a network-wide fetch, not per-scope), so CURRENT_DATE is
+# used here rather than restructuring that fetch signature; for a same-day run this is
+# the same date plan_date would resolve to anyway.
 SQL_PROMISE_TO_PAY_3J = f"""
 WITH latest_promise AS (
     SELECT vpd.id AS record_id, cc.partner_id AS dc_id,
@@ -1886,7 +1895,7 @@ SELECT lp.dc_id, lp.promise_amount_raw, lp.promise_date, lp.promise_created_at,
            SELECT 1 FROM payments_paymenttransaction p
            JOIN customer_management_customer cc2 ON cc2.id = p.customer_id
            WHERE cc2.partner_id = lp.dc_id AND p.status = 'SUCCESS'
-             AND p.created_at >= lp.promise_created_at AND p.created_at <= lp.promise_date
+             AND p.created_at >= lp.promise_created_at AND p.created_at <= CURRENT_DATE
        ) AS paid_on_time
 FROM latest_promise lp
 WHERE lp.rn = 1
@@ -4350,9 +4359,13 @@ def generate_se_daily_plan(
         -- older, superseded promises are ignored). "Kept"/"Broken" only apply once the
         committed promise_date has actually passed relative to plan_date -- a promise
         not yet due is "Pending" and changes nothing (there's no way to judge it yet).
-        "Paid" (Kept) is confirmed live-SQL-side (see SQL_PROMISE_TO_PAY_3J) as ANY real
-        SUCCESS payment landing between when the promise was logged and its committed
-        date -- not required to cover the full promised amount (per direct instruction),
+        "Paid" (Kept) is confirmed live-SQL-side (see SQL_PROMISE_TO_PAY_3J /
+        planning.services._sql_promise_to_pay) as ANY real SUCCESS payment landing
+        between when the promise was logged and TODAY -- WIDENED 2026-09-07 (explicit
+        user request) from the promise's own committed date to today, so a payment that
+        lands after the committed date but before today still reads as Kept, not
+        Broken; only a promise with genuinely no qualifying payment by today reads as
+        Broken. Not required to cover the full promised amount (per direct instruction),
         and a 0-amount promise still counts (per direct instruction -- the doc confirms
         32% of real promise records carry no amount, a genuine pattern, not junk data).
         None when this DC has no promise on record at all."""

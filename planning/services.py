@@ -192,12 +192,23 @@ def _sql_payments(dc_ids: List[str]) -> str:
     """
 
 
-def _sql_promise_to_pay(dc_ids: List[str]) -> str:
+def _sql_promise_to_pay(dc_ids: List[str], plan_date: str) -> str:
     """Scoped counterpart of se_daily_plan_agent.SQL_PROMISE_TO_PAY_3J -- see that
     query's own docstring for the dialect trap (JSON_EXTRACT_PATH_TEXT, not ->>) and
     the "most recent promise only" / "any qualifying payment, not full amount" rules.
     No lookback window, same reasoning as _sql_payments above -- already scoped to a
-    handful of dc_ids, no cost to finding each DC's true most recent promise."""
+    handful of dc_ids, no cost to finding each DC's true most recent promise.
+
+    Qualifying-payment window WIDENED 2026-09-07, explicit user request: was
+    [promise_created_at, promise_date] (a payment landing AFTER the committed date,
+    even a day late, was never counted -- the promise was marked Broken the moment its
+    date passed, regardless of whether the DC then actually paid before today). Now
+    [promise_created_at, plan_date] -- any real SUCCESS payment up to and including
+    today counts as Kept, even if it landed after the originally committed date. Only
+    a promise with STILL no qualifying payment by today reads as Broken. The column is
+    still named paid_on_time for continuity (_promise_status's own Python logic is
+    unchanged -- it already only judges Kept-vs-Broken once promise_date < plan_date,
+    this just widens what payment window counts as having been paid at all)."""
     return f"""
     WITH latest_promise AS (
         SELECT vpd.id AS record_id, cc.partner_id AS dc_id,
@@ -215,7 +226,7 @@ def _sql_promise_to_pay(dc_ids: List[str]) -> str:
                SELECT 1 FROM payments_paymenttransaction p
                JOIN customer_management_customer cc2 ON cc2.id = p.customer_id
                WHERE cc2.partner_id = lp.dc_id AND p.status = 'SUCCESS'
-                 AND p.created_at >= lp.promise_created_at AND p.created_at <= lp.promise_date
+                 AND p.created_at >= lp.promise_created_at AND p.created_at <= '{plan_date}'
            ) AS paid_on_time
     FROM latest_promise lp
     WHERE lp.rn = 1
@@ -2088,7 +2099,7 @@ def generate_plan_for_scope(
 
         promise_exc = agent.Exceptions(agent.utc_now_iso())
         try:
-            promise_raw = client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_promise_to_pay(dc_ids))
+            promise_raw = client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_promise_to_pay(dc_ids, plan_date))
             promise_by_dc = agent.normalize_promise_to_pay(promise_raw, promise_exc)
         except Exception as e:
             run_exceptions.append({"source": "task_management_visitpurposedetails", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
