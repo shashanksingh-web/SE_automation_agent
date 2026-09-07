@@ -284,10 +284,24 @@ def generate_route_plans_for_se(
         }
         default_plan_type = RoutePlan.PlanType.CLUSTER_BASED
     else:
+        # Built sequentially, not independently (2026-09-07, explicit user request --
+        # extends Plan B's own 2026-09-01 "force 3 different routes even if 2 are
+        # worse" fix to Plan A's Models 1-3, which previously only detected convergence
+        # after the fact via GR-R10/Plans_Converged below rather than avoiding it).
+        # Same exclude_stop_sets threading as Plan B above: Model 1 (Priority-Max, the
+        # default) is computed first, unconstrained -- its own pick is never sacrificed
+        # for Model 2/3's distinctness.
+        exclude_stop_sets_a: List[Tuple[str, ...]] = []
+
+        def _build_plan_a_route(builder) -> Dict[str, Any]:
+            result = builder(filtered, origin, constants, exclude_stop_sets=list(exclude_stop_sets_a))
+            exclude_stop_sets_a.append(tuple(s["row"].DC_ID for s in result["stops"]))
+            return result
+
         model_results = {
-            RoutePlan.PlanType.PRIORITY_MAX: agent.build_route_priority_max(filtered, origin, constants),
-            RoutePlan.PlanType.DISTANCE_MIN: agent.build_route_distance_min(filtered, origin, constants),
-            RoutePlan.PlanType.BALANCED: agent.build_route_balanced(filtered, origin, constants),
+            RoutePlan.PlanType.PRIORITY_MAX: _build_plan_a_route(agent.build_route_priority_max),
+            RoutePlan.PlanType.DISTANCE_MIN: _build_plan_a_route(agent.build_route_distance_min),
+            RoutePlan.PlanType.BALANCED: _build_plan_a_route(agent.build_route_balanced),
         }
         default_plan_type = RoutePlan.PlanType.PRIORITY_MAX
 

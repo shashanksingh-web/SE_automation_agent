@@ -3335,9 +3335,42 @@ def _or_opt(order: List[Dict[str, Any]], origin: Tuple[float, float], avg_speed_
     return best
 
 
+def _distinctness_swap(
+    chosen: List[Dict[str, Any]], excluded_pool: List[Dict[str, Any]],
+    exclude_stop_sets: Optional[List[Tuple[str, ...]]],
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Forced route distinctness (2026-09-07, explicit user request -- extends Plan B's
+    own 2026-09-01 "force 3 different routes even if 2 are worse" fix to Plan A's 3
+    models, which previously only detected convergence after the fact (GR-R10/
+    Plans_Converged) rather than avoiding it). If `chosen`'s own stop-set exactly
+    matches one this call must avoid, try swapping its single lowest-priority_score stop
+    for the next-best (by priority_score) candidate in `excluded_pool`, in rank order,
+    returning the first swap whose resulting ID set doesn't ALSO match an excluded one.
+    Feasibility of the swap is NOT checked here -- sequencing/route-metrics differ per
+    model, so the caller re-sequences and re-verifies caps itself, falling back to the
+    original (possibly duplicate) result if the swap turns out infeasible. Returns
+    (candidate_list, swapped_out_or_None) -- unchanged `chosen`/None when no exclusion
+    applies, no excluded_pool candidate exists, or every alternative is already
+    excluded too (same "never invents a route from zero candidates" contract as Plan
+    B's own version of this)."""
+    if not exclude_stop_sets or not chosen:
+        return chosen, None
+    current_ids = tuple(c["dc"]["DC_ID"] for c in chosen)
+    if current_ids not in exclude_stop_sets:
+        return chosen, None
+    lowest = min(chosen, key=lambda c: c["priority_score"])
+    for alt in sorted(excluded_pool, key=lambda c: -c["priority_score"]):
+        trial = [c for c in chosen if c is not lowest] + [alt]
+        trial_ids = tuple(c["dc"]["DC_ID"] for c in trial)
+        if trial_ids not in exclude_stop_sets:
+            return trial, lowest
+    return chosen, None
+
+
 def build_route_priority_max(
     candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
     avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
+    exclude_stop_sets: Optional[List[Tuple[str, ...]]] = None,
 ) -> Dict[str, Any]:
     """Model 1 (R4.1), recommended primary -- Google OR-Tools Routing Solver, Orienteering
     / Prize-Collecting formulation: single vehicle, closed route (R3.3), one Time
@@ -3463,6 +3496,20 @@ def build_route_priority_max(
         dropped.append({"dc_id": lowest["dc"]["DC_ID"], "reason": "Travel_Ceiling_Exceeded"})
         metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
 
+    # Forced route distinctness (see _distinctness_swap docstring) -- tried only after
+    # the GR-R5 ceiling trim above, on the final stop-set that would otherwise be
+    # returned, so a swap never re-introduces a ceiling breach the trim just fixed.
+    final_ids = {c["dc"]["DC_ID"] for c in visited_order}
+    excluded_pool = [c for c in with_coords if c["dc"]["DC_ID"] not in final_ids]
+    swapped, swapped_out = _distinctness_swap(visited_order, excluded_pool, exclude_stop_sets)
+    if swapped_out is not None:
+        trial_metrics = _route_metrics(swapped, origin, avg_speed_kmph)
+        if _within_caps(trial_metrics):
+            swapped_in_id = swapped[-1]["dc"]["DC_ID"]
+            visited_order, metrics = swapped, trial_metrics
+            dropped = [d for d in dropped if d["dc_id"] != swapped_in_id]
+            dropped.append({"dc_id": swapped_out["dc"]["DC_ID"], "reason": "Route_Diversity_Swap"})
+
     feasible = _within_caps(metrics)
     return {
         "stops": metrics["stops"], "dropped": dropped,
@@ -3488,6 +3535,7 @@ def _greedy_nearest_neighbor(candidates: List[Dict[str, Any]], origin: Tuple[flo
 def build_route_distance_min(
     candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
     avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
+    exclude_stop_sets: Optional[List[Tuple[str, ...]]] = None,
 ) -> Dict[str, Any]:
     """Model 2 (R4.2), recommended secondary -- Nearest-Neighbor construction + 2-opt
     local-search improvement over circuity-adjusted distances. Visit_Set =
@@ -3533,8 +3581,24 @@ def build_route_distance_min(
     else:
         feasible, reason = True, ""
 
-    selected_ids = {c["dc"]["DC_ID"] for c in by_priority[:best_k]}
-    dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords if c["dc"]["DC_ID"] not in selected_ids]
+    chosen = by_priority[:best_k]
+    excluded_pool = by_priority[best_k:]
+
+    # Forced route distinctness (see _distinctness_swap docstring) -- tried on the
+    # winning K's own stop-set, re-sequenced and re-verified against both caps before
+    # being accepted; falls back to the original (possibly duplicate) result otherwise.
+    swapped, swapped_out = _distinctness_swap(chosen, excluded_pool, exclude_stop_sets)
+    if swapped_out is not None:
+        trial_order = _or_opt(_two_opt(_greedy_nearest_neighbor(swapped, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
+        trial_metrics = _route_metrics(trial_order, origin, avg_speed_kmph)
+        if _within_caps(trial_metrics):
+            chosen, best_metrics = swapped, trial_metrics
+
+    selected_ids = {c["dc"]["DC_ID"] for c in chosen}
+    dropped += [
+        {"dc_id": c["dc"]["DC_ID"], "reason": "Route_Diversity_Swap" if swapped_out is not None and c is swapped_out else "Capacity_Exceeded"}
+        for c in with_coords if c["dc"]["DC_ID"] not in selected_ids
+    ]
 
     return {
         "stops": best_metrics["stops"], "dropped": dropped,
@@ -3594,6 +3658,7 @@ def build_route_balanced(
     node_avg_travel_min: Optional[float] = None,
     node_avg_travel_range: Optional[Tuple[float, float]] = None,
     alpha_min: float = 0.4, alpha_max: float = 0.8, global_default_alpha: float = 0.6,
+    exclude_stop_sets: Optional[List[Tuple[str, ...]]] = None,
 ) -> Dict[str, Any]:
     """Model 3 (R4.3), recommended tertiary -- Clarke-Wright Savings construction + 2-opt,
     over a handful of candidate visit-sets (top-K by priority, K=1..5, same sweep as
@@ -3681,8 +3746,24 @@ def build_route_balanced(
             "alpha_used": round(alpha, 3),
         }
 
-    selected_ids = {c["dc"]["DC_ID"] for c in by_priority[:best_k]}
-    dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Capacity_Exceeded"} for c in with_coords if c["dc"]["DC_ID"] not in selected_ids]
+    chosen = by_priority[:best_k]
+    excluded_pool = by_priority[best_k:]
+
+    # Forced route distinctness (see _distinctness_swap docstring) -- tried on the
+    # winning K's own stop-set, re-sequenced and re-verified against both caps before
+    # being accepted; falls back to the original (possibly duplicate) result otherwise.
+    swapped, swapped_out = _distinctness_swap(chosen, excluded_pool, exclude_stop_sets)
+    if swapped_out is not None:
+        trial_order = _or_opt(_two_opt(_clarke_wright_order(swapped, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
+        trial_metrics = _route_metrics(trial_order, origin, avg_speed_kmph)
+        if _within_caps(trial_metrics):
+            chosen, best_metrics = swapped, trial_metrics
+
+    selected_ids = {c["dc"]["DC_ID"] for c in chosen}
+    dropped += [
+        {"dc_id": c["dc"]["DC_ID"], "reason": "Route_Diversity_Swap" if swapped_out is not None and c is swapped_out else "Capacity_Exceeded"}
+        for c in with_coords if c["dc"]["DC_ID"] not in selected_ids
+    ]
 
     return {
         "stops": best_metrics["stops"], "dropped": dropped,
