@@ -271,6 +271,25 @@ def _applicable_sources(purposes: List[str]) -> List[str]:
     return sorted(sources)
 
 
+def _tell_lines(sentences: List[str]) -> List[str]:
+    """Renders a [बताना] (Tell) block's talking points as script lines, added 2026-09-07
+    per direct instruction ("things in pointer for sale and collection") -- previously
+    every sentence was space-joined into one dense run-on paragraph under a single
+    [बताना] label (e.g. product recommendation + suggested discount + purchase trend +
+    YTD target all mashed together for Sale, or S3/S5/S6 for Collection), hard to scan
+    at a glance same as the DC Card's own product-list join fixed earlier. A single
+    sentence still renders inline on the [बताना] line itself (no bullet needed for one
+    point); 2+ sentences get their own "- "-prefixed line each, with [बताना] on its own
+    line above them -- PitchPanel.tsx's parseScript() detects an empty-text label line
+    followed by "- "-prefixed lines and renders them as a bullet list, same convention
+    DCCardPanel.tsx's parseSectionItems() already uses for its own bulleted sections."""
+    if not sentences:
+        return []
+    if len(sentences) == 1:
+        return [f"[बताना] {sentences[0]}"]
+    return ["[बताना]"] + [f"- {s}" for s in sentences]
+
+
 def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
     """DC Visit Pitch (Multi-Purpose) sheet's own "Promise To Pay / Collection + Sale"
     worked example, structurally: two section-labeled segments, sequenced by whether a
@@ -320,8 +339,7 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
         lines.append("")
         lines.append("— सेल्स हिस्सा (पेमेंट कमिट होने के बाद) —")
         lines.append("[पूछना] वैसे इस सीजन में क्या चल रहा है, किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?")
-        if sales_sentences:
-            lines.append("[बताना] " + " ".join(sales_sentences))
+        lines.extend(_tell_lines(sales_sentences))
         lines.append("[विश/क्लोज़] तो चलिए, पुराना पेमेंट क्लियर होते ही एक ऑर्डर भी साथ में डाल देते हैं ताकि स्टॉक टाइम पर आ जाए।")
     else:
         # Sales-led, no urgency to open with -- same structural idea as the sheet's
@@ -330,8 +348,7 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
         lines.append("")
         lines.append("— सेल्स हिस्सा —")
         lines.append("[पूछना] इस सीजन में किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?")
-        if sales_sentences:
-            lines.append("[बताना] " + " ".join(sales_sentences))
+        lines.extend(_tell_lines(sales_sentences))
         lines.append("[विश] चलिए आज एक ऑर्डर बुक कर लेते हैं।")
         if outstanding:
             billing_sentence = sentence_for("S5")
@@ -407,7 +424,7 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
         lines.append("[पूछना] " + " ".join(ask_texts))
         lines.append("")
     if tell_sentences:
-        lines.append("[बताना] " + " ".join(tell_sentences))
+        lines.extend(_tell_lines(tell_sentences))
         lines.append("")
     if wish_texts:
         lines.append("[विश/क्लोज़] " + " ".join(wish_texts))
