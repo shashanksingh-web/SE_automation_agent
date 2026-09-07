@@ -3733,7 +3733,7 @@ def build_route_balanced(
 #   Stage 1 (3.1-3.3): Territory Clustering -- partition candidates into density-
 #     balanced clusters so no cluster is disproportionately sparse or dense.
 #   Stage 2: Cumulative BO Score (CBS) per cluster.
-#   Stage 3: greedy score-per-km cluster selection under the 80km/180min budget.
+#   Stage 3: greedy score-per-km cluster selection under the 100km/180min budget.
 #
 # Two honest scope notes, both flagged rather than silently glossed over (same
 # convention as build_route_balanced's alpha_used flag above):
@@ -3926,7 +3926,7 @@ def build_route_cluster_based(
          via Clarke-Wright + 2-opt + or-opt from Origin_Point, same sequencing
          heuristics Models 2/3 already use.
       3. Greedy accumulation -- add clusters in rank order until the next one would
-         push cumulative distance past 80km or cumulative time past 180min.
+         push cumulative distance past 100km or cumulative time past 180min.
       4. Tie-break on an equal primary rank -- (a) lower total distance, (b) higher
          recency urgency (proxied by the cluster's own mean Days_Since_Last_Visit,
          None treated as maximally urgent), (c) higher mean potential_weight.
@@ -4146,7 +4146,7 @@ def build_route_cluster_based(
             return round_trip_km
         return -(c["priority_score"] / round_trip_km) if round_trip_km > 1e-6 else -c["priority_score"]
 
-    # Step 3: greedy accumulation under the 80km / 180min budget.
+    # Step 3: greedy accumulation under the 100km / 180min budget.
     selected: List[Dict[str, Any]] = []
     remaining_km = PLAN_B_MAX_DAILY_DISTANCE_KM
     remaining_min = PLAN_B_MAX_DAILY_TRAVEL_MINUTES
@@ -4195,7 +4195,7 @@ def build_route_cluster_based(
         return {
             "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
             "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True,
-            "infeasibility_reason": "No cluster or individual BO fit inside the 80km/180min daily budget",
+            "infeasibility_reason": f"No cluster or individual BO fit inside the {PLAN_B_MAX_DAILY_DISTANCE_KM:.0f}km/{PLAN_B_MAX_DAILY_TRAVEL_MINUTES:.0f}min daily budget",
             "clusters_evaluated": len(scored_clusters),
         }
     # max_daily_tasks cap (8.10) -- the budget alone doesn't bound stop COUNT, only
@@ -4216,7 +4216,7 @@ def build_route_cluster_based(
         # runs) -- were genuine GR-R10 cases, pool had room to differ but never did).
         # When the cap-trimmed set duplicates an earlier route, try swapping the single
         # lowest-ranked included candidate for each just-past-the-cap alternative in rank
-        # order, keeping the first swap that both fits the 80km/180min budget and yields
+        # order, keeping the first swap that both fits the 100km/180min budget and yields
         # a genuinely new stop-set. Only ever swaps one seat, never a full re-optimize;
         # falls through to the ordinary (possibly duplicate) result if no swap both fits
         # and differs -- same "never invents a route from zero candidates, still returns
@@ -4248,6 +4248,33 @@ def build_route_cluster_based(
         all_stops_candidates = capped
     final_order = _or_opt(_two_opt(_clarke_wright_order(all_stops_candidates, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
     final_metrics = _route_metrics(final_order, origin, avg_speed_kmph)
+
+    # GR-R5-style trim-back (added 2026-09-07, explicit user request, caught in a
+    # self-audit) -- Step 3's greedy accumulation above estimates fit using each
+    # CLUSTER'S OWN standalone round-trip distance, a conservative but imprecise proxy
+    # for the real combined-tour distance (visiting several clusters as ONE tour is
+    # usually cheaper than the sum of separate round trips) -- so a rare marginal
+    # overshoot could previously slip through all the way to this final re-sequenced
+    # route, which just flagged Travel_Cap_Exceeded and used it anyway (unlike Plan
+    # A's own GR-R5, which always trims until it genuinely fits). Mirrors that same
+    # remedy here: drop the lowest-priority_score stop, recompute, repeat until the
+    # route fits both ceilings or nothing is left. Removing a stop can only reduce
+    # distance/time (fewer legs), so this always terminates feasible.
+    trimmed_for_ceiling: List[Dict[str, Any]] = []
+    while all_stops_candidates and (
+        final_metrics["total_distance_km"] > PLAN_B_MAX_DAILY_DISTANCE_KM
+        or final_metrics["total_travel_min"] > PLAN_B_MAX_DAILY_TRAVEL_MINUTES
+    ):
+        lowest = min(all_stops_candidates, key=lambda c: c["priority_score"])
+        all_stops_candidates = [c for c in all_stops_candidates if c is not lowest]
+        trimmed_for_ceiling.append(lowest)
+        final_order = (
+            _or_opt(_two_opt(_clarke_wright_order(all_stops_candidates, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
+            if all_stops_candidates else []
+        )
+        final_metrics = _route_metrics(final_order, origin, avg_speed_kmph)
+    dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Daily_Budget_Exceeded_Trimmed"} for c in trimmed_for_ceiling]
+
     feasible = final_metrics["total_distance_km"] <= PLAN_B_MAX_DAILY_DISTANCE_KM and final_metrics["total_travel_min"] <= PLAN_B_MAX_DAILY_TRAVEL_MINUTES
 
     return {
@@ -4255,7 +4282,7 @@ def build_route_cluster_based(
         "total_distance_km": final_metrics["total_distance_km"], "total_travel_min": final_metrics["total_travel_min"],
         "total_visit_min": final_metrics["total_visit_min"], "priority_score_captured": final_metrics["priority_score_captured"],
         "feasible": feasible,
-        "infeasibility_reason": "" if feasible else "Daily_Budget_Exceeded: re-sequenced combined route exceeds 80km/180min after merging clusters -- see Stage 3 docstring",
+        "infeasibility_reason": "" if feasible else f"Daily_Budget_Exceeded: re-sequenced combined route exceeds {PLAN_B_MAX_DAILY_DISTANCE_KM:.0f}km/{PLAN_B_MAX_DAILY_TRAVEL_MINUTES:.0f}min after merging clusters -- see Stage 3 docstring",
         "clusters_evaluated": len(scored_clusters),
     }
 
