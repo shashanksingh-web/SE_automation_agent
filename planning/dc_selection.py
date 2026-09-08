@@ -282,9 +282,12 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
     Every uploaded DC_ID is looked up against DC_RAnk.csv (the same load_dc_master()
     universe evaluate_dc_selection_rule's rank_range/cohort criteria already read) so
     the response can show each one's Rank/Cohort -- see Uploaded_Dcs below -- and flag
-    any ID that isn't a real DC_RAnk.csv row (Found: false) rather than silently
-    accepting a typo'd or stale ID. An unfound ID is still added to Manual_Includes
-    (the admin's explicit choice always wins), just visibly flagged so it's not a silent
+    any ID that isn't a real DC_RAnk.csv row (found: false, reason: an explanatory
+    string) rather than silently accepting a typo'd or stale ID, per direct follow-up --
+    "after uploading the files if any dc not found than provide the error page with
+    reason". Uploaded_Not_Found_Count lets the frontend show a prominent error summary
+    without counting client-side. An unfound ID is still added to Manual_Includes (the
+    admin's explicit choice always wins), just visibly flagged so it's not a silent
     surprise later.
 
     Same manual_includes/manual_excludes semantics as bulk paste (see update_selection/
@@ -325,6 +328,14 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
             "rank": dc_by_id[dc_id].get("Rank") if dc_id in dc_by_id else None,
             "cohort": dc_by_id[dc_id].get("Cohort") if dc_id in dc_by_id else None,
             "found": dc_id in dc_by_id,
+            "reason": (
+                None if dc_id in dc_by_id else
+                f"{dc_id} is not a Partner Id in DC_RAnk.csv (the current Rank & Cohort file) -- "
+                "it was still added to Manual Includes since that's an explicit admin choice, but it "
+                "has no Rank/Cohort, so it can never match the Rank range/Cohort criteria above, and "
+                "it will stay off Step 5's Cohort/Total_Score ordering elsewhere in the pipeline. "
+                "Check for a typo, or upload an updated Rank & Cohort file above if this is a new DC."
+            ),
         }
         for dc_id in sorted(ids)
     ]
@@ -339,4 +350,5 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
     state = get_state()
     state["Uploaded_Dc_Count"] = len(ids)
     state["Uploaded_Dcs"] = enriched
+    state["Uploaded_Not_Found_Count"] = sum(1 for r in enriched if not r["found"])
     return state
