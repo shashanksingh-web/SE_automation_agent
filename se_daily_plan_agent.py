@@ -4023,18 +4023,6 @@ def _cluster_candidates_by_density(
     max_intra_cluster_km: Optional[float] = None,
     target_size: int = PLAN_B_TARGET_CLUSTER_SIZE,
 ) -> List[List[Dict[str, Any]]]:
-    # max_intra_cluster_km default CHANGED 2026-09-07 (Admin Control Panel, explicit
-    # user request -- "routing agent ceiling also configurable"): was a bare module-level
-    # default (PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM), which Python binds ONCE at function-
-    # definition time (module import) -- an admin override to PLAN_B_MAX_DAILY_DISTANCE_KM
-    # made afterward (planning.admin_config patches the module attribute at plan-
-    # generation time, see that module's own docstring) would never reach this one
-    # function's default, since it was already frozen at import. Resolved fresh on every
-    # call instead, from whatever PLAN_B_MAX_DAILY_DISTANCE_KM currently is -- this is the
-    # only caller (see call site) and it never passes this explicitly, so the sentinel-
-    # default fix here is what actually makes the admin override take effect for it.
-    if max_intra_cluster_km is None:
-        max_intra_cluster_km = PLAN_B_MAX_DAILY_DISTANCE_KM * 0.45
     """Stage 1 (3.1-3.3). Greedy nearest-neighbor agglomeration: repeatedly seeds a new
     cluster from the unclustered candidate farthest from every existing cluster centroid
     (spreads seeds out rather than always starting in the same dense pocket), then grows
@@ -4045,7 +4033,29 @@ def _cluster_candidates_by_density(
     A candidate with no usable coordinates becomes its own singleton cluster (Edge Case
     "Isolated / outlier BO" is handled one level up, at Stage 3's conditional ceiling
     check -- this function only partitions, it doesn't judge whether a cluster is worth
-    visiting or standard-vs-Exceptional)."""
+    visiting or standard-vs-Exceptional).
+
+    max_intra_cluster_km default CHANGED 2026-09-07 (Admin Control Panel, explicit user
+    request -- "routing agent ceiling also configurable"): was a bare module-level
+    default (PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM), which Python binds ONCE at function-
+    definition time (module import) -- an admin override to PLAN_B_MAX_DAILY_DISTANCE_KM
+    made afterward (planning.admin_config patches the module attribute at plan-
+    generation time, see that module's own docstring) would never reach this one
+    function's default, since it was already frozen at import. Resolved fresh on every
+    call instead, from whatever PLAN_B_MAX_DAILY_DISTANCE_KM currently is -- this is the
+    only caller (see call site) and it never passes this explicitly, so the sentinel-
+    default resolution below is what actually makes the admin override take effect for
+    it.
+
+    BUG FIXED 2026-09-08 (caught in a self-audit): this docstring previously sat AFTER
+    the sentinel-resolution `if` block below, which silently demoted it from a real
+    docstring to a discarded string-literal statement -- Python only recognizes a
+    docstring as the function's very first statement, so __doc__ was reading None,
+    invisible to help()/introspection, even though the text was still physically
+    present in the source. No functional/output impact, but worth being an actual
+    docstring again."""
+    if max_intra_cluster_km is None:
+        max_intra_cluster_km = PLAN_B_MAX_DAILY_DISTANCE_KM * 0.45
     with_coords = [c for c in candidates if None not in _candidate_coords(c)]
     without_coords = [c for c in candidates if None in _candidate_coords(c)]
 
