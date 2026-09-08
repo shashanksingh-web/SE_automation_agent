@@ -274,13 +274,27 @@ def sample_selected_dcs_csv() -> str:
 
 def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Dict[str, Any]:
     """Selected DC List uploader (added 2026-09-08, explicit user request -- "add one
-    more uploader for selected dc") -- a file-based alternative to the Bulk Paste tab's
-    textarea, for handing this feature a list of DC IDs to select in one upload instead
-    of copy-pasting them. Same manual_includes/manual_excludes semantics as bulk paste
-    (see update_selection/search_dcs's own docstrings and DCSelectionPanel.tsx's
-    applyBulkPaste): parsed IDs are ADDED to manual_includes (merged with whatever's
-    already there, not a wholesale replace) and removed from manual_excludes if present,
-    since a DC can't be both.
+    more uploader for selected dc"; enriched with Rank/Cohort per direct follow-up --
+    "on uploading the partner it will get rank from dc_rank and cohort also get") -- a
+    file-based alternative to the Bulk Paste tab's textarea, for handing this feature a
+    list of DC IDs to select in one upload instead of copy-pasting them.
+
+    Every uploaded DC_ID is looked up against DC_RAnk.csv (the same load_dc_master()
+    universe evaluate_dc_selection_rule's rank_range/cohort criteria already read) so
+    the response can show each one's Rank/Cohort -- see Uploaded_Dcs below -- and flag
+    any ID that isn't a real DC_RAnk.csv row (Found: false) rather than silently
+    accepting a typo'd or stale ID. An unfound ID is still added to Manual_Includes
+    (the admin's explicit choice always wins), just visibly flagged so it's not a silent
+    surprise later.
+
+    Same manual_includes/manual_excludes semantics as bulk paste (see update_selection/
+    search_dcs's own docstrings and DCSelectionPanel.tsx's applyBulkPaste): parsed IDs
+    are ADDED to manual_includes (merged with whatever's already there, not a wholesale
+    replace) and removed from manual_excludes if present, since a DC can't be both. This
+    is the same OR-into-the-final-selection behavior the rule engine's own OR criteria
+    use (see evaluate_dc_selection_rule's docstring) -- manual_includes is unioned in
+    unconditionally on top of whatever the AND/OR rule computes, no new combination
+    logic needed for the uploaded list to participate in that.
 
     Format: one DC ID per row. Tolerant of either a bare list (no header) or a CSV with
     a header naming the ID column (Partner Id/DC_ID/DC Id, case-insensitive) -- only the
@@ -302,6 +316,19 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
     if not ids:
         raise ValueError("File parsed to zero valid DC IDs")
 
+    dc_master, _ = _dc_master()
+    dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
+    enriched = [
+        {
+            "dc_id": dc_id,
+            "dc_name": dc_by_id[dc_id].get("DC_Name") if dc_id in dc_by_id else None,
+            "rank": dc_by_id[dc_id].get("Rank") if dc_id in dc_by_id else None,
+            "cohort": dc_by_id[dc_id].get("Cohort") if dc_id in dc_by_id else None,
+            "found": dc_id in dc_by_id,
+        }
+        for dc_id in sorted(ids)
+    ]
+
     row = ProgramDCSelection.get_singleton()
     includes = set(row.manual_includes or []) | ids
     excludes = set(row.manual_excludes or []) - ids
@@ -311,4 +338,5 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
     row.save()
     state = get_state()
     state["Uploaded_Dc_Count"] = len(ids)
+    state["Uploaded_Dcs"] = enriched
     return state
