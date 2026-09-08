@@ -40,6 +40,7 @@ sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 from . import data_cache, product_cohort, routing
+from .admin_config import load_business_constants
 from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, PlanRun
 from .notify import send_alert
 
@@ -888,9 +889,9 @@ def _sql_block_product_purchase(dc_ids: List[str], plan_date: str) -> str:
 # Provisional business default, NOT the same as config item 1.3's growth-requirement
 # language (that one asks for the AOP-target leg to carry a growth factor, not this
 # leg) -- a distinct engineering decision, picked deliberately over multiplying the AOP
-# leg or the final combined figure instead. Tune here if the business wants a different
-# factor.
-PL_TRAILING_LEG_GROWTH_MULTIPLIER = 1.2
+# leg or the final combined figure instead. MOVED 2026-09-07 onto BusinessConstants.
+# pl_trailing_leg_growth_multiplier (was a bare module constant) so the Admin Control
+# Panel can override it live -- tune there, or change the class default here.
 
 def _sql_business_area_strength_detailed(dc_ids: List[str], window_start: str, window_end: str) -> str:
     # DC Card / "Dehaat Center Ko Jaano" Section 1 "कौन" (Who) -- Business Area Strength
@@ -1383,7 +1384,10 @@ def generate_plan_for_scope(
     own docstring. False by default, same never-silent posture as routing_plan_choice."""
     started_at = timezone.now()
     plan_date = plan_date or timezone.now().date().isoformat()
-    constants = agent.BusinessConstants()
+    # Admin Control Panel (added 2026-09-07) -- BusinessConstants() defaults, with any
+    # live admin overrides applied on top. See planning.admin_config's own docstring for
+    # exactly which fields are overridable and why.
+    constants = load_business_constants()
     client = agent.get_client()
     resolved_routing_plan = routing_plan_choice or (routing_plan_asker() if routing_plan_asker else None) or "A"
 
@@ -1978,7 +1982,7 @@ def generate_plan_for_scope(
             leg_aop_by_dc: Dict[str, float] = {}
             for dc_id in set(pl_actual_30d_by_dc) | set(pl_sum_90d_by_dc):
                 pl_sum_90d = pl_sum_90d_by_dc.get(dc_id)
-                leg_trailing = (pl_sum_90d / 3.0 * PL_TRAILING_LEG_GROWTH_MULTIPLIER) if pl_sum_90d else None
+                leg_trailing = (pl_sum_90d / 3.0 * constants.pl_trailing_leg_growth_multiplier) if pl_sum_90d else None
 
                 leg_aop = None
                 node = dc_node_by_id.get(dc_id, "")
@@ -2000,7 +2004,7 @@ def generate_plan_for_scope(
                     yoy_growth_multiplier=yoy_multiplier,
                 )
                 if leg_trailing is not None:
-                    result["reason"] += f"; trailing-90d leg carries a {PL_TRAILING_LEG_GROWTH_MULTIPLIER:.1f}x growth expectation (provisional, see PL_TRAILING_LEG_GROWTH_MULTIPLIER)"
+                    result["reason"] += f"; trailing-90d leg carries a {constants.pl_trailing_leg_growth_multiplier:.1f}x growth expectation (provisional, see BusinessConstants.pl_trailing_leg_growth_multiplier)"
                 if leg_aop is not None:
                     result["reason"] += "; AOP-allocated leg blended in (Node target x trailing-PL share, estimate, not a confirmed per-DC AOP figure)"
                 if yoy_growth_pct is not None:

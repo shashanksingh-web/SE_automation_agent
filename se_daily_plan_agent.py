@@ -134,12 +134,15 @@ REDSHIFT_STATEMENT_TIMEOUT_MS = int(os.environ.get("SE_AGENT_REDSHIFT_STATEMENT_
 # that fails to connect in the first place, not a single unretried reconnect (see 2026-08-09 fix).
 REDSHIFT_RETRY_BACKOFF_SECONDS = [2, 6]
 
-# Mirrors planning.models.DCVisitStreak.ESCALATION_THRESHOLD -- duplicated, not
-# imported, because this file must stay usable standalone (bare `python
-# se_daily_plan_agent.py`, no Django) while DCVisitStreak is a Django model this file
-# can't import. Used only for generate_se_daily_plan()'s Critical flag (confirmed
-# 2026-08-18); keep the two values in sync if the threshold ever changes.
-DC_VISIT_ESCALATION_THRESHOLD = 3
+# DC_VISIT_ESCALATION_THRESHOLD MOVED 2026-09-07 onto BusinessConstants.dc_visit_
+# escalation_threshold (explicit user request, Admin Control Panel -- needs to be a
+# live-overridable, instantiated value, not a bare module constant). Was: "Mirrors
+# planning.models.DCVisitStreak.ESCALATION_THRESHOLD -- duplicated, not imported, because
+# this file must stay usable standalone (bare `python se_daily_plan_agent.py`, no Django)
+# while DCVisitStreak is a Django model this file can't import." That constraint is
+# unaffected by this move (BusinessConstants is itself defined in this same standalone
+# file) -- DCVisitStreak.ESCALATION_THRESHOLD (planning/models.py) is a separate,
+# informational class attribute, keep the two in sync if this default ever changes.
 
 
 def utc_now_iso() -> str:
@@ -1000,6 +1003,17 @@ class BusinessConstants:
     # 8.12 bundling weights reuse 7.2's rank1/2/3 weights (0.40/0.35/0.25) applied per-DC
     # instead of per-SE-objective, per Layer 3 of the new formula.
     fm_min_meetings_per_month: int = 2  # 5.3/8.11 -- no live Farmer_Meetings source yet
+    # Confirmed 2026-08-18 -- consecutive-miss count that trips the Critical banner's
+    # "Escalated" reason (see generate_se_daily_plan). Moved here 2026-09-07 from a bare
+    # module constant so the Admin Control Panel can override it live -- see this class's
+    # own module-level comment (former DC_VISIT_ESCALATION_THRESHOLD location) for the
+    # planning.models.DCVisitStreak.ESCALATION_THRESHOLD sync note.
+    dc_visit_escalation_threshold: int = 3
+    # S2b Suggested Discount / S1's trailing-90-day PL leg growth expectation (added
+    # 2026-08-12/2026-08-18). Moved here 2026-09-07 from planning.services'
+    # PL_TRAILING_LEG_GROWTH_MULTIPLIER module constant, same Admin Control Panel
+    # live-override reasoning as dc_visit_escalation_threshold above.
+    pl_trailing_leg_growth_multiplier: float = 1.2
 
 
 # Param_Key -> (BusinessConstants attribute, regex to pull the expected number out of the
@@ -4821,7 +4835,7 @@ def generate_se_daily_plan(
         # in this cross-cutting Critical banner.
         misses = consecutive_misses_by_dc.get(dc_id, 0)
         critical_reasons = []
-        if misses >= DC_VISIT_ESCALATION_THRESHOLD:
+        if misses >= constants.dc_visit_escalation_threshold:
             critical_reasons.append(f"Escalated -- missed {misses}x running")
         # FIXED 2026-09-07 (caught live investigating a real report: this banner said
         # "₹2,71,151 overdue 90+ days" for a DC whose dc_datamart.os_90_plus was actually

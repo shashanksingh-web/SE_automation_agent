@@ -617,3 +617,37 @@ class BeatZoneAssignment(models.Model):
 
     def __str__(self):
         return f"{self.se_id}:{self.dc_id} -> zone {self.zone_index}/{self.num_zones}"
+
+
+class PipelineSettings(models.Model):
+    """Admin Control Panel (added 2026-09-07, explicit user request -- "add the new tab
+    for admin control panel", built off the SE_Daily_Task_Agent_Pipeline_Walkthrough
+    sheet's Steps 1-12). A singleton row (id=1, see get_singleton()) storing live
+    overrides onto se_daily_plan_agent.BusinessConstants' hardcoded Python defaults --
+    see planning.admin_config for the whitelist of which BusinessConstants fields are
+    actually safe to override, their metadata, and how overrides get applied.
+
+    overrides is {} for any field not yet overridden (BusinessConstants' own default
+    applies) -- an admin action REMOVES a key here to "reset to default" rather than
+    writing the default value back explicitly, so a later code change to the hardcoded
+    default is still honestly reflected for anyone who never touched that field.
+
+    Deliberately NOT a row-per-field table: the editable set is defined in Python
+    (planning.admin_config.ADMIN_EDITABLE_FIELDS), not migrated per-field, so adding a
+    new overridable constant never needs a schema migration -- only a whitelist entry."""
+
+    overrides = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    # Free-text identifier of who last changed something (e.g. an email/role) -- this app
+    # has no real auth/session system (see ScopeType/role selector on the frontend), so
+    # this is whatever the caller's own UI passes, not a verified account, same honesty
+    # limitation as Credit_On_Hold_Reason and every other "who/why" free-text field here.
+    updated_by = models.CharField(max_length=200, blank=True, default="")
+
+    @classmethod
+    def get_singleton(cls) -> "PipelineSettings":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return f"PipelineSettings({len(self.overrides)} override(s), updated {self.updated_at})"

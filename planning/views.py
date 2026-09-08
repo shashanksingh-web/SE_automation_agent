@@ -1,6 +1,10 @@
-from django.http import JsonResponse
-from django.views.decorators.http import require_GET
+import json
 
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_http_methods
+
+from . import admin_config
 from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
 from .models import DailyTask, DCCard, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, ScheduledScope
@@ -748,3 +752,41 @@ def plan_run_list(request):
         "SE_Count": r.se_count, "DC_Count": r.dc_count, "Task_Count": r.task_count,
         "Status": r.status,
     })
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def admin_pipeline_config(request):
+    """/api/planning/admin/config/ -- Admin Control Panel (added 2026-09-07).
+
+    GET: every admin-editable BusinessConstants field, grouped by pipeline step (see
+    planning.admin_config.ADMIN_EDITABLE_FIELDS), plus the 3 Step 11 routing ceilings
+    shown read-only. `Value` is the live effective value (override if one exists, else
+    the hardcoded default); `Overridden` tells the UI whether to show a "reset" control.
+
+    POST: body {"changes": {key: new_value, ...}, "reset": [key, ...], "actor": "who's
+    making this change"}. Applies `changes` (validated per-field against
+    ADMIN_EDITABLE_FIELDS' type/min/max) and `reset`s (revert to hardcoded default) in
+    that order, then returns the same shape GET returns plus an `Errors` map for any
+    rejected keys (a partial apply, not all-or-nothing -- see admin_config.apply_
+    overrides's own docstring).
+
+    csrf_exempt: this whole API is unauthenticated GET-only elsewhere (no session/login
+    system exists anywhere in this app, see PipelineSettings.updated_by's own docstring)
+    -- the frontend has no CSRF token to send, so requiring one here would just break the
+    one write path this app has, not add real protection. Same trust boundary as every
+    other endpoint in this file, just now with a mutation."""
+    if request.method == "POST":
+        try:
+            body = json.loads(request.body or b"{}")
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON body"}, status=400)
+        reset_keys = body.get("reset") or []
+        if reset_keys:
+            admin_config.reset_fields(reset_keys)
+        changes = body.get("changes") or {}
+        errors = admin_config.apply_overrides(changes, updated_by=str(body.get("actor") or "")) if changes else {}
+        state = admin_config.get_config_state()
+        state["Errors"] = errors
+        return JsonResponse(state, json_dumps_params={"default": str})
+    return JsonResponse(admin_config.get_config_state(), json_dumps_params={"default": str})

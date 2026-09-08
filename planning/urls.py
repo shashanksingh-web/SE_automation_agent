@@ -33,4 +33,5 @@ urlpatterns = [
     path("scheduled-scopes/", views.scheduled_scopes, name="scheduled_scopes"),
     path("runs/", views.plan_run_list, name="plan_run_list"),
     path("runs/<int:plan_run_id>/", views.plan_run_detail, name="plan_run_detail"),
+    path("admin/config/", views.admin_pipeline_config, name="admin_pipeline_config"),
 ]
