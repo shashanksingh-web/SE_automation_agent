@@ -3149,7 +3149,7 @@ R1_1_FIELD_MINUTES_CAP = 420  # R1.1, HARD cap (GR-R3)
 # correction already made in the master BO_Configuration_Sheet_v3.xlsx (8.9). A route is
 # feasible only if SUM(Travel_Time_Leg) <= 180 -- an SE must NOT spend more than 3 hours
 # of the day travelling, not "must spend at least" as this constant previously enforced.
-R1_2_MAX_TRAVEL_MINUTES = 180
+R1_2_MAX_TRAVEL_MINUTES = 180  # Admin Control Panel-overridable (planning.admin_config), see load_business_constants's own docstring.
 R1_7_MAX_STOPS = 5  # R1.7, HARD cap (GR-R4)
 R3_2_DEFAULT_AVG_SPEED_KMPH = 25.0  # R3.2 -- undefined in the sheet; bottom of its own suggested 25-30 km/h range
 
@@ -3828,9 +3828,15 @@ def build_route_balanced(
 #     pretended to be live.
 # =====================================================================================
 
-PLAN_B_MAX_DAILY_DISTANCE_KM = 100.0   # CHANGED 2026-09-06, explicit user request: round-trip distance budget raised 80km->100km, replacing the old figure everywhere in Plan B (standard-cluster accumulation AND the Exceptional-cluster threshold below).
-PLAN_B_MAX_DAILY_TRAVEL_MINUTES = 180.0  # Section 5 -- hard ceiling, both constraints must be satisfied together (explicit user request 2026-09-06 -- neither one alone controls)
-PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM = PLAN_B_MAX_DAILY_DISTANCE_KM * 0.45  # Section 3.2: "no more than ~40-50% of the daily budget just to traverse internally" -- midpoint of that stated range, now against the 100km figure
+PLAN_B_MAX_DAILY_DISTANCE_KM = 100.0   # CHANGED 2026-09-06, explicit user request: round-trip distance budget raised 80km->100km, replacing the old figure everywhere in Plan B (standard-cluster accumulation AND the Exceptional-cluster threshold below). Admin Control Panel-overridable (planning.admin_config), see load_business_constants's own docstring.
+PLAN_B_MAX_DAILY_TRAVEL_MINUTES = 180.0  # Section 5 -- hard ceiling, both constraints must be satisfied together (explicit user request 2026-09-06 -- neither one alone controls). Admin Control Panel-overridable, same as above.
+# PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM (Section 3.2: "no more than ~40-50% of the daily
+# budget just to traverse internally", 0.45 x PLAN_B_MAX_DAILY_DISTANCE_KM) REMOVED
+# 2026-09-07 as a module-level constant -- it was computed once at import time, so an
+# Admin Control Panel override to PLAN_B_MAX_DAILY_DISTANCE_KM made afterward would never
+# reach it. Its one caller (_cluster_candidates_by_density) now re-derives the same 0.45x
+# ratio fresh on every call instead, from whatever PLAN_B_MAX_DAILY_DISTANCE_KM currently
+# is -- see that function's own default-parameter comment.
 PLAN_B_TARGET_CLUSTER_SIZE = 6          # not numerically specified by the workbook ("comparable count of BOs per km2, until BO-count-per-cluster converges within a target band") -- a mid-sized daily-beat count, flagged as a chosen default, not a confirmed figure
 PLAN_B_RECENCY_DECAY_RATE = 1.0 / 30.0  # Edge Case #2/#11: bounded, smooth decay, full cycle within ~30 days
 PLAN_B_RECENCY_DECAY_CAP = 2.0          # Edge Case #2: caps decay so a cluster can't be weighted away forever
@@ -3839,9 +3845,21 @@ PLAN_B_NEW_BO_RECENCY_WEIGHT = PLAN_B_RECENCY_DECAY_CAP  # Edge Case #6: a BO wi
 
 def _cluster_candidates_by_density(
     candidates: List[Dict[str, Any]],
-    max_intra_cluster_km: float = PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM,
+    max_intra_cluster_km: Optional[float] = None,
     target_size: int = PLAN_B_TARGET_CLUSTER_SIZE,
 ) -> List[List[Dict[str, Any]]]:
+    # max_intra_cluster_km default CHANGED 2026-09-07 (Admin Control Panel, explicit
+    # user request -- "routing agent ceiling also configurable"): was a bare module-level
+    # default (PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM), which Python binds ONCE at function-
+    # definition time (module import) -- an admin override to PLAN_B_MAX_DAILY_DISTANCE_KM
+    # made afterward (planning.admin_config patches the module attribute at plan-
+    # generation time, see that module's own docstring) would never reach this one
+    # function's default, since it was already frozen at import. Resolved fresh on every
+    # call instead, from whatever PLAN_B_MAX_DAILY_DISTANCE_KM currently is -- this is the
+    # only caller (see call site) and it never passes this explicitly, so the sentinel-
+    # default fix here is what actually makes the admin override take effect for it.
+    if max_intra_cluster_km is None:
+        max_intra_cluster_km = PLAN_B_MAX_DAILY_DISTANCE_KM * 0.45
     """Stage 1 (3.1-3.3). Greedy nearest-neighbor agglomeration: repeatedly seeds a new
     cluster from the unclustered candidate farthest from every existing cluster centroid
     (spreads seeds out rather than always starting in the same dense pocket), then grows

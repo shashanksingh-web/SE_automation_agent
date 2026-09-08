@@ -1,21 +1,34 @@
 """Admin Control Panel (added 2026-09-07, explicit user request -- "add the new tab for
 admin control panel... use this sheet for creating control panel", built off the
 SE_Daily_Task_Agent_Pipeline_Walkthrough sheet's Steps 1-12). Live-editable overrides
-onto se_daily_plan_agent.BusinessConstants' hardcoded Python defaults, persisted in
-PipelineSettings (planning/models.py).
+onto se_daily_plan_agent's hardcoded Python defaults, persisted in PipelineSettings
+(planning/models.py).
 
-Scope, deliberately: only BusinessConstants dataclass fields are overridable here, since
-that class is already freshly instantiated per plan-generation call
-(planning.services.generate_plan_for_scope, the single entry point both the web app's
-Create/Refresh and `manage.py generate_se_plan` go through) -- setattr-ing overrides onto
-a fresh instance is a safe, request-scoped change with a working git-tracked default to
-fall back to. The sheet's Step 11 (Routing) documents 3 more ceilings
-(R1_2_MAX_TRAVEL_MINUTES, PLAN_B_MAX_DAILY_DISTANCE_KM, PLAN_B_MAX_DAILY_TRAVEL_MINUTES)
-that are deliberately NOT included as editable here -- they're module-level constants
-read directly at many call sites throughout se_daily_plan_agent.py's route-building logic,
-not one instantiated object, so wiring them into live overrides needs a wider, separately
--scoped refactor. get_config_state() still surfaces them, read-only, so the panel isn't
-silently missing a whole pipeline step.
+Two kinds of editable field, per ADMIN_EDITABLE_FIELDS' own "target":
+- "constants" (the original, larger set): a BusinessConstants dataclass field.
+  BusinessConstants is freshly instantiated per plan-generation call
+  (planning.services.generate_plan_for_scope, the single entry point both the web app's
+  Create/Refresh and `manage.py generate_se_plan` go through) -- setattr-ing overrides
+  onto a fresh instance is a safe, request-scoped change with a working git-tracked
+  default (a fresh BusinessConstants()) to fall back to.
+- "module" (the sheet's Step 11 routing ceilings, added 2026-09-07 explicit user request
+  "routing agent ceiling also configurable"): a bare module-level constant in
+  se_daily_plan_agent.py, read directly at 15+ call sites throughout the Routing Agent's
+  route-building logic rather than one instantiated object. load_business_constants()
+  monkey-patches these directly onto the se_daily_plan_agent module (setattr on the
+  module itself) every time it runs -- since every real call site reads the module
+  global fresh at call time (not a def-time-bound default -- the one exception,
+  _cluster_candidates_by_density's max_intra_cluster_km, was fixed 2026-09-07 to resolve
+  at call time too, see that function's own comment), this reaches all of them without
+  a wider parameter-threading refactor. Known limitation, accepted rather than
+  engineered around: this mutates process-global state, not a per-request-scoped value
+  -- fine under this app's own already-accepted concurrency posture (a single shared
+  SQLite DB that already serializes/locks concurrent plan generations, see the project's
+  own "database is locked" 502 issue), not safe if this app ever moves to a
+  higher-concurrency deployment without addressing that first. Because a module-level
+  patch has no fresh-instance fallback to read a true default from, the hardcoded
+  default for these 3 fields is recorded directly in ADMIN_EDITABLE_FIELDS itself
+  (a "default" key), not re-derived from the (possibly already-patched) module.
 """
 from __future__ import annotations
 
@@ -217,55 +230,87 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "label": "Total daily capacity", "unit": "minutes", "min": 60, "max": 1440,
         "description": "8.2 -- one SE's total working minutes/day (calls + field time combined).",
     },
+    # --- Step 11: Routing (added 2026-09-07, explicit user request "routing agent
+    # ceiling also configurable") -- "target": "module" + "module_attr" + an explicit
+    # "default" distinguish these from every field above (which are plain
+    # BusinessConstants attributes, "target" defaulting to "constants" wherever it's
+    # read below). See this module's own docstring for why these need a different
+    # apply mechanism (a module-level setattr, not BusinessConstants setattr) and why
+    # their "default" can't just be re-derived from a fresh instance like the others.
+    {
+        "group": "Routing", "key": "r1_2_max_travel_minutes", "type": "float",
+        "label": "Plan A travel ceiling (all 3 models)", "unit": "minutes", "min": 30, "max": 480,
+        "description": "R1.2 -- an SE must not spend more than this many minutes/day travelling (Plan A's Priority-Max/Distance-Min/Balanced models all share this ceiling).",
+        "target": "module", "module_attr": "R1_2_MAX_TRAVEL_MINUTES", "default": 180,
+    },
+    {
+        "group": "Routing", "key": "plan_b_max_daily_distance_km", "type": "float",
+        "label": "Plan B distance ceiling", "unit": "km", "min": 10, "max": 500,
+        "description": "Section 5 -- Plan B's (Beat Planning/Cluster-Based) round-trip distance budget. Both this and the travel-time ceiling below must be satisfied together.",
+        "target": "module", "module_attr": "PLAN_B_MAX_DAILY_DISTANCE_KM", "default": 100.0,
+    },
+    {
+        "group": "Routing", "key": "plan_b_max_daily_travel_minutes", "type": "float",
+        "label": "Plan B travel ceiling", "unit": "minutes", "min": 30, "max": 480,
+        "description": "Section 5 -- Plan B's round-trip travel-time budget. Both this and the distance ceiling above must be satisfied together.",
+        "target": "module", "module_attr": "PLAN_B_MAX_DAILY_TRAVEL_MINUTES", "default": 180.0,
+    },
 ]
 
 _FIELD_BY_KEY: Dict[str, Dict[str, Any]] = {f["key"]: f for f in ADMIN_EDITABLE_FIELDS}
 
-# Step 11 (Routing) ceilings -- read-only reference, see module docstring for why these
-# aren't live-overridable yet.
-_ROUTING_REFERENCE = [
-    {"label": "Plan A travel ceiling (all 3 models)", "unit": "minutes", "source": "R1_2_MAX_TRAVEL_MINUTES"},
-    {"label": "Plan B distance ceiling", "unit": "km", "source": "PLAN_B_MAX_DAILY_DISTANCE_KM"},
-    {"label": "Plan B travel ceiling", "unit": "minutes", "source": "PLAN_B_MAX_DAILY_TRAVEL_MINUTES"},
-]
-
 
 def load_business_constants() -> "agent.BusinessConstants":
-    """se_daily_plan_agent.BusinessConstants(), with any admin overrides applied on top.
-    Call this instead of agent.BusinessConstants() directly at any live plan-generation
-    entry point (currently: planning.services.generate_plan_for_scope, the one entry
-    point both the web app and `manage.py generate_se_plan` share). Unknown/stale keys in
-    PipelineSettings.overrides (e.g. a field later removed from ADMIN_EDITABLE_FIELDS)
-    are silently skipped, not applied -- the whitelist here is the source of truth, not
-    whatever happens to already be stored."""
+    """se_daily_plan_agent.BusinessConstants(), with any admin overrides applied on top,
+    AND (side effect) patches the Step 11 routing ceilings directly onto the
+    se_daily_plan_agent module for any override on a "module"-target field -- see this
+    module's own docstring for why routing needs a different apply mechanism than
+    BusinessConstants' plain setattr. Call this instead of agent.BusinessConstants()
+    directly at any live plan-generation entry point (currently: planning.services.
+    generate_plan_for_scope, the one entry point both the web app and `manage.py
+    generate_se_plan` share) -- calling it is what makes BOTH kinds of override actually
+    take effect for that run. Unknown/stale keys in PipelineSettings.overrides (e.g. a
+    field later removed from ADMIN_EDITABLE_FIELDS) are silently skipped, not applied --
+    the whitelist here is the source of truth, not whatever happens to already be stored."""
     constants = agent.BusinessConstants()
     overrides = PipelineSettings.get_singleton().overrides or {}
     for key, value in overrides.items():
-        if key in _FIELD_BY_KEY and hasattr(constants, key):
+        field = _FIELD_BY_KEY.get(key)
+        if field and field.get("target") != "module" and hasattr(constants, key):
             setattr(constants, key, value)
+    # Module-target (routing) fields are set UNCONDITIONALLY on every call, to either
+    # the override or the field's own hardcoded default -- unlike BusinessConstants
+    # (a fresh instance every call, so a removed override naturally reverts), the
+    # se_daily_plan_agent module is a long-lived singleton: if a reset only deleted the
+    # DB override and never explicitly reapplied here, the module attribute would stay
+    # stuck at its last-patched value indefinitely (until process restart), not actually
+    # revert. See this module's own docstring for the broader module-patching tradeoff.
+    for field in ADMIN_EDITABLE_FIELDS:
+        if field.get("target") == "module":
+            setattr(agent, field["module_attr"], overrides.get(field["key"], field["default"]))
     return constants
 
 
 def get_config_state() -> Dict[str, Any]:
     """Current effective value + hardcoded default for every editable field, grouped for
-    the Admin Control Panel UI, plus the Step 11 routing ceilings shown read-only."""
+    the Admin Control Panel UI. "module"-target fields (Step 11 routing) read their
+    default from ADMIN_EDITABLE_FIELDS itself, not a fresh module import (there's no such
+    thing -- the module may already be running with a prior override applied by an
+    earlier load_business_constants() call in this same process)."""
     defaults = agent.BusinessConstants()
     settings_row = PipelineSettings.get_singleton()
     overrides = settings_row.overrides or {}
     groups: Dict[str, list] = {}
     for f in ADMIN_EDITABLE_FIELDS:
-        default_value = getattr(defaults, f["key"])
+        is_module = f.get("target") == "module"
+        default_value = f["default"] if is_module else getattr(defaults, f["key"])
         is_overridden = f["key"] in overrides
         value = overrides[f["key"]] if is_overridden else default_value
         groups.setdefault(f["group"], []).append({
             **f, "default": default_value, "value": value, "overridden": is_overridden,
         })
-    routing_reference = [
-        {**r, "value": getattr(agent, r["source"])} for r in _ROUTING_REFERENCE
-    ]
     return {
         "Groups": [{"Group": g, "Fields": fs} for g, fs in groups.items()],
-        "Routing_Reference": routing_reference,
         "Updated_At": settings_row.updated_at,
         "Updated_By": settings_row.updated_by,
     }
