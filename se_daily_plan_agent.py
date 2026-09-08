@@ -1449,6 +1449,23 @@ def evaluate_dc_selection_rule(
     if not enabled and not resolved_includes and not resolved_excludes:
         return None
 
+    # FIXED 2026-09-08 (caught in a self-audit -- same class of bug already fixed in
+    # apply_dc_exclusion_rules' own Active check): dc_active_by_id/dc_overdue_by_id=None
+    # means the dc_datamart QUERY ITSELF failed this run, not "confirmed no data for any
+    # DC". Collapsing that into {} below would make every DC silently fail an enabled
+    # active_status/overdue criterion (dict.get returns None for everyone) -- for an AND
+    # criterion that excludes the entire network, for an OR criterion it contributes
+    # nothing, both on a single transient infrastructure hiccup rather than a real admin
+    # choice. Any criterion whose data source is genuinely missing is dropped from
+    # evaluation entirely for this run (as if the admin hadn't enabled it), rather than
+    # silently degrading into a wrong exclusion.
+    if dc_active_by_id is None and "active_status" in enabled:
+        enabled = {k: v for k, v in enabled.items() if k != "active_status"}
+    if dc_overdue_by_id is None and "overdue" in enabled:
+        enabled = {k: v for k, v in enabled.items() if k != "overdue"}
+    if not enabled and not resolved_includes and not resolved_excludes:
+        return None
+
     dc_active_by_id = dc_active_by_id or {}
     dc_overdue_by_id = dc_overdue_by_id or {}
     dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
