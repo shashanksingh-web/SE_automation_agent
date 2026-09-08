@@ -279,16 +279,26 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
     file-based alternative to the Bulk Paste tab's textarea, for handing this feature a
     list of DC IDs to select in one upload instead of copy-pasting them.
 
-    Every uploaded DC_ID is looked up against DC_RAnk.csv (the same load_dc_master()
-    universe evaluate_dc_selection_rule's rank_range/cohort criteria already read) so
-    the response can show each one's Rank/Cohort -- see Uploaded_Dcs below -- and flag
-    any ID that isn't a real DC_RAnk.csv row (found: false, reason: an explanatory
-    string) rather than silently accepting a typo'd or stale ID, per direct follow-up --
-    "after uploading the files if any dc not found than provide the error page with
-    reason". Uploaded_Not_Found_Count lets the frontend show a prominent error summary
-    without counting client-side. An unfound ID is still added to Manual_Includes (the
-    admin's explicit choice always wins), just visibly flagged so it's not a silent
-    surprise later.
+    Every uploaded DC_ID is checked against BOTH data sources this feature is built on,
+    per direct follow-up -- "first check with dc rank than dcdatamart" -- same order
+    dc_selection's own module docstring describes (DC_RAnk.csv is Source 2's DC Master,
+    dc_datamart is the live master universe):
+      1. DC_RAnk.csv (via load_dc_master(), the same universe evaluate_dc_selection_
+         rule's rank_range/cohort criteria read) -- Rank/Cohort/Name, and `found`/
+         `reason` when the ID isn't a real Partner Id there at all.
+      2. dc_datamart (the same live, unscoped pull search_dcs() uses) -- is_active/
+         overdue, so an uploaded ID's active status and overdue amount show up here too,
+         not just its Rank/Cohort -- null for both when the live query fails or the ID
+         has no dc_datamart row (same "can't evaluate, not a rejection" treatment
+         search_dcs already gives a DC dc_datamart doesn't know about).
+    `found`/`reason` reflect ONLY the DC_RAnk.csv check (step 1) -- that's what actually
+    gates rank_range/cohort matching in the rule above; dc_datamart absence doesn't
+    block a DC from being manually selected, it just means active_status/overdue can
+    never match for it, same as the fail-closed-per-criterion behavior everywhere else
+    in this module. Uploaded_Not_Found_Count lets the frontend show a prominent error
+    summary without counting client-side. An unfound-in-DC_RAnk ID is still added to
+    Manual_Includes (the admin's explicit choice always wins), just visibly flagged so
+    it's not a silent surprise later.
 
     Same manual_includes/manual_excludes semantics as bulk paste (see update_selection/
     search_dcs's own docstrings and DCSelectionPanel.tsx's applyBulkPaste): parsed IDs
@@ -319,14 +329,19 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
     if not ids:
         raise ValueError("File parsed to zero valid DC IDs")
 
+    # Step 1: DC_RAnk.csv -- Rank/Cohort/Name, and whether the ID is a real row at all.
     dc_master, _ = _dc_master()
     dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
+    # Step 2: dc_datamart -- is_active/overdue, same live unscoped pull search_dcs() uses.
+    active_by_id, overdue_by_id, query_ok = _fetch_live_dc_datamart()
     enriched = [
         {
             "dc_id": dc_id,
             "dc_name": dc_by_id[dc_id].get("DC_Name") if dc_id in dc_by_id else None,
             "rank": dc_by_id[dc_id].get("Rank") if dc_id in dc_by_id else None,
             "cohort": dc_by_id[dc_id].get("Cohort") if dc_id in dc_by_id else None,
+            "is_active": active_by_id.get(dc_id) if query_ok else None,
+            "overdue": overdue_by_id.get(dc_id) if query_ok else None,
             "found": dc_id in dc_by_id,
             "reason": (
                 None if dc_id in dc_by_id else
