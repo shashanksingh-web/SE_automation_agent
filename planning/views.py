@@ -4,7 +4,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
-from . import admin_config
+from . import admin_config, dc_selection
 from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
 from .models import DailyTask, DCCard, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, ScheduledScope
@@ -790,3 +790,69 @@ def admin_pipeline_config(request):
         state["Errors"] = errors
         return JsonResponse(state, json_dumps_params={"default": str})
     return JsonResponse(admin_config.get_config_state(), json_dumps_params={"default": str})
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def admin_dc_selection(request):
+    """/api/planning/admin/dc-selection/ -- DC Selection (added 2026-09-08). See
+    planning.dc_selection's module docstring for the full feature.
+
+    GET: current rule (Rules, each of the 4 criteria with enabled/combine/params),
+    Manual_Includes/Manual_Excludes, and a live-computed preview (Universe_Size,
+    Selected_Count, Configured -- whether a rule/manual list has actually been set, in
+    which case this replaces the Excel Top DC list network-wide the next time a plan is
+    generated).
+
+    POST: body {"rules": {...}, "manual_includes": [...], "manual_excludes": [...],
+    "actor": "..."} -- any subset; provided keys replace their whole value (rules is not
+    merged per-criterion, see dc_selection.update_selection's own docstring for why).
+    Returns the same shape GET returns.
+
+    csrf_exempt: same unauthenticated trust boundary as admin_pipeline_config above --
+    this app has no session/login system anywhere."""
+    if request.method == "POST":
+        try:
+            body = json.loads(request.body or b"{}")
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON body"}, status=400)
+        state = dc_selection.update_selection(
+            body.get("rules"), body.get("manual_includes"), body.get("manual_excludes"),
+            actor=str(body.get("actor") or ""),
+        )
+        return JsonResponse(state, json_dumps_params={"default": str})
+    return JsonResponse(dc_selection.get_state(), json_dumps_params={"default": str})
+
+
+@require_GET
+def admin_dc_selection_search(request):
+    """/api/planning/admin/dc-selection/search/?q=&limit=&offset=&filter_mode= --
+    Search & toggle UX (point 3 of the DC Selection feature): searches the full
+    DC_RAnk.csv universe by DC_ID/name substring, returns each match's Rank/Cohort/
+    is_active/overdue plus whether it's in the currently-computed selection and/or
+    manually included/excluded."""
+    result = dc_selection.search_dcs(
+        query=request.GET.get("q", ""),
+        limit=int(request.GET.get("limit", 50) or 50),
+        offset=int(request.GET.get("offset", 0) or 0),
+        filter_mode=request.GET.get("filter_mode", "all"),
+    )
+    return JsonResponse(result, json_dumps_params={"default": str})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def admin_dc_selection_upload_rank_csv(request):
+    """/api/planning/admin/dc-selection/upload-rank-csv/ -- the "uploader" (point 2 of
+    the DC Selection feature): multipart POST with a `file` field, replaces DC_RAnk.csv
+    (se_daily_plan_agent.DC_MASTER_CSV) in place after validating it parses. See
+    dc_selection.upload_rank_csv's own docstring for the validate-then-atomic-replace
+    behavior; a rejected file leaves the existing DC_RAnk.csv untouched."""
+    upload = request.FILES.get("file")
+    if upload is None:
+        return JsonResponse({"error": "No file uploaded (expected multipart field 'file')"}, status=400)
+    try:
+        state = dc_selection.upload_rank_csv(upload.read(), upload.name, actor=str(request.POST.get("actor") or ""))
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    return JsonResponse(state, json_dumps_params={"default": str})

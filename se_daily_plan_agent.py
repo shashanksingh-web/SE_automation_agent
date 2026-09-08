@@ -1376,9 +1376,107 @@ def load_top_dc_allowlist(path: Path = TOP_DC_LIST_XLSX) -> Tuple[Optional[Set[s
     return allowlist, exc
 
 
+DC_SELECTION_CRITERIA_KEYS = ("rank_range", "cohort", "active_status", "overdue")
+
+
+def _dc_selection_criterion_matches(
+    kind: str, params: Dict[str, Any], rank: Optional[float], cohort: Optional[str],
+    is_active: Optional[bool], overdue: Optional[float],
+) -> bool:
+    """One criterion's own match test, given a single DC's already-resolved Rank/Cohort
+    (from DC_RAnk.csv via load_dc_master) and is_active/overdue (from a live dc_datamart
+    row, may be missing). Missing data always fails the criterion (does not match) --
+    same fail-closed treatment this module already gives a DC absent from a live
+    dc_datamart pull elsewhere (see apply_dc_exclusion_rules' DC_Active_Status_Unavailable)."""
+    if kind == "rank_range":
+        # rank may be a non-numeric placeholder string ("Long Tail") -- load_dc_master()
+        # only resolves a numeric Rank for non-Long-Tail cohorts (see its own rank_numeric
+        # comment); treat anything non-numeric the same as missing, not a crash.
+        if not isinstance(rank, (int, float)) or isinstance(rank, bool):
+            return False
+        lo, hi = params.get("min"), params.get("max")
+        if lo is not None and rank < lo:
+            return False
+        if hi is not None and rank > hi:
+            return False
+        return True
+    if kind == "cohort":
+        values = params.get("values") or []
+        return bool(cohort) and cohort in values
+    if kind == "active_status":
+        want_active = (params.get("value") or "active") == "active"
+        if is_active is None:
+            return False
+        return is_active == want_active
+    if kind == "overdue":
+        if overdue is None:
+            return False
+        return overdue > float(params.get("min_amount", 0) or 0)
+    return False
+
+
+def evaluate_dc_selection_rule(
+    rules: Optional[Dict[str, Dict[str, Any]]], dc_master: Table,
+    dc_active_by_id: Optional[Dict[str, bool]], dc_overdue_by_id: Optional[Dict[str, float]],
+    manual_includes: Optional[Iterable[str]] = None, manual_excludes: Optional[Iterable[str]] = None,
+) -> Optional[Set[str]]:
+    """planning.dc_selection's AND/OR filter engine (2026-09-08, explicit user request --
+    see apply_dc_exclusion_rules' program_dc_gate_active docstring for the full feature).
+    Pure function: dc_master supplies Rank/Cohort per DC (from DC_RAnk.csv via
+    load_dc_master), dc_active_by_id/dc_overdue_by_id supply live dc_datamart data --
+    this function does no I/O itself, so it works identically from the Django admin
+    preview and from the actual plan-generation gate.
+
+    Per-criterion AND/OR combination, per direct instruction ("we have filter which is
+    based on and/or ... or-apart from above selection also include these ... and means
+    from above filter this is the selection criteria"): every enabled AND criterion
+    NARROWS the selection (intersection, starting from the full DC universe); every
+    enabled OR criterion is evaluated independently against the full universe and its
+    matches are UNIONED into the AND-narrowed result ("apart from [the AND] selection,
+    also include these"). With zero AND criteria enabled, the base selection before OR-
+    additions is empty (there is no "above selection" for OR to add onto) -- an all-OR
+    rule is a pure union of its criteria.
+
+    Returns None (fail-open, "no restriction") only when nothing is configured at all --
+    no enabled criteria AND no manual_includes/manual_excludes -- e.g. a fresh install
+    that has never touched the Admin Control Panel's DC Selection. Once anything is
+    configured, this always returns a real (possibly empty) set; an empty result is a
+    legitimate, deliberate admin choice, not a failure."""
+    rules = rules or {}
+    resolved_includes = {normalize_id(x) for x in (manual_includes or []) if normalize_id(x)}
+    resolved_excludes = {normalize_id(x) for x in (manual_excludes or []) if normalize_id(x)}
+    enabled = {k: v for k, v in rules.items() if k in DC_SELECTION_CRITERIA_KEYS and v and v.get("enabled")}
+    if not enabled and not resolved_includes and not resolved_excludes:
+        return None
+
+    dc_active_by_id = dc_active_by_id or {}
+    dc_overdue_by_id = dc_overdue_by_id or {}
+    dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
+    universe = list(dc_by_id.keys())
+
+    def matches(dc_id: str, kind: str) -> bool:
+        dc = dc_by_id.get(dc_id)
+        return _dc_selection_criterion_matches(
+            kind, enabled[kind], dc.get("Rank") if dc else None, dc.get("Cohort") if dc else None,
+            dc_active_by_id.get(dc_id), dc_overdue_by_id.get(dc_id),
+        )
+
+    and_keys = [k for k, v in enabled.items() if (v.get("combine") or "AND").upper() != "OR"]
+    or_keys = [k for k, v in enabled.items() if (v.get("combine") or "AND").upper() == "OR"]
+
+    selected = {dc_id for dc_id in universe if all(matches(dc_id, k) for k in and_keys)} if and_keys else set()
+    for k in or_keys:
+        selected |= {dc_id for dc_id in universe if matches(dc_id, k)}
+
+    selected -= resolved_excludes
+    selected |= resolved_includes
+    return selected
+
+
 def apply_dc_exclusion_rules(
     dc_master: Table, exc: Exceptions, constants: BusinessConstants, last_visit_by_dc: Dict[str, str], today: str,
     top_dc_allowlist: Optional[Set[str]] = None, dc_active_by_id: Optional[Dict[str, bool]] = None,
+    program_dc_gate_active: bool = False,
 ) -> None:
     """Section 6: rules that remove a DC from consideration entirely.
     6.4 (Agent-Determined): always block Legal_Hold; Credit_Blocked/Blacklisted are
@@ -1415,7 +1513,25 @@ def apply_dc_exclusion_rules(
     confirmed-inactive DC. This is separate from (and upstream of) dc_datamart's
     existing is_active filter inside normalize_sales_transactions, which only ever
     withheld Outstanding-financial data for an inactive DC -- it never excluded the DC
-    from selection entirely the way this does."""
+    from selection entirely the way this does.
+
+    program_dc_gate_active (2026-09-08, explicit user request, "in admin control panel
+    we have select the dcs for this whole program" -- dc_datamart as master, DC_RAnk.csv-
+    sourced Rank/Cohort via an admin-uploaded file, a per-criterion AND/OR filter over
+    rank range/cohort/active-status/overdue, plus manual include/exclude): when True,
+    `top_dc_allowlist` was computed by planning.dc_selection.compute_program_dc_allowlist
+    (an admin-configured rule over dc_datamart+DC_RAnk.csv), NOT the static 'updated TOP
+    DC list.xlsx' -- the two membership checks below (Program_DC_Selection_Unavailable/
+    DC_Not_In_Program_Selection) replace Top_DC_List_Unavailable/DC_Not_In_Top_List's
+    reason codes so exception logs can tell which mechanism excluded a DC. It also
+    disables the separate dc_active_by_id check below entirely: whether "active" gates
+    eligibility is now the admin's own per-criterion choice inside the rule itself (it
+    may already be folded into program_dc_gate's own matching, or deliberately left out),
+    so the old hardcoded mandatory active-check would either double-gate or wrongly
+    override that choice. False (the default, and the behavior for every caller until an
+    admin actually configures a Program DC Selection) reproduces this function's exact
+    pre-2026-09-08 behavior -- Excel-based top_dc_allowlist plus the mandatory active
+    check, unchanged."""
     # BUG FIXED 2026-09-07 (caught in a self-audit, before any real run hit it): the
     # original version collapsed dc_active_by_id=None (the dc_datamart QUERY ITSELF
     # failed -- e.g. a transient Redshift timeout) into the exact same {} used for "the
@@ -1427,7 +1543,7 @@ def apply_dc_exclusion_rules(
     # (a DC genuinely absent from a SUCCESSFULLY returned dc_datamart result), not for an
     # infrastructure failure unrelated to whether the DC is actually active.
     today_dt = datetime.fromisoformat(today)
-    active_check_enabled = dc_active_by_id is not None
+    active_check_enabled = dc_active_by_id is not None and not program_dc_gate_active
     dc_active_by_id = dc_active_by_id or {}
     for dc in dc_master:
         legal_hold = dc.get("DC_Status") == "Legal_Hold"
@@ -1437,7 +1553,22 @@ def apply_dc_exclusion_rules(
             days_since_visit = (today_dt - datetime.fromisoformat(last_visit)).days
         too_recent = days_since_visit is not None and days_since_visit < constants.min_days_since_last_visit
         top_list_eligible = top_dc_allowlist is not None and dc["DC_ID"] in top_dc_allowlist
-        if top_dc_allowlist is None:
+        if program_dc_gate_active:
+            if top_dc_allowlist is None:
+                exc.flag(
+                    dc["DC_ID"], "dc_datamart", "Program_DC_Selection_Unavailable",
+                    "Program DC Selection failed to compute this run -- excluded from all agents' "
+                    "DC selection (fail-closed, no fallback)",
+                )
+            elif not top_list_eligible:
+                exc.flag(
+                    dc["DC_ID"], "dc_datamart", "DC_Not_In_Program_Selection",
+                    "DC_ID not selected by the Admin Control Panel's Program DC Selection rule -- "
+                    "excluded from all agents' DC selection",
+                )
+            else:
+                exc.ok("DC_Not_In_Program_Selection")
+        elif top_dc_allowlist is None:
             exc.flag(
                 dc["DC_ID"], "Source2b", "Top_DC_List_Unavailable",
                 "'updated TOP DC list.xlsx' failed to load this run -- excluded from all agents' "
@@ -1452,7 +1583,7 @@ def apply_dc_exclusion_rules(
             exc.ok("DC_Not_In_Top_List")
         if not active_check_enabled:
             active_eligible = True
-            if top_list_eligible:
+            if top_list_eligible and not program_dc_gate_active:
                 exc.flag(
                     dc["DC_ID"], "dc_datamart", "DC_Active_Status_Query_Failed",
                     "dc_datamart query itself failed this run -- Active check skipped entirely (not "

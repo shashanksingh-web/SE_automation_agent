@@ -39,7 +39,7 @@ from django.utils import timezone
 sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
-from . import data_cache, product_cohort, routing
+from . import data_cache, dc_selection, product_cohort, routing
 from .admin_config import load_business_constants
 from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, PlanRun
 from .notify import send_alert
@@ -2178,29 +2178,53 @@ def generate_plan_for_scope(
                       "(In_Scope_Flag not re-checked against 6.2 recency), and every task is Provisional.",
         })
 
-    top_dc_allowlist, top_dc_exc = agent.load_top_dc_allowlist()
-    run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in top_dc_exc.rows)
-    # dc_active_by_id (2026-09-07, explicit user request) -- built from outstanding_raw
-    # (already fetched above, dc_datamart's own is_active column) rather than a fresh
+    # dc_active_by_id/dc_overdue_by_id -- built from outstanding_raw (already fetched
+    # above, dc_datamart's own is_active/total_overdue columns) rather than a fresh
     # query -- same raw rows normalize_sales_transactions() already consumed, just kept
-    # here before that function drops the is_active value once it's done filtering.
+    # here before that function drops them once it's done filtering.
     #
     # BUG FIXED 2026-09-07 (caught in a self-audit): None (not {}) when the dc_datamart
-    # QUERY ITSELF failed above -- apply_dc_exclusion_rules() treats None as "skip the
-    # Active check entirely" vs. a real (possibly empty) dict as "enforce it strictly".
-    # Collapsing a query failure into {} would fail-closed EVERY DC network-wide on a
-    # single transient dc_datamart hiccup, not just withhold Outstanding-financial data
-    # the way every other consumer of this same query already degrades.
+    # QUERY ITSELF failed above -- apply_dc_exclusion_rules()/evaluate_dc_selection_rule
+    # treat None as "skip the Active/overdue check entirely" vs. a real (possibly empty)
+    # dict as "enforce it strictly". Collapsing a query failure into {} would fail-closed
+    # EVERY DC network-wide on a single transient dc_datamart hiccup, not just withhold
+    # Outstanding-financial data the way every other consumer of this same query already
+    # degrades.
     dc_active_by_id: Optional[Dict[str, bool]] = {} if dc_datamart_query_ok else None
+    dc_overdue_by_id: Optional[Dict[str, float]] = {} if dc_datamart_query_ok else None
     if dc_active_by_id is not None:
         for row in outstanding_raw:
             row_dc_id = agent.normalize_id(row.get("dc_id"))
             if row_dc_id:
                 dc_active_by_id[row_dc_id] = str(row.get("is_active")).lower() == "true"
+                overdue = agent.parse_number(row.get("total_overdue"))
+                if overdue is not None:
+                    dc_overdue_by_id[row_dc_id] = overdue
+
+    # Program DC Selection (2026-09-08, explicit user request -- "in admin control panel
+    # we have select the dcs for this whole program") supersedes the Excel-based Top DC
+    # list once an admin has actually configured a rule/manual list -- see
+    # se_daily_plan_agent.apply_dc_exclusion_rules' program_dc_gate_active docstring.
+    # get_selection_config() is a plain DB read (no live query); evaluate_dc_selection_
+    # rule reuses the scope-filtered dc_active_by_id/dc_overdue_by_id above rather than
+    # a second, unscoped dc_datamart pull.
+    selection_config = dc_selection.get_selection_config()
+    program_dc_allowlist = agent.evaluate_dc_selection_rule(
+        selection_config["rules"], scoped_dcs, dc_active_by_id, dc_overdue_by_id,
+        selection_config["manual_includes"], selection_config["manual_excludes"],
+    )
+    program_dc_gate_active = program_dc_allowlist is not None
+    if program_dc_gate_active:
+        top_dc_allowlist = program_dc_allowlist
+    else:
+        top_dc_allowlist, top_dc_exc = agent.load_top_dc_allowlist()
+        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in top_dc_exc.rows)
+
     excl_exc = agent.Exceptions(agent.utc_now_iso())
     agent.apply_dc_exclusion_rules(
         scoped_dcs, excl_exc, constants, last_visit_by_dc, plan_date,
         top_dc_allowlist=top_dc_allowlist, dc_active_by_id=dc_active_by_id,
+        program_dc_gate_active=program_dc_gate_active,
     )
     run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in excl_exc.rows)
     for dc in scoped_dcs:

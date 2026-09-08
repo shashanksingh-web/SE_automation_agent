@@ -651,3 +651,43 @@ class PipelineSettings(models.Model):
 
     def __str__(self):
         return f"PipelineSettings({len(self.overrides)} override(s), updated {self.updated_at})"
+
+
+class ProgramDCSelection(models.Model):
+    """DC Selection (added 2026-09-08, explicit user request -- "in admin control panel
+    we have select the dcs for this whole program"). A singleton row (id=1, see
+    get_singleton()) replacing the Excel-based 'updated TOP DC list.xlsx' as the DC
+    eligibility gate's master source, per direct instruction: dc_datamart (live DB) is
+    the DC universe; DC_RAnk.csv (refreshed here via an admin upload -- see
+    rank_csv_uploaded_at/by/row_count below) supplies Rank/Cohort; `rules` is a
+    per-criterion AND/OR filter over rank range/cohort/active-status/overdue (see
+    se_daily_plan_agent.evaluate_dc_selection_rule for the actual engine and its AND/OR
+    semantics); manual_includes/manual_excludes are hand-adjustments on top (search &
+    toggle, or bulk paste of DC IDs) -- see planning.dc_selection for how all of this
+    gets evaluated and planning.services.generate_plan_for_scope for how the result
+    reaches se_daily_plan_agent.apply_dc_exclusion_rules' program_dc_gate_active path.
+
+    rules is {} (no criteria enabled) by default -- combined with empty manual lists,
+    evaluate_dc_selection_rule treats this as "not configured yet" (fail-open, same
+    Excel-based gate as before) rather than "select nothing," so migrating this table in
+    doesn't change any live plan's DC selection until an admin actually sets a rule."""
+
+    rules = models.JSONField(default=dict, blank=True)
+    manual_includes = models.JSONField(default=list, blank=True)
+    manual_excludes = models.JSONField(default=list, blank=True)
+    # Set by planning.dc_selection.upload_rank_csv() -- records the last time an admin
+    # replaced DC_RAnk.csv (se_daily_plan_agent.DC_MASTER_CSV) through the Admin Control
+    # Panel's uploader, so the panel can show "last refreshed" instead of silence.
+    rank_csv_uploaded_at = models.DateTimeField(null=True, blank=True)
+    rank_csv_uploaded_by = models.CharField(max_length=200, blank=True, default="")
+    rank_csv_row_count = models.IntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=200, blank=True, default="")
+
+    @classmethod
+    def get_singleton(cls) -> "ProgramDCSelection":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return f"ProgramDCSelection({len(self.rules)} rule(s), updated {self.updated_at})"
