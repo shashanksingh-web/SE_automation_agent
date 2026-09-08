@@ -675,6 +675,20 @@ class ProgramDCSelection(models.Model):
     rules = models.JSONField(default=dict, blank=True)
     manual_includes = models.JSONField(default=list, blank=True)
     manual_excludes = models.JSONField(default=list, blank=True)
+    # Upload-time mode choice (added 2026-09-08, explicit user request) -- decides how
+    # manual_includes combines with `rules` above at evaluation time.
+    # "uploaded_plus_filter" (default, preserves pre-existing behavior for anyone who
+    # never touched this): manual_includes UNIONS with whatever the AND/OR rule matches.
+    # "uploaded_only": manual_includes IS the selection outright -- `rules` is ignored
+    # entirely for this run, even if criteria are enabled, per direct instruction
+    # ("uploaded list is the filter"). See planning.dc_selection's own docstring for
+    # exactly where this gets applied (rules suppressed to {} at the call sites, not a
+    # new branch inside evaluate_dc_selection_rule itself).
+    class UploadMode(models.TextChoices):
+        UPLOADED_PLUS_FILTER = "uploaded_plus_filter", "Uploaded list + optional filter"
+        UPLOADED_ONLY = "uploaded_only", "Uploaded list only"
+
+    upload_mode = models.CharField(max_length=30, choices=UploadMode.choices, default=UploadMode.UPLOADED_PLUS_FILTER)
     # Set by planning.dc_selection.upload_rank_csv() -- records the last time an admin
     # replaced DC_RAnk.csv (se_daily_plan_agent.DC_MASTER_CSV) through the Admin Control
     # Panel's uploader, so the panel can show "last refreshed" instead of silence.

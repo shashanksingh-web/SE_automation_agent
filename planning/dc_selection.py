@@ -43,7 +43,11 @@ DEFAULT_RULES: Dict[str, Dict[str, Any]] = {
     "rank_range": {"enabled": False, "combine": "AND", "min": None, "max": None},
     "cohort": {"enabled": False, "combine": "AND", "values": []},
     "active_status": {"enabled": False, "combine": "AND", "value": "active"},
-    "overdue": {"enabled": False, "combine": "OR", "min_amount": 0},
+    # CHANGED 2026-09-08, explicit user request ("overdue yes or no"): was a numeric
+    # min_amount threshold -- now a simple has-overdue-or-not toggle, "yes" (has any
+    # real overdue balance) or "no" (confirmed zero/no overdue). See
+    # se_daily_plan_agent._dc_selection_criterion_matches' own "overdue" branch.
+    "overdue": {"enabled": False, "combine": "OR", "value": "yes"},
 }
 
 # DC_RAnk.csv columns required for a file to be accepted by upload_rank_csv() -- the same
@@ -52,15 +56,32 @@ DEFAULT_RULES: Dict[str, Dict[str, Any]] = {
 _REQUIRED_RANK_CSV_COLUMNS = {"Partner Id", "Rank", "Cohort"}
 
 
+def _effective_rules(row: "ProgramDCSelection") -> Dict[str, Any]:
+    """Upload-mode application (added 2026-09-08, explicit user request): "uploaded_only"
+    means manual_includes IS the selection outright, per direct instruction ("uploaded
+    list is the filter") -- the AND/OR rule is suppressed to {} here (not passed into
+    evaluate_dc_selection_rule at all) rather than adding a mode branch inside that
+    function itself, so every caller (this module's own preview paths and
+    generate_plan_for_scope) gets consistent behavior for free just by reading through
+    get_selection_config()/this helper. "uploaded_plus_filter" (default) is a no-op --
+    returns the rule exactly as stored, same union-with-manual-includes behavior this
+    feature has always had."""
+    if row.upload_mode == ProgramDCSelection.UploadMode.UPLOADED_ONLY:
+        return {}
+    return row.rules or {}
+
+
 def get_selection_config() -> Dict[str, Any]:
     """Cheap, DB-only read used by planning.services.generate_plan_for_scope -- no live
-    dc_datamart query. Returns the raw rules/manual lists exactly as stored; the caller
-    passes them straight into se_daily_plan_agent.evaluate_dc_selection_rule."""
+    dc_datamart query. Returns rules already resolved for the current upload_mode (see
+    _effective_rules) plus the manual lists exactly as stored; the caller passes them
+    straight into se_daily_plan_agent.evaluate_dc_selection_rule."""
     row = ProgramDCSelection.get_singleton()
     return {
-        "rules": row.rules or {},
+        "rules": _effective_rules(row),
         "manual_includes": row.manual_includes or [],
         "manual_excludes": row.manual_excludes or [],
+        "upload_mode": row.upload_mode,
     }
 
 
@@ -102,7 +123,12 @@ def _fetch_live_dc_datamart() -> Tuple[Dict[str, bool], Dict[str, float], bool]:
 
 def get_state() -> Dict[str, Any]:
     """GET /api/planning/admin/dc-selection/ -- current rule + manual lists + a live
-    preview computed the same way the plan-generation gate will evaluate it."""
+    preview computed the same way the plan-generation gate will evaluate it.
+
+    "Rules" always shows the raw stored rule (what the admin is editing), regardless of
+    upload_mode -- the mode only controls whether it's actually APPLIED (see
+    _effective_rules), so switching to "uploaded_only" doesn't erase a configured rule
+    the admin might switch back to later."""
     row = ProgramDCSelection.get_singleton()
     rules = row.rules or {}
     manual_includes = row.manual_includes or []
@@ -110,11 +136,12 @@ def get_state() -> Dict[str, Any]:
     dc_master, dc_master_errors = _dc_master()
     active_by_id, overdue_by_id, query_ok = _fetch_live_dc_datamart()
     selected = agent.evaluate_dc_selection_rule(
-        rules, dc_master, active_by_id if query_ok else None, overdue_by_id if query_ok else None,
+        _effective_rules(row), dc_master, active_by_id if query_ok else None, overdue_by_id if query_ok else None,
         manual_includes, manual_excludes,
     )
     return {
         "Rules": {**DEFAULT_RULES, **rules},
+        "Upload_Mode": row.upload_mode,
         "Manual_Includes": manual_includes,
         "Manual_Excludes": manual_excludes,
         "Configured": selected is not None,
@@ -133,20 +160,49 @@ def get_state() -> Dict[str, Any]:
 def update_selection(
     rules: Optional[Dict[str, Any]], manual_includes: Optional[List[str]],
     manual_excludes: Optional[List[str]], actor: str = "",
+    upload_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """POST body may include any subset of rules/manual_includes/manual_excludes --
-    only the provided keys are touched, same partial-update convention as
+    """POST body may include any subset of rules/manual_includes/manual_excludes/
+    upload_mode -- only the provided keys are touched, same partial-update convention as
     admin_config.apply_overrides. `rules` replaces the whole dict (not merged
     per-criterion) since the frontend always sends its complete, currently-edited rule
     set -- a partial per-criterion merge here would silently resurrect a criterion the
-    admin just turned off in the same request."""
+    admin just turned off in the same request.
+
+    Rank-range validation (added 2026-09-08, explicit user request, "rank range (manual
+    if not matched error)"): if the incoming rules enable rank_range, and that criterion
+    alone (evaluated against the full DC_RAnk.csv universe, independent of cohort/
+    active/overdue/manual lists) matches zero DCs, the whole update is REJECTED (raises
+    ValueError, same fail-loud convention as upload_rank_csv/upload_selected_dcs) rather
+    than silently saved -- a manually-entered range that matches nothing is almost
+    always a typo, not a deliberate "select nobody" choice. Only rank_range gets this
+    check, per direct instruction ("rank range error only") -- cohort/active_status/
+    overdue can validly match zero DCs (e.g. a genuinely empty cohort) without it being
+    a mistake."""
     row = ProgramDCSelection.get_singleton()
     if rules is not None:
-        row.rules = {k: v for k, v in rules.items() if k in DEFAULT_RULES}
+        new_rules = {k: v for k, v in rules.items() if k in DEFAULT_RULES}
+        rank_rule = new_rules.get("rank_range")
+        if rank_rule and rank_rule.get("enabled"):
+            dc_master, _ = _dc_master()
+            matches = sum(
+                1 for dc in dc_master
+                if agent._dc_selection_criterion_matches("rank_range", rank_rule, dc.get("Rank"), None, None, None)
+            )
+            if matches == 0:
+                raise ValueError(
+                    f"Rank range {rank_rule.get('min')!r}-{rank_rule.get('max')!r} matches zero DCs in the "
+                    "current Rank & Cohort file -- check for a typo before saving."
+                )
+        row.rules = new_rules
     if manual_includes is not None:
         row.manual_includes = sorted({agent.normalize_id(x) for x in manual_includes if agent.normalize_id(x)})
     if manual_excludes is not None:
         row.manual_excludes = sorted({agent.normalize_id(x) for x in manual_excludes if agent.normalize_id(x)})
+    if upload_mode is not None:
+        if upload_mode not in ProgramDCSelection.UploadMode.values:
+            raise ValueError(f"upload_mode must be one of {ProgramDCSelection.UploadMode.values}, got {upload_mode!r}")
+        row.upload_mode = upload_mode
     row.updated_by = actor
     row.save()
     return get_state()
@@ -168,7 +224,7 @@ def search_dcs(query: str = "", limit: int = 50, offset: int = 0, filter_mode: s
     dc_master, _ = _dc_master()
     active_by_id, overdue_by_id, query_ok = _fetch_live_dc_datamart()
     selected = agent.evaluate_dc_selection_rule(
-        rules, dc_master, active_by_id if query_ok else None, overdue_by_id if query_ok else None,
+        _effective_rules(row), dc_master, active_by_id if query_ok else None, overdue_by_id if query_ok else None,
         manual_includes, manual_excludes,
     ) or set()
 
@@ -272,42 +328,40 @@ def sample_selected_dcs_csv() -> str:
     return "Partner Id\n1000041207\n1000031612\n1000025034\n"
 
 
-def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Dict[str, Any]:
+def upload_selected_dcs(
+    file_bytes: bytes, filename: str, actor: str = "", upload_mode: Optional[str] = None,
+) -> Dict[str, Any]:
     """Selected DC List uploader (added 2026-09-08, explicit user request -- "add one
-    more uploader for selected dc"; enriched with Rank/Cohort per direct follow-up --
-    "on uploading the partner it will get rank from dc_rank and cohort also get") -- a
-    file-based alternative to the Bulk Paste tab's textarea, for handing this feature a
-    list of DC IDs to select in one upload instead of copy-pasting them.
+    more uploader for selected dc") -- a file-based alternative to the Bulk Paste tab's
+    textarea, for handing this feature a list of DC IDs to select in one upload instead
+    of copy-pasting them.
 
-    Every uploaded DC_ID is checked against BOTH data sources this feature is built on,
-    per direct follow-up -- "first check with dc rank than dcdatamart" -- same order
-    dc_selection's own module docstring describes (DC_RAnk.csv is Source 2's DC Master,
-    dc_datamart is the live master universe):
-      1. DC_RAnk.csv (via load_dc_master(), the same universe evaluate_dc_selection_
-         rule's rank_range/cohort criteria read) -- Rank/Cohort/Name, and `found`/
-         `reason` when the ID isn't a real Partner Id there at all.
-      2. dc_datamart (the same live, unscoped pull search_dcs() uses) -- is_active/
-         overdue, so an uploaded ID's active status and overdue amount show up here too,
-         not just its Rank/Cohort -- null for both when the live query fails or the ID
-         has no dc_datamart row (same "can't evaluate, not a rejection" treatment
-         search_dcs already gives a DC dc_datamart doesn't know about).
-    `found`/`reason` reflect ONLY the DC_RAnk.csv check (step 1) -- that's what actually
-    gates rank_range/cohort matching in the rule above; dc_datamart absence doesn't
-    block a DC from being manually selected, it just means active_status/overdue can
-    never match for it, same as the fail-closed-per-criterion behavior everywhere else
-    in this module. Uploaded_Not_Found_Count lets the frontend show a prominent error
-    summary without counting client-side. An unfound-in-DC_RAnk ID is still added to
-    Manual_Includes (the admin's explicit choice always wins), just visibly flagged so
-    it's not a silent surprise later.
+    REWRITTEN 2026-09-08, explicit user request ("rule is very simple here when user
+    upload the file of dc - it goes to dc data mart table exist than filter out with
+    reasoning matched dc goes to dcrank csv for rank and cohort"). Order and semantics,
+    per direct instruction:
+      1. dc_datamart FIRST -- the gate. An uploaded ID genuinely absent from a
+         SUCCESSFULLY returned dc_datamart pull is REJECTED outright (not added to
+         Manual Includes at all), with a `reason` explaining why. If the live query
+         itself fails (not "this ID is missing" but "we couldn't check at all"), no ID
+         is rejected on that basis -- same fail-open-on-infra-failure treatment already
+         established elsewhere in this module/apply_dc_exclusion_rules, `dc_datamart_
+         unverified` flags this instead so the admin isn't left guessing why nothing was
+         checked.
+      2. DC_RAnk.csv SECOND, only for IDs that passed step 1 -- Rank/Cohort/Name lookup.
+         Per direct follow-up confirmation ("if dc pass the dc datamart rank not found it
+         will consider in the pool"), a DC missing from DC_RAnk.csv is still ACCEPTED
+         into the pool (not rejected) -- only dc_datamart absence is a rejection reason;
+         a missing Rank/Cohort here just means it can never match the Rank range/Cohort
+         criteria later, same soft-degrade this module gives every other missing-data
+         case.
+    Accepted IDs are ADDED to manual_includes (merged with whatever's already there) and
+    removed from manual_excludes if present. Rejected IDs are NOT added anywhere.
 
-    Same manual_includes/manual_excludes semantics as bulk paste (see update_selection/
-    search_dcs's own docstrings and DCSelectionPanel.tsx's applyBulkPaste): parsed IDs
-    are ADDED to manual_includes (merged with whatever's already there, not a wholesale
-    replace) and removed from manual_excludes if present, since a DC can't be both. This
-    is the same OR-into-the-final-selection behavior the rule engine's own OR criteria
-    use (see evaluate_dc_selection_rule's docstring) -- manual_includes is unioned in
-    unconditionally on top of whatever the AND/OR rule computes, no new combination
-    logic needed for the uploaded list to participate in that.
+    upload_mode: optional, forwarded straight to update_selection's own field (per direct
+    instruction, the mode -- "uploaded list only" vs "uploaded list + optional filter" --
+    is chosen at upload time, alongside the file itself, not as a separate save step).
+    None leaves whatever mode is already stored untouched.
 
     Format: one DC ID per row. Tolerant of either a bare list (no header) or a CSV with
     a header naming the ID column (Partner Id/DC_ID/DC Id, case-insensitive) -- only the
@@ -329,11 +383,20 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
     if not ids:
         raise ValueError("File parsed to zero valid DC IDs")
 
-    # Step 1: DC_RAnk.csv -- Rank/Cohort/Name, and whether the ID is a real row at all.
+    # Step 1: dc_datamart -- the gate. Rejects an ID only when the query itself
+    # succeeded AND the ID is genuinely absent from it (never on a query failure).
+    active_by_id, overdue_by_id, query_ok = _fetch_live_dc_datamart()
+    if query_ok:
+        accepted_ids = {dc_id for dc_id in ids if dc_id in active_by_id}
+        rejected_ids = ids - accepted_ids
+    else:
+        accepted_ids, rejected_ids = set(ids), set()
+
+    # Step 2: DC_RAnk.csv -- Rank/Cohort/Name, only for accepted IDs. Missing here is
+    # soft (still accepted), unlike step 1's dc_datamart absence.
     dc_master, _ = _dc_master()
     dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
-    # Step 2: dc_datamart -- is_active/overdue, same live unscoped pull search_dcs() uses.
-    active_by_id, overdue_by_id, query_ok = _fetch_live_dc_datamart()
+
     enriched = [
         {
             "dc_id": dc_id,
@@ -342,28 +405,34 @@ def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Di
             "cohort": dc_by_id[dc_id].get("Cohort") if dc_id in dc_by_id else None,
             "is_active": active_by_id.get(dc_id) if query_ok else None,
             "overdue": overdue_by_id.get(dc_id) if query_ok else None,
-            "found": dc_id in dc_by_id,
+            "found": dc_id in accepted_ids,
+            "in_rank_csv": dc_id in dc_by_id,
+            "dc_datamart_unverified": not query_ok,
             "reason": (
-                None if dc_id in dc_by_id else
-                f"{dc_id} is not a Partner Id in DC_RAnk.csv (the current Rank & Cohort file) -- "
-                "it was still added to Manual Includes since that's an explicit admin choice, but it "
-                "has no Rank/Cohort, so it can never match the Rank range/Cohort criteria above, and "
-                "it will stay off Step 5's Cohort/Total_Score ordering elsewhere in the pipeline. "
-                "Check for a typo, or upload an updated Rank & Cohort file above if this is a new DC."
+                None if dc_id in accepted_ids else
+                f"{dc_id} was not found in dc_datamart (the live DC master) -- rejected, not added to "
+                "Manual Includes. Check for a typo, or confirm this DC exists in dc_datamart before "
+                "re-uploading."
             ),
         }
         for dc_id in sorted(ids)
     ]
 
     row = ProgramDCSelection.get_singleton()
-    includes = set(row.manual_includes or []) | ids
-    excludes = set(row.manual_excludes or []) - ids
+    includes = set(row.manual_includes or []) | accepted_ids
+    excludes = set(row.manual_excludes or []) - accepted_ids
     row.manual_includes = sorted(includes)
     row.manual_excludes = sorted(excludes)
+    if upload_mode is not None:
+        if upload_mode not in ProgramDCSelection.UploadMode.values:
+            raise ValueError(f"upload_mode must be one of {ProgramDCSelection.UploadMode.values}, got {upload_mode!r}")
+        row.upload_mode = upload_mode
     row.updated_by = actor
     row.save()
     state = get_state()
     state["Uploaded_Dc_Count"] = len(ids)
+    state["Uploaded_Accepted_Count"] = len(accepted_ids)
     state["Uploaded_Dcs"] = enriched
-    state["Uploaded_Not_Found_Count"] = sum(1 for r in enriched if not r["found"])
+    state["Uploaded_Not_Found_Count"] = len(rejected_ids)
+    state["Uploaded_Dc_Datamart_Unverified"] = not query_ok
     return state

@@ -1409,9 +1409,15 @@ def _dc_selection_criterion_matches(
             return False
         return is_active == want_active
     if kind == "overdue":
+        # CHANGED 2026-09-08, explicit user request ("overdue yes or no"): was a numeric
+        # min_amount threshold -- now a simple has-overdue-or-not toggle. "yes" means a
+        # real overdue balance (>0); "no" means confirmed zero/no overdue -- missing
+        # data still fails the criterion either way (never guessed).
         if overdue is None:
             return False
-        return overdue > float(params.get("min_amount", 0) or 0)
+        want_overdue = (params.get("value") or "yes") == "yes"
+        has_overdue = overdue > 0
+        return has_overdue == want_overdue
     return False
 
 

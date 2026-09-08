@@ -805,9 +805,11 @@ def admin_dc_selection(request):
     generated).
 
     POST: body {"rules": {...}, "manual_includes": [...], "manual_excludes": [...],
-    "actor": "..."} -- any subset; provided keys replace their whole value (rules is not
-    merged per-criterion, see dc_selection.update_selection's own docstring for why).
-    Returns the same shape GET returns.
+    "upload_mode": "uploaded_only"|"uploaded_plus_filter", "actor": "..."} -- any subset;
+    provided keys replace their whole value (rules is not merged per-criterion, see
+    dc_selection.update_selection's own docstring for why). A rank_range rule matching
+    zero DCs is rejected (400), see update_selection's own validation. Returns the same
+    shape GET returns.
 
     csrf_exempt: same unauthenticated trust boundary as admin_pipeline_config above --
     this app has no session/login system anywhere."""
@@ -816,10 +818,13 @@ def admin_dc_selection(request):
             body = json.loads(request.body or b"{}")
         except json.JSONDecodeError:
             return JsonResponse({"error": "Invalid JSON body"}, status=400)
-        state = dc_selection.update_selection(
-            body.get("rules"), body.get("manual_includes"), body.get("manual_excludes"),
-            actor=str(body.get("actor") or ""),
-        )
+        try:
+            state = dc_selection.update_selection(
+                body.get("rules"), body.get("manual_includes"), body.get("manual_excludes"),
+                actor=str(body.get("actor") or ""), upload_mode=body.get("upload_mode"),
+            )
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
         return JsonResponse(state, json_dumps_params={"default": str})
     return JsonResponse(dc_selection.get_state(), json_dumps_params={"default": str})
 
@@ -864,14 +869,21 @@ def admin_dc_selection_upload_selected_dcs(request):
     """/api/planning/admin/dc-selection/upload-selected-dcs/ -- Selected DC List
     uploader (added 2026-09-08, explicit user request -- "add one more uploader for
     selected dc"): multipart POST with a `file` field listing DC IDs (one per row, with
-    or without a header) -- adds them to Manual_Includes (and clears any of them from
-    Manual_Excludes), same effect as the Bulk Paste tab's "Apply includes" but from a
-    file instead of a textarea. See dc_selection.upload_selected_dcs's own docstring."""
+    or without a header), and an optional `upload_mode` form field
+    ("uploaded_only"|"uploaded_plus_filter", chosen at upload time per direct
+    instruction) -- each ID is checked against dc_datamart first (rejected if genuinely
+    absent), then DC_RAnk.csv for Rank/Cohort (soft -- still accepted if missing).
+    Accepted IDs are added to Manual_Includes (and cleared from Manual_Excludes), same
+    effect as the Bulk Paste tab's "Apply includes" but from a file instead of a
+    textarea. See dc_selection.upload_selected_dcs's own docstring."""
     upload = request.FILES.get("file")
     if upload is None:
         return JsonResponse({"error": "No file uploaded (expected multipart field 'file')"}, status=400)
     try:
-        state = dc_selection.upload_selected_dcs(upload.read(), upload.name, actor=str(request.POST.get("actor") or ""))
+        state = dc_selection.upload_selected_dcs(
+            upload.read(), upload.name, actor=str(request.POST.get("actor") or ""),
+            upload_mode=request.POST.get("upload_mode") or None,
+        )
     except ValueError as e:
         return JsonResponse({"error": str(e)}, status=400)
     return JsonResponse(state, json_dumps_params={"default": str})
