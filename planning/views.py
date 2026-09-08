@@ -1,6 +1,6 @@
 import json
 
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
@@ -856,3 +856,40 @@ def admin_dc_selection_upload_rank_csv(request):
     except ValueError as e:
         return JsonResponse({"error": str(e)}, status=400)
     return JsonResponse(state, json_dumps_params={"default": str})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def admin_dc_selection_upload_selected_dcs(request):
+    """/api/planning/admin/dc-selection/upload-selected-dcs/ -- Selected DC List
+    uploader (added 2026-09-08, explicit user request -- "add one more uploader for
+    selected dc"): multipart POST with a `file` field listing DC IDs (one per row, with
+    or without a header) -- adds them to Manual_Includes (and clears any of them from
+    Manual_Excludes), same effect as the Bulk Paste tab's "Apply includes" but from a
+    file instead of a textarea. See dc_selection.upload_selected_dcs's own docstring."""
+    upload = request.FILES.get("file")
+    if upload is None:
+        return JsonResponse({"error": "No file uploaded (expected multipart field 'file')"}, status=400)
+    try:
+        state = dc_selection.upload_selected_dcs(upload.read(), upload.name, actor=str(request.POST.get("actor") or ""))
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    return JsonResponse(state, json_dumps_params={"default": str})
+
+
+@require_GET
+def admin_dc_selection_sample_rank_csv(request):
+    """/api/planning/admin/dc-selection/sample-rank-csv/ -- downloadable sample file for
+    the Rank & Cohort uploader, so an admin knows the exact columns it expects."""
+    response = HttpResponse(dc_selection.sample_rank_csv(), content_type="text/csv")
+    response["Content-Disposition"] = 'attachment; filename="dc_rank_cohort_sample.csv"'
+    return response
+
+
+@require_GET
+def admin_dc_selection_sample_selected_dcs_csv(request):
+    """/api/planning/admin/dc-selection/sample-selected-dcs-csv/ -- downloadable sample
+    file for the Selected DC List uploader."""
+    response = HttpResponse(dc_selection.sample_selected_dcs_csv(), content_type="text/csv")
+    response["Content-Disposition"] = 'attachment; filename="selected_dcs_sample.csv"'
+    return response

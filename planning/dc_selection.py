@@ -251,3 +251,64 @@ def upload_rank_csv(file_bytes: bytes, filename: str, actor: str = "") -> Dict[s
     row.rank_csv_row_count = len(parsed)
     row.save()
     return get_state()
+
+
+def sample_rank_csv() -> str:
+    """Sample file for the Rank & Cohort uploader above -- shown/downloadable from the
+    Admin Control Panel so an admin knows the exact shape upload_rank_csv() requires
+    (only Partner Id/Rank/Cohort are validated; every other column DC_RAnk.csv normally
+    carries is accepted but ignored by this feature)."""
+    return (
+        "Partner Id,Rank,Cohort\n"
+        "1000041207,1,Strategic\n"
+        "1000031612,2,Strategic\n"
+        "1000025034,3001,Opportunity\n"
+        "1000000719,,Long Tail\n"
+    )
+
+
+def sample_selected_dcs_csv() -> str:
+    """Sample file for the Selected DC List uploader below."""
+    return "Partner Id\n1000041207\n1000031612\n1000025034\n"
+
+
+def upload_selected_dcs(file_bytes: bytes, filename: str, actor: str = "") -> Dict[str, Any]:
+    """Selected DC List uploader (added 2026-09-08, explicit user request -- "add one
+    more uploader for selected dc") -- a file-based alternative to the Bulk Paste tab's
+    textarea, for handing this feature a list of DC IDs to select in one upload instead
+    of copy-pasting them. Same manual_includes/manual_excludes semantics as bulk paste
+    (see update_selection/search_dcs's own docstrings and DCSelectionPanel.tsx's
+    applyBulkPaste): parsed IDs are ADDED to manual_includes (merged with whatever's
+    already there, not a wholesale replace) and removed from manual_excludes if present,
+    since a DC can't be both.
+
+    Format: one DC ID per row. Tolerant of either a bare list (no header) or a CSV with
+    a header naming the ID column (Partner Id/DC_ID/DC Id, case-insensitive) -- only the
+    first column of each row is read, so an admin can paste an export with extra columns
+    (name, node, etc.) without stripping them first. Rejects (400) if zero valid DC IDs
+    are found, same fail-loud convention as upload_rank_csv."""
+    try:
+        text = file_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"File is not valid UTF-8 text: {e}") from e
+
+    rows = [r for r in csv.reader(io.StringIO(text)) if r and r[0].strip()]
+    if rows:
+        first_cell = rows[0][0].strip().lower()
+        if first_cell in ("partner id", "dc_id", "dc id", "id"):
+            rows = rows[1:]
+
+    ids = {agent.normalize_id(r[0]) for r in rows if agent.normalize_id(r[0])}
+    if not ids:
+        raise ValueError("File parsed to zero valid DC IDs")
+
+    row = ProgramDCSelection.get_singleton()
+    includes = set(row.manual_includes or []) | ids
+    excludes = set(row.manual_excludes or []) - ids
+    row.manual_includes = sorted(includes)
+    row.manual_excludes = sorted(excludes)
+    row.updated_by = actor
+    row.save()
+    state = get_state()
+    state["Uploaded_Dc_Count"] = len(ids)
+    return state
