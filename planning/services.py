@@ -1810,8 +1810,13 @@ def generate_plan_for_scope(
                 # GR-28 (business-confirmed): current_od>0 always force-includes the DC
                 # in the candidate pool regardless of composite score, bypassing the
                 # Health-Focus bucket logic entirely -- tracked here, applied at pool-
-                # merge time in generate_se_daily_plan.
-                result["GR28_Force_Include"] = (pathik_overdue_by_dc.get(dc_id) or 0.0) > 0
+                # merge time in generate_se_daily_plan. Threshold made Admin Control
+                # Panel-overridable 2026-09-07 (explicit user request, "dc selection...
+                # based on rank and condition like overdue") -- was a bare "> 0" literal;
+                # constants.gr28_overdue_min_threshold defaults to 0.0 (identical
+                # behavior to before) but can be raised to require a real minimum
+                # overdue balance before this force-include fires.
+                result["GR28_Force_Include"] = (pathik_overdue_by_dc.get(dc_id) or 0.0) > constants.gr28_overdue_min_threshold
                 if result["GR28_Force_Include"]:
                     result["Health_Focus_Purposes"] = agent.health_focus_purposes({
                         **result["Sub_Scores"],
@@ -1835,7 +1840,10 @@ def generate_plan_for_scope(
         # explicitly flagged via an exception record so this bypass is visible, not
         # silently folded in as if it were an ordinary Health-Focus qualification.
         for dc_id in active_dc_ids:
-            if dc_id in dc_health_scores or (pathik_overdue_by_dc.get(dc_id) or 0.0) <= 0:
+            # Same gr28_overdue_min_threshold as the main GR28_Force_Include check above
+            # -- one shared threshold for both GR-28 code paths, not a second knob that
+            # could silently drift out of sync with it.
+            if dc_id in dc_health_scores or (pathik_overdue_by_dc.get(dc_id) or 0.0) <= constants.gr28_overdue_min_threshold:
                 continue
             run_exceptions.append({
                 "dc_id": dc_id,

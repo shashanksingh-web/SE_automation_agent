@@ -199,6 +199,27 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "label": "GR-28 exclusive rank-#1 score", "unit": "score", "min": 0, "max": 100_000,
         "description": "A DC with any real overdue balance (pathik_report.overdue > 0) gets this Priority_Score outright -- an exclusive top rank for that SE's day. Must stay well above the 90+ day boost.",
     },
+    # --- DC Selection (added 2026-09-07, explicit user request "add one more column
+    # like dc selection... based on rank and condition like overdue and other") --
+    # rank/condition-based qualification and priority gates, previously bare "> 0"
+    # literals in the code rather than a real configurable threshold. Both default to
+    # 0.0, reproducing the exact original "any positive overdue" behavior. Deliberately
+    # does NOT include qualify_outstanding_days_overdue/qualify_pl_max_orders_30d
+    # (defined on BusinessConstants but confirmed NOT wired into any real qualification
+    # check -- see their own docstrings, "not independently computable"/"not computable
+    # live yet" -- only ever surfaced as Dynamic_Parameters_Resolved metadata) -- editing
+    # those wouldn't change any real behavior, which would make them a dishonest knob to
+    # expose here as if they did.
+    {
+        "group": "DC Selection", "key": "gr28_overdue_min_threshold", "type": "float",
+        "label": "GR-28 minimum overdue to force-qualify", "unit": "₹", "min": 0, "max": 1_000_000,
+        "description": "A DC's real overdue balance (pathik_report.overdue) must exceed this to force-include it for Outstanding and give it GR-28's exclusive rank-#1 score, bypassing every other qualification check. 0 = any positive overdue qualifies (the original behavior).",
+    },
+    {
+        "group": "DC Selection", "key": "overdue_90_plus_boost_min_threshold", "type": "float",
+        "label": "90+ day boost minimum overdue", "unit": "₹", "min": 0, "max": 1_000_000,
+        "description": "A DC's 90+-day-aged overdue (dc_datamart.os_90_plus) must exceed this to trigger the queue-jump boost below. 0 = any positive 90+ balance qualifies (the original behavior).",
+    },
     # --- Step 10: Daily Caps ---
     {
         "group": "Daily Caps", "key": "daily_cap_visits", "type": "int",

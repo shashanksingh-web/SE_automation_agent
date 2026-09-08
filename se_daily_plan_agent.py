@@ -938,6 +938,13 @@ class BusinessConstants:
     # top-3 objective weights (0.40+0.35+0.25=1.0) times a gap of at most ~1.0 each, so
     # anything meaningfully larger than 1.0 dominates unconditionally.
     overdue_90_plus_priority_boost: float = 10.0
+    # Admin Control Panel-overridable (added 2026-09-07, explicit user request, "dc
+    # selection... based on rank and condition like overdue") -- the minimum 90+-day-
+    # aged overdue balance (dc_datamart.os_90_plus) required to trigger the boost above.
+    # 0.0 reproduces the original bare "> 0" behavior (any positive 90+ balance
+    # qualifies); raise it to ignore trivially small stragglers. See generate_se_daily_
+    # plan's own boost condition for where this is read.
+    overdue_90_plus_boost_min_threshold: float = 0.0
     # GR-28 (BROADENED 2026-09-06, business-confirmed): a DC with ANY real overdue
     # balance (pathik_report.overdue > 0) is force-included in the Outstanding
     # candidate pool AND its Priority_Score is set to rank #1 for that SE that day --
@@ -946,6 +953,12 @@ class BusinessConstants:
     # 90-day-aged-overdue-boosted one -- the two guardrails are independent and can
     # both apply to the same or different DCs on the same day, GR-28 must still win.
     gr28_priority_score: float = 1000.0
+    # Admin Control Panel-overridable (added 2026-09-07, same request as above) -- the
+    # minimum real overdue balance (pathik_report.overdue) required for GR-28's force-
+    # include to fire. 0.0 reproduces the original bare "> 0" behavior; raise it to
+    # require a real minimum before this exclusive override kicks in. See planning.
+    # services' own GR28_Force_Include computation for where this is read.
+    gr28_overdue_min_threshold: float = 0.0
     # SE Incentive Policy (FY26-27)
     wps_weight_revenue: float = 0.25
     wps_weight_collection: float = 0.30
@@ -2563,8 +2576,22 @@ def score_bo3_outstanding_live_proxy(
     ratio the doc defines. os_90_plus is surfaced as a `reason` note when present -- a
     real >90-day-overdue balance is worth flagging regardless of the overall ratio, but
     this does NOT change the grade itself (no business-approved downgrade rule for that
-    exists yet -- never invented)."""
-    if not current_outstanding:
+    exists yet -- never invented).
+
+    FIXED 2026-09-08 (caught live during a real dc_datamart outage,
+    "InsufficientPrivilege: permission denied for relation dc_datamart"): `if not
+    current_outstanding` treated current_outstanding=None (data genuinely unavailable,
+    e.g. this DC's dc_datamart row never arrived because the query itself failed) IDENTICALLY
+    to current_outstanding=0 (a real, confirmed zero balance) -- both fell into the
+    "perfect score, Grade A" branch. During that live outage this meant EVERY DC in the
+    network silently showed a flawless Outstanding score regardless of its real balance,
+    capable of masking genuinely overdue DCs for as long as the outage lasted. None is
+    now a real missing-component result (None/None), never silently upgraded to a
+    guessed "perfect" reading -- only a CONFIRMED zero balance still gets the honest
+    Grade A."""
+    if current_outstanding is None:
+        return {"score_pct": None, "grade": None, "reason": "Current_Outstanding unavailable -- not scored", "basis": "live_proxy_not_3_1_formula"}
+    if current_outstanding == 0:
         return {"score_pct": 1.0, "grade": "A", "reason": "no outstanding balance", "basis": "live_proxy_not_3_1_formula"}
     weight_multiplier = max(0.7, min(1.3, weight_multiplier))
     overdue_fraction = min((current_overdue or 0.0) / current_outstanding, 1.0)
@@ -4753,14 +4780,19 @@ def generate_se_daily_plan(
         # current_overdue>0 + os_90_plus>0 gate _build_candidate_row uses for Overdue_
         # Aging_Bucket, so this never fires on a genuine Rs0-overdue/aging-mismatch case.
         # Applied AFTER fatigue_multiplier on purpose -- a queue-jump-worthy DC should
-        # never be knocked back down by the contact-fatigue discount.
+        # never be knocked back down by the contact-fatigue discount. The os_90_plus
+        # threshold was made Admin Control Panel-overridable 2026-09-07 (explicit user
+        # request, "dc selection... based on rank and condition like overdue") -- was a
+        # bare "> 0" literal; constants.overdue_90_plus_boost_min_threshold defaults to
+        # 0.0 (identical behavior to before) but can be raised to ignore a trivially
+        # small 90+ balance (e.g. rounding-error stragglers) rather than boosting for it.
         fin_for_boost = dc_financials.get(dc["DC_ID"], {})
         current_overdue_for_boost = fin_for_boost.get("Current_Overdue")
         os_90_plus_for_boost = fin_for_boost.get("OS_90_Plus")
         if (
             "Outstanding" in matched
             and current_overdue_for_boost and current_overdue_for_boost > 0
-            and os_90_plus_for_boost and os_90_plus_for_boost > 0
+            and os_90_plus_for_boost and os_90_plus_for_boost > constants.overdue_90_plus_boost_min_threshold
         ):
             priority_score += constants.overdue_90_plus_priority_boost
         pool.append((dc, [o for _, o in gap_by_obj], priority_score, fatigue_multiplier))
