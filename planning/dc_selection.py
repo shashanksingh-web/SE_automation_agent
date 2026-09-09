@@ -157,6 +157,37 @@ def get_state() -> Dict[str, Any]:
     }
 
 
+def preview_selection(rules: Dict[str, Any], upload_mode: Optional[str] = None) -> Dict[str, Any]:
+    """POST /api/planning/admin/dc-selection/preview/ -- explicit user request
+    ("reflection of count before save rule"): computes what Selected_Count WOULD be for
+    an in-progress, not-yet-saved rule edit, so the Admin Control Panel can show a live
+    count while the admin is still toggling checkboxes -- get_state()'s own Selected_
+    Count only ever reflects the last SAVED rule (see AdminView's "Unsaved changes"
+    badge, added 2026-09-09, for the same gap this closes).
+
+    Read-only: never writes ProgramDCSelection. `rules` is whatever the frontend's
+    pendingRules currently holds (not necessarily valid yet); `upload_mode` defaults to
+    the currently-stored mode if omitted, so toggling rule checkboxes previews correctly
+    against whichever mode is already in effect. manual_includes/manual_excludes always
+    come from the stored row -- Bulk Paste/Search & toggle already apply immediately
+    (see update_selection's own docstring), they're never staged client-side the way
+    rule edits are, so there is nothing pending for them to preview."""
+    row = ProgramDCSelection.get_singleton()
+    effective_mode = upload_mode or row.upload_mode
+    effective_rules = {} if effective_mode == ProgramDCSelection.UploadMode.UPLOADED_ONLY else (rules or {})
+    dc_master, _ = _dc_master()
+    active_by_id, overdue_by_id, query_ok = _fetch_live_dc_datamart()
+    selected = agent.evaluate_dc_selection_rule(
+        effective_rules, dc_master, active_by_id if query_ok else None, overdue_by_id if query_ok else None,
+        row.manual_includes or [], row.manual_excludes or [],
+    )
+    return {
+        "Selected_Count": len(selected) if selected is not None else None,
+        "Universe_Size": len(dc_master),
+        "Live_Query_Ok": query_ok,
+    }
+
+
 def update_selection(
     rules: Optional[Dict[str, Any]], manual_includes: Optional[List[str]],
     manual_excludes: Optional[List[str]], actor: str = "",

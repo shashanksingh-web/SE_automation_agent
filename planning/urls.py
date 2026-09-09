@@ -35,6 +35,7 @@ urlpatterns = [
     path("runs/<int:plan_run_id>/", views.plan_run_detail, name="plan_run_detail"),
     path("admin/config/", views.admin_pipeline_config, name="admin_pipeline_config"),
     path("admin/dc-selection/", views.admin_dc_selection, name="admin_dc_selection"),
+    path("admin/dc-selection/preview/", views.admin_dc_selection_preview, name="admin_dc_selection_preview"),
     path("admin/dc-selection/search/", views.admin_dc_selection_search, name="admin_dc_selection_search"),
     path("admin/dc-selection/upload-rank-csv/", views.admin_dc_selection_upload_rank_csv, name="admin_dc_selection_upload_rank_csv"),
     path("admin/dc-selection/upload-selected-dcs/", views.admin_dc_selection_upload_selected_dcs, name="admin_dc_selection_upload_selected_dcs"),

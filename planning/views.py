@@ -793,6 +793,23 @@ def admin_pipeline_config(request):
 
 
 @csrf_exempt
+@require_http_methods(["POST"])
+def admin_dc_selection_preview(request):
+    """/api/planning/admin/dc-selection/preview/ -- explicit user request ("reflection
+    of count before save rule"): a read-only counterpart to admin_dc_selection's POST,
+    for the Admin Control Panel to show a live count while the admin is still editing an
+    unsaved rule. Body: {"rules": {...}, "upload_mode": "..."} (upload_mode optional,
+    defaults to whatever is currently stored). Never writes ProgramDCSelection -- see
+    dc_selection.preview_selection's own docstring."""
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    result = dc_selection.preview_selection(body.get("rules") or {}, upload_mode=body.get("upload_mode"))
+    return JsonResponse(result, json_dumps_params={"default": str})
+
+
+@csrf_exempt
 @require_http_methods(["GET", "POST"])
 def admin_dc_selection(request):
     """/api/planning/admin/dc-selection/ -- DC Selection (added 2026-09-08). See
