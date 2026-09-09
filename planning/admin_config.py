@@ -265,6 +265,12 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "target": "module", "module_attr": "R1_2_MAX_TRAVEL_MINUTES", "default": 180,
     },
     {
+        "group": "Routing", "key": "plan_a_max_round_trip_distance_km", "type": "float",
+        "label": "Plan A distance ceiling (all 3 models)", "unit": "km", "min": 10, "max": 500,
+        "description": "Added 2026-09-09 -- Plan A's round-trip distance budget (Priority-Max/Distance-Min/Balanced all share this ceiling, same as the travel-time ceiling above). Not part of the original spec (Model 1 previously had no distance cap at all).",
+        "target": "module", "module_attr": "PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM", "default": 100.0,
+    },
+    {
         "group": "Routing", "key": "plan_b_max_daily_distance_km", "type": "float",
         "label": "Plan B distance ceiling", "unit": "km", "min": 10, "max": 500,
         "description": "Section 5 -- Plan B's (Beat Planning/Cluster-Based) round-trip distance budget. Both this and the travel-time ceiling below must be satisfied together.",

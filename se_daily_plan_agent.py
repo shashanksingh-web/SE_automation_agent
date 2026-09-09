@@ -3358,6 +3358,16 @@ R1_1_FIELD_MINUTES_CAP = 420  # R1.1, HARD cap (GR-R3)
 # feasible only if SUM(Travel_Time_Leg) <= 180 -- an SE must NOT spend more than 3 hours
 # of the day travelling, not "must spend at least" as this constant previously enforced.
 R1_2_MAX_TRAVEL_MINUTES = 180  # Admin Control Panel-overridable (planning.admin_config), see load_business_constants's own docstring.
+# Plan A round-trip distance ceiling (added 2026-09-09, explicit user request "include
+# 100km maximum round trip") -- not part of the original spec (Model 1 was documented
+# "No distance cap, per OQ-13"; Models 2/3 never had one either), added on top of the
+# existing R1.1/R1.2/R1.7 caps, same 100km figure as Plan B's own PLAN_B_MAX_DAILY_
+# DISTANCE_KM. Per direct instruction ("not hardceiling but defined on user input from
+# frontend"), this is a configurable default, not a fixed literal baked into the caps
+# check -- Admin Control Panel-overridable (planning.admin_config), same module-attr
+# monkey-patch mechanism as R1_2_MAX_TRAVEL_MINUTES above (see load_business_constants).
+# Applies to all 3 Plan A models uniformly via _within_caps, not model-specific.
+PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM = 100.0
 R1_7_MAX_STOPS = 5  # R1.7, HARD cap (GR-R4)
 R3_2_DEFAULT_AVG_SPEED_KMPH = 25.0  # R3.2 -- undefined in the sheet; bottom of its own suggested 25-30 km/h range
 
@@ -3486,9 +3496,16 @@ def _route_metrics(stop_candidates: List[Dict[str, Any]], origin: Tuple[float, f
 def _within_caps(metrics: Dict[str, Any]) -> bool:
     """GR-R3 (<=420 total), GR-R4 (<=5 stops, enforced by callers via candidate-set size,
     not here), GR-R5 (<=180 travel-only ceiling -- CORRECTED 2026-09-06 via Routing_
-    Agent_Configuration_Sheet_v9.xlsx, see R1_2_MAX_TRAVEL_MINUTES)."""
+    Agent_Configuration_Sheet_v9.xlsx, see R1_2_MAX_TRAVEL_MINUTES), plus the round-trip
+    distance ceiling (see PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM) -- checking it here, the one
+    caps helper all 3 Plan A models already call, reaches every model/K-search/
+    distinctness-swap site uniformly with no separate wiring per call site."""
     total_minutes = metrics["total_travel_min"] + metrics["total_visit_min"]
-    return metrics["total_travel_min"] <= R1_2_MAX_TRAVEL_MINUTES and total_minutes <= R1_1_FIELD_MINUTES_CAP
+    return (
+        metrics["total_travel_min"] <= R1_2_MAX_TRAVEL_MINUTES
+        and total_minutes <= R1_1_FIELD_MINUTES_CAP
+        and metrics["total_distance_km"] <= PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM
+    )
 
 
 def _two_opt(order: List[Dict[str, Any]], origin: Tuple[float, float], avg_speed_kmph: float) -> List[Dict[str, Any]]:
@@ -3707,15 +3724,18 @@ def build_route_priority_max(
     visited_ids = {c["dc"]["DC_ID"] for c in visited_order}
     dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Not_Selected_By_Solver"} for c in with_coords if c["dc"]["DC_ID"] not in visited_ids]
 
-    # GR-R5 remedy (CORRECTED 2026-09-06): trim the lowest-priority visited stop,
-    # recompute, repeat -- until the route fits the 180-min travel ceiling or nothing is
-    # left. Removing a stop can only reduce total_travel_min (fewer legs), so this
-    # always terminates feasible (worst case: the empty route, 0 travel).
+    # GR-R5 remedy (CORRECTED 2026-09-06, EXTENDED 2026-09-09 to also cover the round-
+    # trip distance ceiling): trim the lowest-priority visited stop, recompute, repeat --
+    # until the route fits every _within_caps() condition (180-min travel ceiling AND
+    # 100km round-trip distance ceiling) or nothing is left. Removing a stop can only
+    # reduce total_travel_min/total_distance_km (fewer legs), so this always terminates
+    # feasible (worst case: the empty route, 0 travel, 0 distance).
     metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
-    while visited_order and metrics["total_travel_min"] > R1_2_MAX_TRAVEL_MINUTES:
+    while visited_order and not _within_caps(metrics):
         lowest = min(visited_order, key=lambda c: c["priority_score"])
         visited_order = [c for c in visited_order if c is not lowest]
-        dropped.append({"dc_id": lowest["dc"]["DC_ID"], "reason": "Travel_Ceiling_Exceeded"})
+        reason = "Distance_Ceiling_Exceeded" if metrics["total_distance_km"] > PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM else "Travel_Ceiling_Exceeded"
+        dropped.append({"dc_id": lowest["dc"]["DC_ID"], "reason": reason})
         metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
 
     # Forced route distinctness (see _distinctness_swap docstring) -- tried only after
@@ -3783,17 +3803,17 @@ def build_route_distance_min(
     if best_metrics is None and by_priority:
         # Under a ceiling (CORRECTED 2026-09-06, was a floor), the K-descending search
         # above already implements GR-R5's remedy -- each step down drops the lowest-
-        # priority stop. If not even K=1 respects both the 180-min travel ceiling and
-        # the 420-min total cap, the only genuinely honest fallback is the empty route
-        # (0 stops trivially satisfies both) -- unlike the old floor-era code, there is
-        # no "show it anyway despite breaching" option: showing a route that still
-        # breaches the ceiling is exactly the failure mode GR-R5 exists to prevent, not
-        # something to fall back to.
+        # priority stop. If not even K=1 respects the 180-min travel ceiling, the 420-min
+        # total cap, or (ADDED 2026-09-09) the round-trip distance ceiling, the only
+        # genuinely honest fallback is the empty route (0 stops trivially satisfies all
+        # three) -- unlike the old floor-era code, there is no "show it anyway despite
+        # breaching" option: showing a route that still breaches a ceiling is exactly the
+        # failure mode GR-R5 exists to prevent, not something to fall back to.
         dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Travel_Ceiling_Exceeded"} for c in with_coords]
         return {
             "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
             "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
-            "infeasibility_reason": "Travel_Ceiling_Exceeded: even a single-stop route exceeds the 180-min travel ceiling (or the 420-min total cap) given this candidate pool's geography -- no route shown rather than one that breaches it",
+            "infeasibility_reason": "Travel_Ceiling_Exceeded: even a single-stop route exceeds the 180-min travel ceiling, the 420-min total cap, or the round-trip distance ceiling given this candidate pool's geography -- no route shown rather than one that breaches it",
         }
     elif best_metrics is None:
         return {
@@ -3953,18 +3973,19 @@ def build_route_balanced(
         blended, best_k, best_metrics, feasible = max(feasible_options, key=lambda e: e[0])
         reason = ""
     else:
-        # Under a ceiling (CORRECTED 2026-09-06, was a floor), no K reaches both the
-        # 180-min travel ceiling and the 420-min total cap together. Unlike the old
-        # floor-era code, there's no "pick whichever K got closest anyway" fallback that
-        # makes sense here -- every remaining K still breaches the ceiling (that's why
-        # feasible_options is empty), so showing any of them would be exactly the
-        # failure mode GR-R5 exists to prevent. The only genuinely honest fallback is
-        # the empty route (0 stops trivially satisfies both caps).
+        # Under a ceiling (CORRECTED 2026-09-06, was a floor), no K reaches the 180-min
+        # travel ceiling, the 420-min total cap, and (ADDED 2026-09-09) the round-trip
+        # distance ceiling all together. Unlike the old floor-era code, there's no "pick
+        # whichever K got closest anyway" fallback that makes sense here -- every
+        # remaining K still breaches a ceiling (that's why feasible_options is empty), so
+        # showing any of them would be exactly the failure mode GR-R5 exists to prevent.
+        # The only genuinely honest fallback is the empty route (0 stops trivially
+        # satisfies all three caps).
         dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Travel_Ceiling_Exceeded"} for c in with_coords]
         return {
             "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
             "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": False,
-            "infeasibility_reason": "Travel_Ceiling_Exceeded: even a single-stop route exceeds the 180-min travel ceiling (or the 420-min total cap) given this candidate pool's geography -- no route shown rather than one that breaches it",
+            "infeasibility_reason": "Travel_Ceiling_Exceeded: even a single-stop route exceeds the 180-min travel ceiling, the 420-min total cap, or the round-trip distance ceiling given this candidate pool's geography -- no route shown rather than one that breaches it",
             "alpha_used": round(alpha, 3),
         }
 
