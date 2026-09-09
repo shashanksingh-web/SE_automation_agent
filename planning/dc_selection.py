@@ -121,6 +121,20 @@ def _fetch_live_dc_datamart() -> Tuple[Dict[str, bool], Dict[str, float], bool]:
         return active_by_id, overdue_by_id, False
 
 
+def _universe_ids(
+    dc_master: List[Dict[str, Any]], active_by_id: Dict[str, bool], overdue_by_id: Dict[str, float], query_ok: bool,
+) -> set:
+    """The DC universe this feature actually operates over (2026-09-09, explicit user
+    request -- "the universe is dc datamart") -- dc_datamart's own DC set (when the live
+    query succeeded) unioned with dc_master's (DC_RAnk.csv), same union
+    se_daily_plan_agent.evaluate_dc_selection_rule computes internally. Kept as its own
+    helper so get_state()'s Universe_Size and search_dcs()'s iteration can't drift apart
+    from what the rule engine itself actually evaluates."""
+    dc_master_ids = {dc["DC_ID"] for dc in dc_master}
+    datamart_ids = (set(active_by_id) | set(overdue_by_id)) if query_ok else set()
+    return dc_master_ids | datamart_ids
+
+
 def get_state() -> Dict[str, Any]:
     """GET /api/planning/admin/dc-selection/ -- current rule + manual lists + a live
     preview computed the same way the plan-generation gate will evaluate it.
@@ -145,7 +159,7 @@ def get_state() -> Dict[str, Any]:
         "Manual_Includes": manual_includes,
         "Manual_Excludes": manual_excludes,
         "Configured": selected is not None,
-        "Universe_Size": len(dc_master),
+        "Universe_Size": len(_universe_ids(dc_master, active_by_id, overdue_by_id, query_ok)),
         "Selected_Count": len(selected) if selected is not None else None,
         "Live_Query_Ok": query_ok,
         "Rank_Csv_Uploaded_At": row.rank_csv_uploaded_at,
@@ -183,7 +197,7 @@ def preview_selection(rules: Dict[str, Any], upload_mode: Optional[str] = None) 
     )
     return {
         "Selected_Count": len(selected) if selected is not None else None,
-        "Universe_Size": len(dc_master),
+        "Universe_Size": len(_universe_ids(dc_master, active_by_id, overdue_by_id, query_ok)),
         "Live_Query_Ok": query_ok,
     }
 
@@ -240,10 +254,15 @@ def update_selection(
 
 
 def search_dcs(query: str = "", limit: int = 50, offset: int = 0, filter_mode: str = "all") -> Dict[str, Any]:
-    """Search & toggle UX -- searches the full DC_RAnk.csv universe by DC_ID/name
-    substring, returns each match's Rank/Cohort/is_active/overdue plus whether it's
-    currently in the computed selection and/or manually included/excluded, so the panel
-    can render a toggle per row without a second round trip.
+    """Search & toggle UX -- searches the full DC universe (dc_datamart unioned with
+    DC_RAnk.csv, 2026-09-09 -- "the universe is dc datamart", same union
+    se_daily_plan_agent.evaluate_dc_selection_rule evaluates internally, see
+    _universe_ids) by DC_ID/name substring, returns each match's Rank/Cohort/is_active/
+    overdue plus whether it's currently in the computed selection and/or manually
+    included/excluded, so the panel can render a toggle per row without a second round
+    trip. A DC present only in dc_datamart (not yet in DC_RAnk.csv) still shows up here
+    -- just with dc_name/node/state/rank/cohort all null, same as any other missing-data
+    case in this module.
 
     filter_mode: "all" (default), "selected", or "excluded" -- narrows to DCs currently
     in (or manually excluded from) the computed selection, for browsing a large result
@@ -253,7 +272,9 @@ def search_dcs(query: str = "", limit: int = 50, offset: int = 0, filter_mode: s
     manual_includes = set(row.manual_includes or [])
     manual_excludes = set(row.manual_excludes or [])
     dc_master, _ = _dc_master()
+    dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
     active_by_id, overdue_by_id, query_ok = _fetch_live_dc_datamart()
+    universe_ids = _universe_ids(dc_master, active_by_id, overdue_by_id, query_ok)
     selected = agent.evaluate_dc_selection_rule(
         _effective_rules(row), dc_master, active_by_id if query_ok else None, overdue_by_id if query_ok else None,
         manual_includes, manual_excludes,
@@ -263,10 +284,11 @@ def search_dcs(query: str = "", limit: int = 50, offset: int = 0, filter_mode: s
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
-    def matches_query(dc: Dict[str, Any]) -> bool:
+    def matches_query(dc_id: str) -> bool:
         if not q:
             return True
-        return q in (dc["DC_ID"] or "").lower() or q in (dc.get("DC_Name") or "").lower()
+        name = (dc_by_id.get(dc_id, {}).get("DC_Name") or "").lower()
+        return q in dc_id.lower() or q in name
 
     def matches_mode(dc_id: str) -> bool:
         if filter_mode == "selected":
@@ -275,7 +297,7 @@ def search_dcs(query: str = "", limit: int = 50, offset: int = 0, filter_mode: s
             return dc_id in manual_excludes or (rules and dc_id not in selected)
         return True
 
-    filtered = [dc for dc in dc_master if matches_query(dc) and matches_mode(dc["DC_ID"])]
+    filtered = sorted(dc_id for dc_id in universe_ids if matches_query(dc_id) and matches_mode(dc_id))
     page = filtered[offset : offset + limit]
     return {
         "total": len(filtered),
@@ -284,19 +306,19 @@ def search_dcs(query: str = "", limit: int = 50, offset: int = 0, filter_mode: s
         "returned": len(page),
         "dcs": [
             {
-                "dc_id": dc["DC_ID"],
-                "dc_name": dc.get("DC_Name"),
-                "node": dc.get("Node"),
-                "state": dc.get("State"),
-                "rank": dc.get("Rank"),
-                "cohort": dc.get("Cohort"),
-                "is_active": active_by_id.get(dc["DC_ID"]) if query_ok else None,
-                "overdue": overdue_by_id.get(dc["DC_ID"]) if query_ok else None,
-                "in_selection": dc["DC_ID"] in selected,
-                "manually_included": dc["DC_ID"] in manual_includes,
-                "manually_excluded": dc["DC_ID"] in manual_excludes,
+                "dc_id": dc_id,
+                "dc_name": dc_by_id.get(dc_id, {}).get("DC_Name"),
+                "node": dc_by_id.get(dc_id, {}).get("Node"),
+                "state": dc_by_id.get(dc_id, {}).get("State"),
+                "rank": dc_by_id.get(dc_id, {}).get("Rank"),
+                "cohort": dc_by_id.get(dc_id, {}).get("Cohort"),
+                "is_active": active_by_id.get(dc_id) if query_ok else None,
+                "overdue": overdue_by_id.get(dc_id) if query_ok else None,
+                "in_selection": dc_id in selected,
+                "manually_included": dc_id in manual_includes,
+                "manually_excluded": dc_id in manual_excludes,
             }
-            for dc in page
+            for dc_id in page
         ],
     }
 

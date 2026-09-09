@@ -1433,6 +1433,14 @@ def evaluate_dc_selection_rule(
     this function does no I/O itself, so it works identically from the Django admin
     preview and from the actual plan-generation gate.
 
+    The universe evaluated is dc_datamart's own DC set (2026-09-09, explicit user
+    request -- "the universe is dc datamart"), unioned with dc_master's in case DC_RAnk
+    ever carries a DC dc_datamart doesn't (see the universe computation below for why
+    this is safe for the plan-generation call site too). A DC present in dc_datamart but
+    absent from DC_RAnk.csv still participates -- it just has no Rank/Cohort, so it can
+    never match those two criteria until it's added to a Rank & Cohort file, same
+    soft-degrade treatment this module gives every other missing-data case.
+
     Per-criterion AND/OR combination, per direct instruction ("we have filter which is
     based on and/or ... or-apart from above selection also include these ... and means
     from above filter this is the selection criteria"): every enabled AND criterion
@@ -1472,10 +1480,29 @@ def evaluate_dc_selection_rule(
     if not enabled and not resolved_includes and not resolved_excludes:
         return None
 
+    # UNIVERSE FIXED 2026-09-09, explicit user request ("the universe is dc datamart"):
+    # was dc_master's own keys only (DC_RAnk.csv, ~10k rows) -- contradicted this
+    # feature's very first spec ("dc_datamart db as master"). dc_datamart has ~2.3x as
+    # many DCs as DC_RAnk.csv, so a DC absent from DC_RAnk.csv (no Rank/Cohort yet) but
+    # present in dc_datamart was invisible to this function entirely -- it could never
+    # be pulled in by active_status/overdue criteria even though live data existed for
+    # it. Now the universe is dc_master's keys UNIONED with whichever of dc_active_by_id/
+    # dc_overdue_by_id's own keys were actually supplied (captured BEFORE the `or {}`
+    # below, so a query failure -- both None -- correctly contributes nothing rather
+    # than a fabricated empty universe). Safe for the plan-generation call site too:
+    # there dc_active_by_id is built from the same already-scope-filtered dc_ids as
+    # dc_master itself (see planning.services.generate_plan_for_scope), so its keys are
+    # always a subset of dc_master's own -- the union is a no-op, zero behavior change.
+    dc_datamart_ids: Set[str] = set()
+    if dc_active_by_id is not None:
+        dc_datamart_ids |= set(dc_active_by_id.keys())
+    if dc_overdue_by_id is not None:
+        dc_datamart_ids |= set(dc_overdue_by_id.keys())
+
     dc_active_by_id = dc_active_by_id or {}
     dc_overdue_by_id = dc_overdue_by_id or {}
     dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
-    universe = list(dc_by_id.keys())
+    universe = list(set(dc_by_id.keys()) | dc_datamart_ids)
 
     def matches(dc_id: str, kind: str) -> bool:
         dc = dc_by_id.get(dc_id)
