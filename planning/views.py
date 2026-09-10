@@ -730,9 +730,13 @@ def plan_run_detail(request, plan_run_id: int):
 
 @require_GET
 def plan_run_list(request):
-    """GET /api/planning/runs/?scope_type=NODE&scope_value=Jaipur&status=PENDING_REVIEW&limit=&offset=
+    """GET /api/planning/runs/?scope_type=NODE&scope_value=Jaipur&status=PENDING_REVIEW&plan_date=YYYY-MM-DD&limit=&offset=
     -- list past runs, newest first. limit defaults to 50, capped at 500; see
-    X-Total-Count on the response to tell a full result from a truncated one."""
+    X-Total-Count on the response to tell a full result from a truncated one.
+
+    plan_date (added 2026-09-10, explicit user request -- "all system plan created with
+    all filter"): exact-date match, same convention as scope_value/status (no range
+    filter -- a PlanRun is always generated for one specific plan_date, never a span)."""
     qs = PlanRun.objects.all()
     if request.GET.get("scope_type"):
         qs = qs.filter(scope_type=request.GET["scope_type"].upper())
@@ -740,6 +744,8 @@ def plan_run_list(request):
         qs = qs.filter(scope_value=request.GET["scope_value"])
     if request.GET.get("status"):
         qs = qs.filter(status=request.GET["status"].upper())
+    if request.GET.get("plan_date"):
+        qs = qs.filter(plan_date=request.GET["plan_date"])
     pagination = _pagination_params(request, default_limit=50, max_limit=500)
     if pagination is None:
         return JsonResponse({"error": "limit/offset must be integers"}, status=400)
