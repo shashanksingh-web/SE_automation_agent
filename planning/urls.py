@@ -33,6 +33,7 @@ urlpatterns = [
     path("scheduled-scopes/", views.scheduled_scopes, name="scheduled_scopes"),
     path("runs/", views.plan_run_list, name="plan_run_list"),
     path("runs/<int:plan_run_id>/", views.plan_run_detail, name="plan_run_detail"),
+    path("admin/generate-all-states/", views.admin_generate_all_states, name="admin_generate_all_states"),
     path("admin/config/", views.admin_pipeline_config, name="admin_pipeline_config"),
     path("admin/dc-selection/", views.admin_dc_selection, name="admin_dc_selection"),
     path("admin/dc-selection/preview/", views.admin_dc_selection_preview, name="admin_dc_selection_preview"),
