@@ -548,6 +548,16 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             # Speed/alpha assumption audit trail -- the ops assumptions behind the numbers above.
             "avg_speed_kmph_used": r.avg_speed_kmph_used,
             "alpha_used": r.alpha_used,
+            # Google Maps route-accuracy overlay (added 2026-09-10, see RoutePlan.
+            # distance_source's own docstring) -- "haversine_x1.4" (default) or
+            # "google_maps" tells the caller whether total_distance_km/total_travel_
+            # minutes above are the cheap estimate or a real Directions API result for
+            # this exact already-selected route. google_exceeds_cap is only meaningful
+            # when distance_source is "google_maps": it means the real number breaches
+            # the cap the Haversine estimate had satisfied, flagged rather than
+            # re-deciding stops (see apply_google_route_accuracy).
+            "distance_source": r.distance_source,
+            "google_exceeds_cap": r.google_exceeds_cap,
             "feasible": r.feasible,
             "infeasibility_reason": r.infeasibility_reason or None,
             # R0.4's Origin_Point -- where/why this route starts where it does. See
