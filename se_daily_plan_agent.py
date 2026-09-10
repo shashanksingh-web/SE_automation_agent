@@ -83,6 +83,23 @@ KHETI_DB_ID = int(os.environ.get("SE_AGENT_KHETI_DB_ID", "4"))                 #
 # and wired 2026-09-07, see compute_dc_health_score.
 LOCUS_DB_ID = int(os.environ.get("SE_AGENT_LOCUS_DB_ID", "27"))                # "locus"
 
+# Google Maps Platform (added 2026-09-10, explicit user request -- real road-based
+# distance/travel-time for the Routing Agent's FINAL chosen route only, replacing
+# Haversine x 1.4 there -- confirmed scope: applied to the BO-scored, already-selected
+# DCs for both Plan A and Plan B, NOT the candidate-pool-wide clustering/construction
+# search (that stays on the cheap Haversine estimate, same reasoning as every other
+# live-data source in this module: enabled purely by the key's presence, same
+# `configured`-property convention as MetabaseClient/RedshiftDirectClient above --
+# no separate feature flag). See apply_google_route_accuracy()'s own docstring.
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED = bool(GOOGLE_MAPS_API_KEY) and requests is not None
+# Persistent (SE, ordered-stop-sequence) -> per-leg [distance_km, duration_min] cache --
+# road distances don't change day to day, and this session's own verification workflow
+# re-runs the same states/dates repeatedly, so an uncached version would re-bill the API
+# for an identical route on every re-run. Coordinates rounded to 4 decimals (~11m) before
+# hashing into the key, since GPS jitter on the same DC/origin shouldn't miss the cache.
+GOOGLE_ROUTE_CACHE_PATH = Path(os.environ.get("SE_AGENT_GOOGLE_ROUTE_CACHE", BASE_DIR / "output" / "google_route_cache.json"))
+
 DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAnk.csv"))
 # Added 2026-09-04, explicit user request -- an independent allowlist on top of
 # DC_RAnk.csv's own Rank<=6000 eligibility (see BusinessConstants.max_eligible_rank),
@@ -3479,6 +3496,7 @@ def _route_metrics(stop_candidates: List[Dict[str, Any]], origin: Tuple[float, f
         stops.append({
             "row": c["row"], "distance_from_prev_km": round(leg_km, 2),
             "travel_time_from_prev_min": round(leg_min, 1), "eta_minutes": round(cumulative_minutes, 1),
+            "lat": lat, "lon": lon,  # retained for apply_google_route_accuracy -- DailyTaskRow itself has no Lat/Lon field
         })
         last_point = (lat, lon)
     # Closing leg back to Origin_Point (R3.3: routes are closed).
@@ -3491,6 +3509,151 @@ def _route_metrics(stop_candidates: List[Dict[str, Any]], origin: Tuple[float, f
         "total_visit_min": round(total_visit, 1), "priority_score_captured": round(priority_captured, 4),
         "return_leg_km": round(return_km, 2), "return_leg_min": round(return_min, 1),
     }
+
+
+_google_route_cache: Optional[Dict[str, List[List[float]]]] = None  # lazy-loaded, module-level
+
+
+def _load_google_route_cache() -> Dict[str, List[List[float]]]:
+    global _google_route_cache
+    if _google_route_cache is None:
+        try:
+            _google_route_cache = json.loads(GOOGLE_ROUTE_CACHE_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            _google_route_cache = {}
+    return _google_route_cache
+
+
+def _save_google_route_cache() -> None:
+    try:
+        GOOGLE_ROUTE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GOOGLE_ROUTE_CACHE_PATH.write_text(json.dumps(_google_route_cache), encoding="utf-8")
+    except OSError:
+        pass  # best-effort cache -- a write failure just means this run re-fetches next time, not a hard error
+
+
+def _google_route_cache_key(origin: Tuple[float, float], stop_coords: List[Tuple[float, float]]) -> str:
+    points = [origin] + stop_coords + [origin]
+    return "|".join(f"{lat:.4f},{lon:.4f}" for lat, lon in points)
+
+
+def google_directions_route_legs(
+    origin: Tuple[float, float], stop_coords: List[Tuple[float, float]],
+) -> Optional[List[Tuple[float, float]]]:
+    """Real per-leg (distance_km, duration_min) for the closed loop Origin -> stop_1 ->
+    ... -> stop_N -> Origin, via the Directions API with waypoints -- ONE call returns
+    every leg of an already-ordered route (cheaper and more direct than Distance Matrix,
+    which computes an unordered N x M grid rather than a specific ordered path).
+    waypoints=... (no optimize:true) -- the visit ORDER is this module's own decision
+    (OR-Tools/2-opt/Clarke-Wright already chose it), Google is only asked for real
+    distances along that exact fixed order, never to re-sequence it.
+
+    Returns None (never raises) whenever real data isn't available for any reason --
+    not configured, empty stop list, cache miss + request failure, non-OK API status --
+    so every caller can fall back to the Haversine x 1.4 estimate already in hand rather
+    than block plan generation on a third-party API. Fail-open, same convention as
+    _fetch_live_dc_datamart/upload_selected_dcs elsewhere in this codebase."""
+    if not GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED or not stop_coords:
+        return None
+    if any(None in c for c in stop_coords):
+        return None
+
+    cache = _load_google_route_cache()
+    key = _google_route_cache_key(origin, stop_coords)
+    cached = cache.get(key)
+    if cached is not None:
+        return [(leg[0], leg[1]) for leg in cached]
+
+    def _fmt(pt: Tuple[float, float]) -> str:
+        return f"{pt[0]},{pt[1]}"
+
+    # Every stop is passed as a waypoint (not just N-1 of them) since the route CLOSES
+    # back to Origin (R3.3) -- Origin is both `origin` and `destination`, so all N real
+    # stops sit in between as waypoints, giving exactly N+1 legs: Origin->s1, s1->s2,
+    # ..., sN->Origin.
+    params = {
+        "origin": _fmt(origin), "destination": _fmt(origin), "key": GOOGLE_MAPS_API_KEY,
+        "waypoints": "|".join(_fmt(c) for c in stop_coords),
+    }
+
+    try:
+        resp = requests.get("https://maps.googleapis.com/maps/api/directions/json", params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.warning("Google Directions API call failed (%s: %s) -- falling back to Haversine x 1.4 for this route.", type(e).__name__, e)
+        return None
+
+    if data.get("status") != "OK" or not data.get("routes"):
+        logger.warning("Google Directions API returned status=%s for this route -- falling back to Haversine x 1.4.", data.get("status"))
+        return None
+
+    legs = data["routes"][0]["legs"]
+    # Expect len(stop_coords) + 1 legs (Origin->s1, s1->s2, ..., sN->Origin) since every
+    # stop was passed as a waypoint, not just the destination.
+    if len(legs) != len(stop_coords) + 1:
+        logger.warning("Google Directions API returned %d legs, expected %d -- falling back to Haversine x 1.4.", len(legs), len(stop_coords) + 1)
+        return None
+
+    result = [(leg["distance"]["value"] / 1000.0, leg["duration"]["value"] / 60.0) for leg in legs]
+    cache[key] = [list(leg) for leg in result]
+    _save_google_route_cache()
+    return result
+
+
+def apply_google_route_accuracy(route_result: Dict[str, Any], origin: Tuple[float, float]) -> Dict[str, Any]:
+    """Overlays real Google-Maps-derived distance/time onto an ALREADY-FINALIZED route
+    (added 2026-09-10, explicit user request, confirmed scope: "first go to bo scoring
+    the selected dc plan a and plan b" -- i.e. applied to the DCs a model already picked
+    via the existing Haversine-based search, for both Plan A's 3 models and Plan B's 3
+    routes, NOT used to re-drive candidate-pool clustering/construction/cap-checking
+    itself). Mutates and returns `route_result` in place for caller convenience.
+
+    Deliberately does NOT re-verify _within_caps()/PLAN_B_MAX_DAILY_DISTANCE_KM against
+    the real numbers, and does NOT change which stops were selected -- that would pull
+    this back into "full candidate-pool search" territory (the scope explicitly NOT
+    chosen), and would also break GR-R9 determinism (a live API's momentary
+    traffic-aware numbers could vary run to run in ways Haversine never does). This is a
+    reporting-layer accuracy upgrade only: if Google's real distance happens to exceed
+    the cap the Haversine estimate satisfied, `google_exceeds_cap` flags it honestly
+    rather than silently re-deciding the route or silently hiding the discrepancy.
+
+    route_result["distance_source"] is always set: "google_maps" on success, unchanged
+    "haversine_x1.4" (the implicit default -- see RoutePlan.distance_source) on any
+    failure/skip, so callers/persisted rows can always tell which number they're
+    looking at."""
+    stops = route_result.get("stops") or []
+    route_result.setdefault("distance_source", "haversine_x1.4")
+    route_result.setdefault("google_exceeds_cap", False)
+    if not stops:
+        return route_result
+    stop_coords = [(s["lat"], s["lon"]) for s in stops]
+    legs = google_directions_route_legs(origin, stop_coords)
+    if legs is None:
+        return route_result
+
+    total_distance = total_travel = 0.0
+    cumulative_minutes = 0.0
+    for stop, (leg_km, leg_min) in zip(stops, legs[:-1]):
+        total_distance += leg_km
+        total_travel += leg_min
+        cumulative_minutes += leg_min + stop["row"].Estimated_Duration
+        stop["distance_from_prev_km"] = round(leg_km, 2)
+        stop["travel_time_from_prev_min"] = round(leg_min, 1)
+        stop["eta_minutes"] = round(cumulative_minutes, 1)
+    return_km, return_min = legs[-1]
+    total_distance += return_km
+    total_travel += return_min
+
+    route_result["total_distance_km"] = round(total_distance, 2)
+    route_result["total_travel_min"] = round(total_travel, 1)
+    route_result["return_leg_km"] = round(return_km, 2)
+    route_result["return_leg_min"] = round(return_min, 1)
+    route_result["distance_source"] = "google_maps"
+    route_result["google_exceeds_cap"] = not (
+        total_travel <= R1_2_MAX_TRAVEL_MINUTES and total_distance <= PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM
+    )
+    return route_result
 
 
 def _within_caps(metrics: Dict[str, Any]) -> bool:

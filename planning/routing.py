@@ -305,6 +305,17 @@ def generate_route_plans_for_se(
         }
         default_plan_type = RoutePlan.PlanType.PRIORITY_MAX
 
+    # Google Maps route-accuracy overlay (added 2026-09-10, explicit user request,
+    # confirmed scope: applied to the already-selected final route only, for both Plan A
+    # and Plan B -- never used to re-drive the candidate-pool search/clustering above,
+    # which stays on the cheap Haversine x 1.4 estimate. Mutates each result in place;
+    # a no-op (falls back to "haversine_x1.4") whenever GOOGLE_API_KEY isn't configured
+    # or the live call fails, so this never blocks plan generation. Applied BEFORE the
+    # stop_sets/GR-R10 convergence check below since that only reads DC_ID tuples, never
+    # distance/time -- unaffected either way.
+    for result in model_results.values():
+        agent.apply_google_route_accuracy(result, origin)
+
     # GR-R7 (Routing_Agent_Configuration_Sheet_v8, "Never generate fewer than 3 feasible
     # algorithm-generated plans without flagging why") + GR-R10 ("Plan distinctness",
     # 2026-08-31 addition) -- flag when the 3 models (either family -- Plan A's Models
@@ -384,6 +395,8 @@ def generate_route_plans_for_se(
             # result dict.
             avg_speed_kmph_used=agent.R3_2_DEFAULT_AVG_SPEED_KMPH,
             alpha_used=result.get("alpha_used"),
+            distance_source=result.get("distance_source", "haversine_x1.4"),
+            google_exceeds_cap=result.get("google_exceeds_cap", False),
         )
         RouteStop.objects.bulk_create([
             RouteStop(

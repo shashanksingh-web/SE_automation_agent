@@ -481,6 +481,23 @@ class RoutePlan(models.Model):
     avg_speed_kmph_used = models.FloatField(blank=True, null=True)
     alpha_used = models.FloatField(blank=True, null=True)
 
+    # Added 2026-09-10, explicit user request -- Google Maps route-accuracy overlay
+    # (se_daily_plan_agent.apply_google_route_accuracy), applied to the already-selected
+    # final route only (BO-scored/model-chosen stops), never to candidate-pool search.
+    # "haversine_x1.4" default covers both "Google Maps not configured" and "the live
+    # call failed this run" -- fail-open, same distance number this plan would have
+    # carried before this feature existed either way.
+    DISTANCE_SOURCE_CHOICES = [
+        ("haversine_x1.4", "Haversine x 1.4 estimate"),
+        ("google_maps", "Google Maps (real road distance/time)"),
+    ]
+    distance_source = models.CharField(max_length=20, choices=DISTANCE_SOURCE_CHOICES, default="haversine_x1.4")
+    # True when Google's real distance/travel-time for this already-selected route
+    # exceeds the round-trip caps the Haversine estimate satisfied -- flagged, never
+    # silently re-decided (see apply_google_route_accuracy's own docstring for why stop
+    # selection itself isn't re-run against the real numbers).
+    google_exceeds_cap = models.BooleanField(default=False)
+
     feasible = models.BooleanField(default=True)
     # e.g. Travel_Ceiling_Exceeded when even the best available stop-set still exceeds
     # the 180-min travel ceiling (R1.2, corrected 2026-09-06 from an earlier floor
