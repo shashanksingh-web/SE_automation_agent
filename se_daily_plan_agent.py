@@ -99,6 +99,18 @@ GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED = bool(GOOGLE_MAPS_API_KEY) and requests is n
 # for an identical route on every re-run. Coordinates rounded to 4 decimals (~11m) before
 # hashing into the key, since GPS jitter on the same DC/origin shouldn't miss the cache.
 GOOGLE_ROUTE_CACHE_PATH = Path(os.environ.get("SE_AGENT_GOOGLE_ROUTE_CACHE", BASE_DIR / "output" / "google_route_cache.json"))
+# Candidate-pool-wide accuracy (added 2026-09-11, explicit user request -- "distance is
+# also the parameter [for] DC selection for route planning": the final-route overlay
+# above corrects the REPORTED number on whatever got selected, but Haversine x 1.4 was
+# still what actually drove selection in Plan A Models 2/3 (nearest-neighbor/Clarke-
+# Wright construction, 2-opt/Or-opt improvement) and all of Plan B (clustering's real-DC-
+# pair checks, Stage 3's score-per-km cluster ranking). This cache/matrix feeds real
+# pairwise distances into those selection-time comparisons too -- see
+# prime_google_distance_matrix's own docstring for exactly which comparisons this does
+# and does not reach (Plan B's synthetic-centroid comparisons are deliberately excluded,
+# not prefetchable). Separate cache file from the route-leg cache above -- keyed by
+# pairwise coordinates, not by a whole ordered route sequence.
+GOOGLE_DISTANCE_MATRIX_CACHE_PATH = Path(os.environ.get("SE_AGENT_GOOGLE_MATRIX_CACHE", BASE_DIR / "output" / "google_distance_matrix_cache.json"))
 
 DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAnk.csv"))
 # Added 2026-09-04, explicit user request -- an independent allowlist on top of
@@ -3474,19 +3486,206 @@ def _candidate_coords(c: Dict[str, Any]) -> Tuple[Optional[float], Optional[floa
     return dc.get("Latitude"), dc.get("Longitude")
 
 
+_active_distance_matrix: Optional[Dict[Tuple[float, float, float, float], Tuple[float, float]]] = None  # call-scoped, see prime_google_distance_matrix
+_google_distance_matrix_cache: Optional[Dict[str, List[float]]] = None  # lazy-loaded, module-level, disk-backed
+
+
+def _load_google_distance_matrix_cache() -> Dict[str, List[float]]:
+    global _google_distance_matrix_cache
+    if _google_distance_matrix_cache is None:
+        try:
+            _google_distance_matrix_cache = json.loads(GOOGLE_DISTANCE_MATRIX_CACHE_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            _google_distance_matrix_cache = {}
+    return _google_distance_matrix_cache
+
+
+def _save_google_distance_matrix_cache() -> None:
+    try:
+        GOOGLE_DISTANCE_MATRIX_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GOOGLE_DISTANCE_MATRIX_CACHE_PATH.write_text(json.dumps(_google_distance_matrix_cache), encoding="utf-8")
+    except OSError:
+        pass  # best-effort cache, same convention as _save_google_route_cache
+
+
+def _matrix_pair_key(a: Tuple[float, float], b: Tuple[float, float]) -> str:
+    return f"{a[0]:.4f},{a[1]:.4f}>{b[0]:.4f},{b[1]:.4f}"
+
+
+def _fetch_distance_matrix_chunk(
+    origins: List[Tuple[float, float]], destinations: List[Tuple[float, float]],
+) -> Optional[List[List[Tuple[float, float, bool]]]]:
+    """One Distance Matrix API call -- caller (prime_google_distance_matrix) is
+    responsible for keeping origins x destinations within this API key's actual
+    per-request element quota (see that function's own CHUNK comment; the 25-per-
+    dimension figure alone is not sufficient). Returns a [len(origins)][len(destinations)]
+    grid of (distance_km, duration_min, ok); ok=False for any individual element Google
+    itself couldn't resolve (e.g. NOT_FOUND/ZERO_RESULTS for that one pair, not the whole
+    request). Returns None (never raises) on total request failure -- same fail-open
+    convention as google_directions_route_legs."""
+    def _fmt(pt: Tuple[float, float]) -> str:
+        return f"{pt[0]},{pt[1]}"
+    params = {
+        "origins": "|".join(_fmt(o) for o in origins),
+        "destinations": "|".join(_fmt(d) for d in destinations),
+        "key": GOOGLE_MAPS_API_KEY,
+    }
+    try:
+        resp = requests.get("https://maps.googleapis.com/maps/api/distancematrix/json", params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.warning("Google Distance Matrix API call failed (%s: %s) -- falling back to Haversine x 1.4 for this chunk.", type(e).__name__, e)
+        return None
+    if data.get("status") != "OK":
+        logger.warning("Google Distance Matrix API returned status=%s -- falling back to Haversine x 1.4 for this chunk.", data.get("status"))
+        return None
+    grid: List[List[Tuple[float, float, bool]]] = []
+    for row in data.get("rows", []):
+        row_out = []
+        for el in row.get("elements", []):
+            if el.get("status") == "OK":
+                row_out.append((el["distance"]["value"] / 1000.0, el["duration"]["value"] / 60.0, True))
+            else:
+                row_out.append((0.0, 0.0, False))
+        grid.append(row_out)
+    return grid
+
+
+def prime_google_distance_matrix(points: List[Tuple[Optional[float], Optional[float]]]) -> None:
+    """Candidate-pool-wide accuracy (2026-09-11, explicit user request -- see
+    GOOGLE_DISTANCE_MATRIX_CACHE_PATH's own comment for why this exists alongside the
+    final-route overlay). Call ONCE per SE with [origin] + every candidate's coords
+    before running Plan A Models 2/3 or Plan B -- fetches every real pairwise
+    (distance_km, duration_min) among them (cache-first, batched Distance Matrix API
+    calls chunked to this API key's real 100-element-per-request quota, CORRECTED
+    2026-09-10 after MAX_ELEMENTS_EXCEEDED surfaced live -- see the CHUNK constant
+    below) for any
+    cache misses) and sets the module-level active matrix every real-DC-pair distance
+    lookup below (_route_metrics, _greedy_nearest_neighbor, _clarke_wright_order,
+    _cluster_candidates_by_density's max_pairwise_km) checks first, falling back to
+    Haversine x 1.4 per-pair on any miss (missing coords, a failed chunk, or the feature
+    disabled entirely).
+
+    Deliberately does NOT reach Plan B clustering's centroid-based comparisons (seed
+    selection, nearest-to-current-centroid growth) -- a centroid is a computed average
+    point, not a real prefetchable location, so querying it live per-comparison would
+    defeat the entire point of batching this once up front. Those stay Haversine-based;
+    every comparison between two REAL DCs (which is what actually decides route
+    membership/order once a cluster or K-set is chosen) uses the real matrix.
+
+    No-op (leaves the active matrix at None, i.e. every lookup below transparently falls
+    back to Haversine) when GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED is False or fewer than 2
+    usable points are supplied. Call clear_google_distance_matrix() when done with this
+    SE's routing to avoid a stale matrix leaking into an unrelated SE's candidate pool."""
+    global _active_distance_matrix
+    _active_distance_matrix = None
+    if not GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED:
+        return
+    valid = [(p[0], p[1]) for p in points if p[0] is not None and p[1] is not None]
+    if len(valid) < 2:
+        return
+
+    cache = _load_google_distance_matrix_cache()
+    matrix: Dict[Tuple[float, float, float, float], Tuple[float, float]] = {}
+    missing_pairs: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+    for a in valid:
+        for b in valid:
+            if a == b:
+                continue
+            key = _matrix_pair_key(a, b)
+            hit = cache.get(key)
+            if hit is not None:
+                matrix[(round(a[0], 4), round(a[1], 4), round(b[0], 4), round(b[1], 4))] = (hit[0], hit[1])
+            else:
+                missing_pairs.append((a, b))
+
+    if missing_pairs:
+        origins_needed = sorted({p[0] for p in missing_pairs})
+        dests_needed = sorted({p[1] for p in missing_pairs})
+        dirty = False
+        # CORRECTED 2026-09-10 (caught live during full-network verification --
+        # MAX_ELEMENTS_EXCEEDED on real candidate pools above ~10x10): Google's own
+        # "25 origins x 25 destinations" limit is a ceiling on each DIMENSION, not a
+        # green light for a 625-element request -- this project's API key's actual
+        # per-request element quota is 100 (origins x destinations), confirmed live.
+        # Chunking at 10x10=100 stays under that regardless of which dimension is
+        # larger, at the cost of more (still cheap, still cached) requests for a big pool.
+        CHUNK = 10
+        for oi in range(0, len(origins_needed), CHUNK):
+            o_chunk = origins_needed[oi:oi + CHUNK]
+            for di in range(0, len(dests_needed), CHUNK):
+                d_chunk = dests_needed[di:di + CHUNK]
+                grid = _fetch_distance_matrix_chunk(o_chunk, d_chunk)
+                if grid is None:
+                    continue
+                for oi2, o in enumerate(o_chunk):
+                    if oi2 >= len(grid):
+                        break
+                    for di2, d in enumerate(d_chunk):
+                        if di2 >= len(grid[oi2]) or o == d:
+                            continue
+                        dist_km, dur_min, ok = grid[oi2][di2]
+                        if not ok:
+                            continue
+                        cache[_matrix_pair_key(o, d)] = [dist_km, dur_min]
+                        matrix[(round(o[0], 4), round(o[1], 4), round(d[0], 4), round(d[1], 4))] = (dist_km, dur_min)
+                        dirty = True
+        if dirty:
+            _save_google_distance_matrix_cache()
+
+    _active_distance_matrix = matrix
+
+
+def clear_google_distance_matrix() -> None:
+    global _active_distance_matrix
+    _active_distance_matrix = None
+
+
+def _matrix_distance_km(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
+    """Drop-in replacement for circuity_distance_km at any real-DC-pair comparison site
+    that should benefit from prime_google_distance_matrix -- same signature/None-
+    propagation, just checks the active real matrix first."""
+    if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+        return None
+    if _active_distance_matrix is not None:
+        hit = _active_distance_matrix.get((round(lat1, 4), round(lon1, 4), round(lat2, 4), round(lon2, 4)))
+        if hit is not None:
+            return hit[0]
+    return circuity_distance_km(lat1, lon1, lat2, lon2)
+
+
+def _matrix_leg(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float], avg_speed_kmph: float) -> Tuple[float, float]:
+    """(distance_km, travel_min) for one leg, preferring the primed real matrix; falls
+    back to Haversine x 1.4 distance + the flat-avg-speed-derived travel time (the
+    original behavior) on any miss. Used by _route_metrics so every model/K-search/2-opt/
+    Or-opt/distinctness-swap re-evaluation that already routes through _route_metrics
+    picks this up automatically, with no separate wiring per call site."""
+    if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+        return 0.0, 0.0
+    if _active_distance_matrix is not None:
+        hit = _active_distance_matrix.get((round(lat1, 4), round(lon1, 4), round(lat2, 4), round(lon2, 4)))
+        if hit is not None:
+            return hit
+    dist = circuity_distance_km(lat1, lon1, lat2, lon2) or 0.0
+    return dist, travel_time_minutes(dist, avg_speed_kmph) or 0.0
+
+
 def _route_metrics(stop_candidates: List[Dict[str, Any]], origin: Tuple[float, float], avg_speed_kmph: float) -> Dict[str, Any]:
     """Given candidates already in visit order (not including the origin/return legs),
     computes the closed route (origin -> stop_1 -> ... -> stop_N -> origin)'s per-leg
     and total distance/travel-time/visit-time, and its cumulative Priority_Score
-    captured. Shared by all 3 models so they can't drift on how a route's numbers add up."""
+    captured. Shared by all 3 models so they can't drift on how a route's numbers add up.
+    Each leg prefers the primed real Google matrix (_matrix_leg) over Haversine x 1.4 --
+    see prime_google_distance_matrix -- so every construction/improvement pass that
+    evaluates a candidate tour via this function benefits automatically."""
     stops: List[Dict[str, Any]] = []
     total_distance = total_travel = total_visit = priority_captured = 0.0
     last_point = origin
     cumulative_minutes = 0.0
     for c in stop_candidates:
         lat, lon = _candidate_coords(c)
-        leg_km = circuity_distance_km(last_point[0], last_point[1], lat, lon) or 0.0
-        leg_min = travel_time_minutes(leg_km, avg_speed_kmph) or 0.0
+        leg_km, leg_min = _matrix_leg(last_point[0], last_point[1], lat, lon, avg_speed_kmph)
         visit_min = c["row"].Estimated_Duration
         total_distance += leg_km
         total_travel += leg_min
@@ -3500,8 +3699,7 @@ def _route_metrics(stop_candidates: List[Dict[str, Any]], origin: Tuple[float, f
         })
         last_point = (lat, lon)
     # Closing leg back to Origin_Point (R3.3: routes are closed).
-    return_km = circuity_distance_km(last_point[0], last_point[1], origin[0], origin[1]) or 0.0
-    return_min = travel_time_minutes(return_km, avg_speed_kmph) or 0.0
+    return_km, return_min = _matrix_leg(last_point[0], last_point[1], origin[0], origin[1], avg_speed_kmph)
     total_distance += return_km
     total_travel += return_min
     return {
@@ -3926,11 +4124,14 @@ def build_route_priority_max(
 
 
 def _greedy_nearest_neighbor(candidates: List[Dict[str, Any]], origin: Tuple[float, float]) -> List[Dict[str, Any]]:
+    """"Nearest remaining" uses _matrix_distance_km (real Google distance when primed,
+    see prime_google_distance_matrix) rather than raw Haversine -- this is a genuine
+    selection-time decision (which stop gets visited next), not just a reported number."""
     remaining = list(candidates)
     order: List[Dict[str, Any]] = []
     last_point = origin
     while remaining:
-        remaining.sort(key=lambda c: circuity_distance_km(last_point[0], last_point[1], *_candidate_coords(c)) or 1e9)
+        remaining.sort(key=lambda c: _matrix_distance_km(last_point[0], last_point[1], *_candidate_coords(c)) or 1e9)
         nxt = remaining.pop(0)
         order.append(nxt)
         last_point = _candidate_coords(nxt)
@@ -4019,17 +4220,20 @@ def _clarke_wright_order(candidates: List[Dict[str, Any]], origin: Tuple[float, 
     highest savings s(i,j) = d(depot,i) + d(depot,j) - d(i,j) into one path whenever
     both are still route endpoints, repeats until every candidate is one merged path,
     then that path becomes the visit order (closing the loop back to depot happens in
-    _route_metrics, same as every other model)."""
+    _route_metrics, same as every other model). d()/dist_from_origin use
+    _matrix_distance_km (real Google distance when primed, see
+    prime_google_distance_matrix) -- the savings formula itself is a real selection
+    decision (which pair merges first), not just a reported number."""
     if len(candidates) <= 1:
         return list(candidates)
 
-    dist_from_origin = {c["dc"]["DC_ID"]: circuity_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0 for c in candidates}
+    dist_from_origin = {c["dc"]["DC_ID"]: _matrix_distance_km(origin[0], origin[1], *_candidate_coords(c)) or 0.0 for c in candidates}
     by_id = {c["dc"]["DC_ID"]: c for c in candidates}
     ids = list(by_id.keys())
 
     def d(a: str, b: str) -> float:
         ca, cb = by_id[a], by_id[b]
-        return circuity_distance_km(*_candidate_coords(ca), *_candidate_coords(cb)) or 0.0
+        return _matrix_distance_km(*_candidate_coords(ca), *_candidate_coords(cb)) or 0.0
 
     savings = sorted(
         ((dist_from_origin[a] + dist_from_origin[b] - d(a, b), a, b) for idx, a in enumerate(ids) for b in ids[idx + 1 :]),
@@ -4285,15 +4489,26 @@ def _cluster_candidates_by_density(
         return sum(lats) / len(lats), sum(lons) / len(lons)
 
     def max_pairwise_km(cluster: List[Dict[str, Any]]) -> float:
+        # Real DC-to-DC pair (both cluster members) -- uses _matrix_distance_km (real
+        # Google distance when primed, see prime_google_distance_matrix). Unlike the
+        # centroid-distance calls below (seed selection, nearest-to-centroid growth),
+        # this is a comparison between two REAL, prefetchable points.
         if len(cluster) < 2:
             return 0.0
         worst = 0.0
         for i in range(len(cluster)):
             for j in range(i + 1, len(cluster)):
-                d = circuity_distance_km(*_candidate_coords(cluster[i]), *_candidate_coords(cluster[j])) or 0.0
+                d = _matrix_distance_km(*_candidate_coords(cluster[i]), *_candidate_coords(cluster[j])) or 0.0
                 worst = max(worst, d)
         return worst
 
+    # Seed-selection and nearest-to-centroid growth below stay on circuity_distance_km
+    # (Haversine x 1.4) deliberately, NOT _matrix_distance_km -- a centroid is a computed
+    # average point, not a real DC location, so it can't be prefetched into
+    # prime_google_distance_matrix's matrix ahead of time; querying it live per-comparison
+    # here would mean one API call per candidate per growth step, defeating the entire
+    # point of priming the matrix once up front. max_pairwise_km above (a real DC-to-DC
+    # comparison) is the part of this function that gets the real-distance upgrade.
     while remaining:
         if not clusters:
             seed = remaining.pop(0)

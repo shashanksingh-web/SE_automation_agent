@@ -253,6 +253,17 @@ def generate_route_plans_for_se(
         cooled_out.remove(rescued)
     pre_dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Cooling_Down_Repeat_Avoidance"} for c in cooled_out]
 
+    # Candidate-pool-wide Google Maps accuracy (added 2026-09-11, explicit user request
+    # -- "distance is also the parameter [for] DC selection", not just the final reported
+    # number). Primed ONCE per SE with the origin + every filtered candidate's coords --
+    # every real-DC-pair distance comparison inside the model builders below (Plan A
+    # Models 2/3's construction+2-opt/Or-opt via _route_metrics, and Plan B's clustering/
+    # Stage 3) transparently prefers this real matrix over Haversine x 1.4 wherever it's
+    # been primed; falls back per-pair on any miss. No-op when GOOGLE_API_KEY isn't
+    # configured. Cleared at the end of this function so a stale matrix never leaks into
+    # the next SE's candidate pool.
+    agent.prime_google_distance_matrix([origin] + [(c["dc"].get("Latitude"), c["dc"].get("Longitude")) for c in filtered])
+
     if plan_choice == "B":
         # 3 routes, same greedy budget-constrained selection, ranked by a different
         # criterion each time -- Sheet 7's "3-Route Comparison Summary" (Route 1
@@ -305,16 +316,20 @@ def generate_route_plans_for_se(
         }
         default_plan_type = RoutePlan.PlanType.PRIORITY_MAX
 
-    # Google Maps route-accuracy overlay (added 2026-09-10, explicit user request,
-    # confirmed scope: applied to the already-selected final route only, for both Plan A
-    # and Plan B -- never used to re-drive the candidate-pool search/clustering above,
-    # which stays on the cheap Haversine x 1.4 estimate. Mutates each result in place;
-    # a no-op (falls back to "haversine_x1.4") whenever GOOGLE_API_KEY isn't configured
-    # or the live call fails, so this never blocks plan generation. Applied BEFORE the
-    # stop_sets/GR-R10 convergence check below since that only reads DC_ID tuples, never
-    # distance/time -- unaffected either way.
+    # Google Maps route-accuracy overlay (added 2026-09-10, explicit user request).
+    # Distinct from the candidate-pool priming above: that one feeds real distances into
+    # SELECTION (which stops/order win); this one re-fetches the real Directions-API
+    # sequence for the route actually chosen, since a full point-to-point matrix leg and
+    # an in-order multi-stop Directions leg aren't always byte-identical (turn
+    # restrictions specific to arrival direction, etc.) -- this is the more precise
+    # number for what's actually reported. Mutates each result in place; a no-op (falls
+    # back to "haversine_x1.4") whenever GOOGLE_API_KEY isn't configured or the live call
+    # fails, so this never blocks plan generation. Applied BEFORE the stop_sets/GR-R10
+    # convergence check below since that only reads DC_ID tuples, never distance/time --
+    # unaffected either way.
     for result in model_results.values():
         agent.apply_google_route_accuracy(result, origin)
+    agent.clear_google_distance_matrix()  # this SE's primed matrix must not leak into the next SE's candidate pool
 
     # GR-R7 (Routing_Agent_Configuration_Sheet_v8, "Never generate fewer than 3 feasible
     # algorithm-generated plans without flagging why") + GR-R10 ("Plan distinctness",
