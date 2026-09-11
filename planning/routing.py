@@ -622,6 +622,13 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             # re-deciding stops (see apply_google_route_accuracy).
             "distance_source": r.distance_source,
             "google_exceeds_cap": r.google_exceeds_cap,
+            # Plan C only (planning/models.py RoutePlan.llm_reasoning) -- the model's own
+            # explanation for these stops/order, plus any system notes (a hallucinated
+            # DC_ID dropped, a cap-breach trim) appended by build_route_llm_reasoned.
+            # "" for every Plan A/B row (the field's own default), returned as None here
+            # so the frontend can tell "not applicable" apart from "explanation was
+            # empty," same convention as infeasibility_reason below.
+            "llm_reasoning": r.llm_reasoning or None,
             "feasible": r.feasible,
             "infeasibility_reason": r.infeasibility_reason or None,
             # R0.4's Origin_Point -- where/why this route starts where it does. See
