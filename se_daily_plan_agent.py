@@ -4067,8 +4067,18 @@ def build_route_priority_max(
     n = len(points)
 
     def _travel_min(i: int, j: int) -> int:
-        dist = circuity_distance_km(points[i][0], points[i][1], points[j][0], points[j][1])
-        minutes = travel_time_minutes(dist, avg_speed_kmph) or 0.0
+        # FIXED 2026-09-11 (caught in a self-audit while tracing Model 1's own logic):
+        # was raw circuity_distance_km, meaning OR-Tools' own TotalTime dimension --
+        # the thing that actually decides which stop combinations are even feasible to
+        # solve for -- ran on the Haversine x 1.4 estimate even when the real Google
+        # matrix (prime_google_distance_matrix) was already primed and available,
+        # while _route_metrics' post-solve cap re-check used the real data. Solver
+        # feasibility and final verification disagreeing on the input data was a real
+        # inconsistency, not a deliberate scope boundary (unlike the arc-cost objective
+        # staying 0 -- that's Model 1's actual "no distance cap" design, untouched here).
+        # _matrix_leg falls back to the exact same Haversine-derived value when unprimed,
+        # so this is a pure accuracy upgrade with no behavior change when the feature is off.
+        _, minutes = _matrix_leg(points[i][0], points[i][1], points[j][0], points[j][1], avg_speed_kmph)
         return int(round(minutes))
 
     def _visit_min(i: int) -> int:
