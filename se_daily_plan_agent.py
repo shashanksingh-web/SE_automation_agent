@@ -164,11 +164,20 @@ LLM_ROUTING_PROVIDER = os.environ.get(
     "LLM_ROUTING_PROVIDER",
     "gemini" if GEMINI_API_KEY else ("openrouter" if OPENROUTER_API_KEY else "anthropic"),
 )
-LLM_ROUTING_ENABLED = requests is not None and (
-    (LLM_ROUTING_PROVIDER == "anthropic" and bool(ANTHROPIC_API_KEY))
-    or (LLM_ROUTING_PROVIDER == "openrouter" and bool(OPENROUTER_API_KEY))
-    or (LLM_ROUTING_PROVIDER == "gemini" and bool(GEMINI_API_KEY))
-)
+# Same priority order as LLM_ROUTING_PROVIDER's own default -- _call_llm_for_routing
+# (2026-09-11, explicit user request "add automatic provider fallback") tries
+# LLM_ROUTING_PROVIDER first, then falls through the rest of this order for whichever
+# also have a key configured. Caught live the same day this was worth building: Gemini's
+# 20-requests/day free-tier quota, OpenRouter's shared free-model pool, and an
+# uncredited Anthropic account all failed independently within the same hour in this
+# exact environment -- a single hardcoded provider has no recourse when its one quota
+# runs out mid-run, even though the other two providers' failures are unrelated to it.
+LLM_ROUTING_PROVIDER_PRIORITY: Tuple[str, ...] = ("gemini", "openrouter", "anthropic")
+# True as soon as ANY provider has a key configured, not just LLM_ROUTING_PROVIDER's own
+# -- fallback can still produce a route via a different provider even if the configured
+# default's key is missing/exhausted, so gating this on only the primary would wrongly
+# disable Plan C entirely in a case fallback is specifically meant to cover.
+LLM_ROUTING_ENABLED = requests is not None and bool(ANTHROPIC_API_KEY or OPENROUTER_API_KEY or GEMINI_API_KEY)
 # HARD wall-clock deadline for one Plan C LLM call (CORRECTED 2026-09-11, caught live in
 # TWO stages -- first a real OpenRouter free-tier call hung past 150s despite
 # requests.post's own timeout=60, since `requests`' timeout only resets per received
@@ -4903,16 +4912,42 @@ _LLM_PROVIDER_CALLS: Dict[str, Callable[[str], Optional[str]]] = {
 }
 
 
-def _call_llm_for_routing(prompt: str) -> Optional[str]:
-    """Dispatches to whichever provider LLM_ROUTING_PROVIDER selects -- the rest of
-    build_route_llm_reasoned (prompt construction, response parsing/validation, cap
-    verification) is provider-agnostic, so adding another provider later only means one
-    more entry in _LLM_PROVIDER_CALLS, not touching anything downstream. Wrapped in a
-    hard wall-clock timeout (see _run_with_hard_timeout) -- never blocks a live
-    plan-generation run past LLM_ROUTING_TIMEOUT_SECONDS, no matter what the provider's
-    own HTTP behavior is."""
-    call = _LLM_PROVIDER_CALLS.get(LLM_ROUTING_PROVIDER, _call_anthropic_messages_api)
-    return _run_with_hard_timeout(lambda: call(prompt), LLM_ROUTING_TIMEOUT_SECONDS)
+def _llm_fallback_order() -> List[str]:
+    """LLM_ROUTING_PROVIDER first (the configured/preferred provider), then whichever of
+    the other two actually have an API key configured, in LLM_ROUTING_PROVIDER_PRIORITY's
+    order -- a provider with no key is skipped entirely rather than attempted (and always
+    failing) just to burn its own slice of the timeout budget."""
+    configured = {"gemini": bool(GEMINI_API_KEY), "openrouter": bool(OPENROUTER_API_KEY), "anthropic": bool(ANTHROPIC_API_KEY)}
+    ordered = [LLM_ROUTING_PROVIDER] + [p for p in LLM_ROUTING_PROVIDER_PRIORITY if p != LLM_ROUTING_PROVIDER]
+    return [p for p in ordered if configured.get(p)]
+
+
+def _call_llm_for_routing(prompt: str) -> Tuple[Optional[str], List[str]]:
+    """Dispatches to LLM_ROUTING_PROVIDER, falling through to the other configured
+    providers in _llm_fallback_order() if it fails (2026-09-11, explicit user request --
+    "add automatic provider fallback"; see LLM_ROUTING_PROVIDER_PRIORITY's own comment
+    for why this was worth building the same day). The rest of build_route_llm_reasoned
+    (prompt construction, response parsing/validation, cap verification) is
+    provider-agnostic, so adding another provider later only means one more entry in
+    _LLM_PROVIDER_CALLS and LLM_ROUTING_PROVIDER_PRIORITY, not touching anything
+    downstream. Each attempt is independently wrapped in the same hard wall-clock
+    timeout (see _run_with_hard_timeout) -- never blocks a live plan-generation run past
+    LLM_ROUTING_TIMEOUT_SECONDS per provider tried, no matter what that provider's own
+    HTTP behavior is; a run that falls through all 3 pays up to 3x that budget for one
+    SE, only when every earlier provider genuinely failed.
+
+    Returns (raw_text_or_None, providers_attempted_in_order) -- the caller (build_route_
+    llm_reasoned) uses the attempt list to note in llm_reasoning whether this succeeded
+    via fallback, or exhausted every configured provider, rather than silently reporting
+    only LLM_ROUTING_PROVIDER's own name either way."""
+    attempted: List[str] = []
+    for provider in _llm_fallback_order():
+        attempted.append(provider)
+        call = _LLM_PROVIDER_CALLS[provider]
+        text = _run_with_hard_timeout(lambda c=call: c(prompt), LLM_ROUTING_TIMEOUT_SECONDS)
+        if text is not None:
+            return text, attempted
+    return None, attempted
 
 
 def _parse_llm_route_response(text: str, valid_ids: Set[str]) -> Tuple[List[str], str, List[str]]:
@@ -4993,7 +5028,8 @@ def build_route_llm_reasoned(
     a hard determinism guarantee the way Model 1's solution_limit is).
 
     Fails open (empty route, feasible=True, llm_reasoning explains why) on:
-    LLM_ROUTING_ENABLED=False, no usable candidates, the API call failing, an
+    LLM_ROUTING_ENABLED=False, no usable candidates, every configured provider's API
+    call failing (see _call_llm_for_routing's fallback across providers), an
     unparseable response, or every proposed stop being invalid -- never blocks plan
     generation."""
     if not candidates:
@@ -5019,7 +5055,7 @@ def build_route_llm_reasoned(
             "stops": [], "dropped": dropped + [{"dc_id": c["dc"]["DC_ID"], "reason": "Plan_C_Not_Configured"} for c in with_coords],
             "total_distance_km": 0.0, "total_travel_min": 0.0, "total_visit_min": 0.0, "priority_score_captured": 0.0,
             "feasible": True, "infeasibility_reason": "",
-            "llm_reasoning": f"No API key configured for the selected Plan C provider ({LLM_ROUTING_PROVIDER}) -- set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or GEMINI_API_KEY. Plan C is unavailable this run.",
+            "llm_reasoning": "No API key configured for any Plan C provider -- set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or GEMINI_API_KEY. Plan C is unavailable this run.",
         }
 
     by_id = {c["dc"]["DC_ID"]: c for c in with_coords}
@@ -5064,15 +5100,22 @@ def build_route_llm_reasoned(
         ]
         prompt = "\n".join(lines)
 
-        raw_text = _call_llm_for_routing(prompt)
+        raw_text, attempted_providers = _call_llm_for_routing(prompt)
         if raw_text is None:
             return {
                 "stops": [], "dropped": dropped + [{"dc_id": c["dc"]["DC_ID"], "reason": "Plan_C_Api_Call_Failed"} for c in with_coords],
                 "total_distance_km": 0.0, "total_travel_min": 0.0, "total_visit_min": 0.0, "priority_score_captured": 0.0,
                 "feasible": True, "infeasibility_reason": "",
-                "llm_reasoning": f"{LLM_ROUTING_PROVIDER} API call failed or exceeded the {LLM_ROUTING_TIMEOUT_SECONDS:.0f}s timeout this run -- see logs. Falling back to no Plan C route.",
+                "llm_reasoning": (
+                    f"Every configured LLM provider failed or exceeded the {LLM_ROUTING_TIMEOUT_SECONDS:.0f}s timeout "
+                    f"this run ({', '.join(attempted_providers)}) -- see logs. Falling back to no Plan C route."
+                ),
             }
         validated_ids, reasoning, notes = _parse_llm_route_response(raw_text, set(by_id.keys()))
+        # Only note the fallback when it actually happened (len > 1) -- the common case
+        # (primary provider just works) shouldn't carry a note implying anything unusual.
+        if len(attempted_providers) > 1:
+            notes = [f"Routed via {attempted_providers[-1]} after {', '.join(attempted_providers[:-1])} failed"] + notes
         cache[cache_key] = {"stops": validated_ids, "reasoning": reasoning, "notes": notes}
         _save_llm_route_cache()
 
