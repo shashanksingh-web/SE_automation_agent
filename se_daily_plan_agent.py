@@ -1484,13 +1484,36 @@ def evaluate_dc_selection_rule(
     no enabled criteria AND no manual_includes/manual_excludes -- e.g. a fresh install
     that has never touched the Admin Control Panel's DC Selection. Once anything is
     configured, this always returns a real (possibly empty) set; an empty result is a
-    legitimate, deliberate admin choice, not a failure."""
+    legitimate, deliberate admin choice, not a failure.
+
+    manual_includes is otherwise unconditional -- it force-adds a DC regardless of
+    rank_range/cohort/overdue even if those are enabled -- with ONE exception fixed
+    2026-09-11 (user report, "why inactive dc present in dc plan"): when active_status
+    is itself enabled in rules AND live dc_datamart data came back this run, a manually-
+    included DC still has to actually be active (or inactive, per the rule's own
+    "value") to survive the union -- see the active_status_requested check right before
+    the final union below. Manual_Includes in this deployment already held thousands of
+    DC IDs pasted in before active_status screening existed, so without this, enabling
+    active_status changed nothing for any of them."""
     rules = rules or {}
     resolved_includes = {normalize_id(x) for x in (manual_includes or []) if normalize_id(x)}
     resolved_excludes = {normalize_id(x) for x in (manual_excludes or []) if normalize_id(x)}
     enabled = {k: v for k, v in rules.items() if k in DC_SELECTION_CRITERIA_KEYS and v and v.get("enabled")}
     if not enabled and not resolved_includes and not resolved_excludes:
         return None
+
+    # BUG FIXED 2026-09-11 (user report -- "why inactive dc present in dc plan"):
+    # manual_includes used to be unioned in unconditionally at the very end, bypassing
+    # every enabled criterion -- including active_status. A DC pasted into Manual
+    # Includes (e.g. via the Selected DC List uploader) with no active-status screening
+    # at upload time would sail straight through even with active_status enabled+AND'd
+    # in the rule. Captured here, before `enabled` can lose "active_status" below (its
+    # data-missing-this-run drop), and before dc_active_by_id is coerced to {} -- both
+    # of which would otherwise erase whether the admin actually asked for this and
+    # whether live data existed to honor it.
+    active_status_cfg = rules.get("active_status")
+    active_status_requested = bool(active_status_cfg and active_status_cfg.get("enabled"))
+    dc_active_data_available = dc_active_by_id is not None
 
     # FIXED 2026-09-08 (caught in a self-audit -- same class of bug already fixed in
     # apply_dc_exclusion_rules' own Active check): dc_active_by_id/dc_overdue_by_id=None
@@ -1546,6 +1569,23 @@ def evaluate_dc_selection_rule(
     selected = {dc_id for dc_id in universe if all(matches(dc_id, k) for k in and_keys)} if and_keys else set()
     for k in or_keys:
         selected |= {dc_id for dc_id in universe if matches(dc_id, k)}
+
+    # Manual includes still have to clear active_status when the admin has it enabled
+    # and live data actually came back this run -- same "value" semantics
+    # (active/inactive) as the rule itself, via the exact same criterion function, so a
+    # manually-included DC that dc_datamart confirms is inactive gets dropped here
+    # rather than force-added below. If active_status isn't enabled, or the dc_datamart
+    # query itself failed this run (fail-open, same treatment every other missing-data
+    # case in this function gets), manual includes are unrestricted, same as before this
+    # fix -- an admin who hasn't asked for active-status screening still gets "this
+    # uploaded/pasted list IS the selection" for whatever they did paste.
+    if active_status_requested and dc_active_data_available:
+        resolved_includes = {
+            dc_id for dc_id in resolved_includes
+            if _dc_selection_criterion_matches(
+                "active_status", active_status_cfg, None, None, dc_active_by_id.get(dc_id), None,
+            )
+        }
 
     selected -= resolved_excludes
     selected |= resolved_includes
