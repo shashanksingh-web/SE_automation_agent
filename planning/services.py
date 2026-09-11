@@ -1373,12 +1373,13 @@ def generate_plan_for_scope(
     other scope types (SE/ABM/RBM/BLOCK/DISTRICT/STATE) to a single Product Cohort node.
 
     routing_plan_asker / routing_plan_choice: which Routing Agent mode to run for every
-    SE in this scope -- see make_routing_plan_asker(). routing_plan_choice ("A" or "B")
-    is an explicit override, same precedence pattern as farmer_meeting_confirmed_emails
-    above -- takes priority over routing_plan_asker. When neither is supplied (the
-    run_scheduled_tuff/HTTP-API case), defaults to "A" -- Plan A stays the safe,
-    unattended default; Plan B only ever runs when a human chose it, explicitly or
-    interactively, never silently.
+    SE in this scope -- see make_routing_plan_asker(). routing_plan_choice ("A", "B", or
+    "C" -- C opened up to the HTTP API 2026-09-11, see planning.views.
+    _routing_plan_choice_from_get) is an explicit override, same precedence pattern as
+    farmer_meeting_confirmed_emails above -- takes priority over routing_plan_asker. When
+    neither is supplied (the run_scheduled_tuff/HTTP-API-with-no-param case), defaults to
+    "A" -- Plan A stays the safe, unattended default; Plan B/C only ever run when a human
+    chose it, explicitly or interactively, never silently.
 
     enable_rotation: opt-in, Plan B only (Beat_Planning_Routing_Agent_Cluster_Model.xlsx
     Sheet 11 Model B, "Fixed Rotation") -- see planning.routing.generate_route_plans_for_se's

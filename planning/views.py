@@ -48,18 +48,28 @@ def _focus_product_kwargs_from_get(request) -> dict:
 
 
 def _routing_plan_choice_from_get(request) -> "str | None":
-    """Shared by _generate_and_respond/tuff -- ?routing_plan=A|B (case-insensitive),
+    """Shared by _generate_and_respond/tuff -- ?routing_plan=A|B|C (case-insensitive),
     mirroring activate_tuff/generate_se_plan's --routing-plan CLI flag (2026-08-31 fix:
     the API previously had no way to request Plan B at all, silently always running
     Plan A). None (param omitted) is passed straight through as routing_plan_choice=None,
     same as the CLI's own "omit under cron/scripting to default to Plan A" behavior --
-    the API is never interactive, so there's no routing_plan_asker equivalent here."""
+    the API is never interactive, so there's no routing_plan_asker equivalent here.
+
+    C opened up 2026-09-11 (explicit user request, "open up plan C for triggering from
+    the UI too") -- planning.routing.generate_route_plans_for_se/services.py's
+    resolved_routing_plan already handled "C" generically since Plan C's own commit
+    (54597b7); this validator was the one remaining hardcoded A/B-only gate. Note this
+    makes a real, possibly slow/rate-limited LLM call per SE (see
+    se_daily_plan_agent.build_route_llm_reasoned's own docstring) -- fine for a single
+    SE/day request, but a STATE/NODE-scope request now fans that out across every SE in
+    scope sequentially, same as Plan A/B always have for their own (cheaper, local)
+    per-SE work."""
     raw = request.GET.get("routing_plan")
     if not raw:
         return None
     choice = raw.strip().upper()
-    if choice not in ("A", "B"):
-        raise ValueError(f"routing_plan must be 'A' or 'B', got {raw!r}")
+    if choice not in ("A", "B", "C"):
+        raise ValueError(f"routing_plan must be 'A', 'B', or 'C', got {raw!r}")
     return choice
 
 
