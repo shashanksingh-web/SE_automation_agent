@@ -2294,29 +2294,45 @@ def generate_plan_for_scope(
     # "in routing parameter rule may be different for node, district, state or
     # overall") -- fetched ONCE for the whole scope, not per SE, then resolved per-SE
     # inside routing.generate_route_plans_for_se (each SE's own Node/State already
-    # known there for free). {} for either level just means "no override configured
-    # at that level" -- resolve_routing_ceilings falls through to State then the
-    # global default in that case, same as if this dict were never built at all.
+    # known there for free). {} for any level just means "no override configured
+    # at that level" -- resolve_routing_ceilings falls through to the next-less-specific
+    # level then the global default in that case, same as if this dict were never
+    # built at all.
+    def _override_rows(scope_type: str) -> Dict[str, Dict[str, Optional[float]]]:
+        return {
+            o.scope_value: {
+                "R1_2_MAX_TRAVEL_MINUTES": o.r1_2_max_travel_minutes,
+                "PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM": o.plan_a_max_round_trip_distance_km,
+                "PLAN_B_MAX_DAILY_DISTANCE_KM": o.plan_b_max_daily_distance_km,
+                "PLAN_B_MAX_DAILY_TRAVEL_MINUTES": o.plan_b_max_daily_travel_minutes,
+            }
+            for o in RoutingScopeOverride.objects.filter(scope_type=scope_type)
+        }
+
     routing_overrides = {
-        "node": {
-            o.scope_value: {
-                "R1_2_MAX_TRAVEL_MINUTES": o.r1_2_max_travel_minutes,
-                "PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM": o.plan_a_max_round_trip_distance_km,
-                "PLAN_B_MAX_DAILY_DISTANCE_KM": o.plan_b_max_daily_distance_km,
-                "PLAN_B_MAX_DAILY_TRAVEL_MINUTES": o.plan_b_max_daily_travel_minutes,
-            }
-            for o in RoutingScopeOverride.objects.filter(scope_type="NODE")
-        },
-        "state": {
-            o.scope_value: {
-                "R1_2_MAX_TRAVEL_MINUTES": o.r1_2_max_travel_minutes,
-                "PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM": o.plan_a_max_round_trip_distance_km,
-                "PLAN_B_MAX_DAILY_DISTANCE_KM": o.plan_b_max_daily_distance_km,
-                "PLAN_B_MAX_DAILY_TRAVEL_MINUTES": o.plan_b_max_daily_travel_minutes,
-            }
-            for o in RoutingScopeOverride.objects.filter(scope_type="STATE")
-        },
+        "node": _override_rows("NODE"),
+        "district": _override_rows("DISTRICT"),
+        "state": _override_rows("STATE"),
     }
+
+    # District isn't itself a DC_Master field the way Node/State are, so a given SE's
+    # District has to be joined in via dc_id -> district off Geo_Mapping_Normalized.json
+    # (added 2026-09-11 alongside DISTRICT-level overrides above -- see
+    # planning.routing.generate_route_plans_for_se, which looks a DC candidate's District
+    # up in this dict before calling agent.resolve_routing_ceilings). Only worth building
+    # when at least one DISTRICT override actually exists -- otherwise it would never be
+    # consulted (resolve_routing_ceilings only reads district_overrides.get(district),
+    # which is {} either way).
+    dc_district_lookup: Dict[str, str] = {}
+    if routing_overrides["district"]:
+        try:
+            geo_mapping = data_cache.load_output_json(_output_dir(), "Geo_Mapping_Normalized.json")
+        except FileNotFoundError:
+            geo_mapping = []
+        for row in geo_mapping:
+            dc_id, district = row.get("dc_id"), row.get("district")
+            if dc_id and district:
+                dc_district_lookup[str(dc_id)] = district
 
     total_tasks = 0
     skipped_ses: List[Dict[str, Any]] = []
@@ -2355,7 +2371,7 @@ def generate_plan_for_scope(
             result = routing.generate_route_plans_for_se(
                 plan_run, str(_uid), _email, plan_date_, candidates, origin, origin_basis, constants_,
                 plan_choice=resolved_routing_plan, enable_rotation=enable_rotation,
-                routing_overrides=routing_overrides,
+                routing_overrides=routing_overrides, dc_district_lookup=dc_district_lookup,
             )
             run_exceptions.extend(result["exceptions"])
             return result

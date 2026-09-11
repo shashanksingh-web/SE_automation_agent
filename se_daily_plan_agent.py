@@ -3417,29 +3417,34 @@ ROUTING_CEILING_ATTRS = (
 def resolve_routing_ceilings(
     node: Optional[str], state: Optional[str],
     node_overrides: Dict[str, Dict[str, float]], state_overrides: Dict[str, Dict[str, float]],
+    district: Optional[str] = None, district_overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, float]:
     """Per-scope Routing ceiling resolution (added 2026-09-11, explicit user request --
     "in routing parameter rule may be different for node, district, state or overall").
-    Pure function, no I/O: `node_overrides`/`state_overrides` are pre-fetched by the
-    caller (planning.routing.generate_route_plans_for_se, the one place a given SE's own
-    Node/State are already known for free from its DC candidates -- see
-    planning.models.RoutingScopeOverride's own docstring for why DISTRICT isn't a valid
-    key here yet) as {scope_value: {ceiling_attr: value_or_None}}.
+    Pure function, no I/O: `node_overrides`/`district_overrides`/`state_overrides` are
+    pre-fetched by the caller (planning.routing.generate_route_plans_for_se) as
+    {scope_value: {ceiling_attr: value_or_None}}. Node/State come free off a given SE's
+    first DC candidate; District is joined in via a dc_id -> district lookup built from
+    Geo_Mapping_Normalized.json (District isn't itself a field on the DC dict).
 
     Resolution is PER-PARAMETER, not per-row, per direct instruction ("most specific
     wins"): for each of the 4 ceilings independently, a Node override wins if that
-    specific parameter is set on it; else a State override if set; else whatever the
-    module attribute already is right now (the network-wide default, itself possibly
-    already Admin Control Panel-overridden -- see ROUTING_CEILING_ATTRS's own docstring
-    for why this reads live attributes rather than hardcoded literals). A Node override
-    that only sets one of the 4 fields still lets the other 3 fall through to State/the
-    global default, rather than being all-or-nothing."""
+    specific parameter is set on it; else a District override if set; else a State
+    override if set; else whatever the module attribute already is right now (the
+    network-wide default, itself possibly already Admin Control Panel-overridden -- see
+    ROUTING_CEILING_ATTRS's own docstring for why this reads live attributes rather than
+    hardcoded literals). A Node override that only sets one of the 4 fields still lets
+    the other 3 fall through to District/State/the global default, rather than being
+    all-or-nothing."""
     node_row = node_overrides.get(node) if node else None
+    district_row = (district_overrides or {}).get(district) if district else None
     state_row = state_overrides.get(state) if state else None
     resolved: Dict[str, float] = {}
     for attr in ROUTING_CEILING_ATTRS:
         if node_row and node_row.get(attr) is not None:
             resolved[attr] = node_row[attr]
+        elif district_row and district_row.get(attr) is not None:
+            resolved[attr] = district_row[attr]
         elif state_row and state_row.get(attr) is not None:
             resolved[attr] = state_row[attr]
         else:

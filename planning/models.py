@@ -736,14 +736,13 @@ class RoutingScopeOverride(models.Model):
     from planning.routing.generate_route_plans_for_se (each SE's own DC candidates
     already carry their own Node/State, no new query needed for those two).
 
-    DISTRICT is deliberately NOT a valid scope_type here yet, even though it's listed in
-    the request and PlanRun.ScopeType has it -- no District field reaches the per-SE
-    routing call site today (District only exists via a separate Geo_Mapping join used
-    for ABM/RBM/BLOCK/DISTRICT scope-resolution, a different code path entirely). Adding
-    a DISTRICT choice here without wiring that join would let an admin configure a
-    knob that silently never applies -- exactly the "fabricated knob" this codebase's
-    own convention avoids elsewhere (see e.g. Liquidation's Config_Ambiguous handling).
-    Wire the join first if District-level overrides are needed.
+    DISTRICT was added 2026-09-11 (explicit user request, "district level override bhi
+    add karo") once Geo_Mapping_Normalized.json was confirmed to carry a dc_id field per
+    row alongside district -- so a dc_id -> district lookup built from that file (same
+    data_cache.load_output_json pattern already used for DC_Master_Normalized.json etc.
+    in planning/services.py) joins District onto each SE's first DC candidate exactly
+    the way Node/State already are. Precedence is Node > District > State > global
+    default.
 
     Each of the 4 ceiling fields is independently nullable -- an override row can set
     just one parameter (e.g. only tighten the distance cap for one node) and let the
@@ -752,6 +751,7 @@ class RoutingScopeOverride(models.Model):
 
     class ScopeType(models.TextChoices):
         NODE = "NODE", "Node"
+        DISTRICT = "DISTRICT", "District"
         STATE = "STATE", "State"
 
     scope_type = models.CharField(max_length=10, choices=ScopeType.choices)

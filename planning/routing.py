@@ -148,6 +148,7 @@ def generate_route_plans_for_se(
     plan_choice: str = "A",
     enable_rotation: bool = False,
     routing_overrides: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+    dc_district_lookup: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """candidates: the exact shape generate_se_daily_plan()'s route_selector branch
     builds -- [{"row": DailyTaskRow, "dc": dict, "priority_score": float, "matched":
@@ -199,19 +200,24 @@ def generate_route_plans_for_se(
     # "in routing parameter rule may be different for node, district, state or
     # overall"). This SE's own Node/State come off its first DC candidate (every
     # candidate for one SE shares the same Node/State -- see load_dc_master()'s own
-    # DC_Master row shape) -- free, no new query. Monkey-patches se_daily_plan_agent's
-    # module attributes directly, same mechanism (and same accepted process-global-
-    # mutation caveat) planning.admin_config already uses for the network-wide case --
-    # every model builder below reads these as bare module globals, so this is the only
-    # way to make them vary per-SE without threading a new parameter through the ~25
-    # call sites inside se_daily_plan_agent.py that read them today. Left in place after
-    # this call rather than restored -- harmless, since the next generate_plan_for_scope
-    # call re-resets them via load_business_constants() before any SE is processed.
+    # DC_Master row shape) -- free, no new query. District isn't itself a DC_Master
+    # field, so it's joined via dc_district_lookup (dc_id -> district, built once by the
+    # caller from Geo_Mapping_Normalized.json -- see planning.services). Monkey-patches
+    # se_daily_plan_agent's module attributes directly, same mechanism (and same accepted
+    # process-global-mutation caveat) planning.admin_config already uses for the
+    # network-wide case -- every model builder below reads these as bare module globals,
+    # so this is the only way to make them vary per-SE without threading a new parameter
+    # through the ~25 call sites inside se_daily_plan_agent.py that read them today. Left
+    # in place after this call rather than restored -- harmless, since the next
+    # generate_plan_for_scope call re-resets them via load_business_constants() before
+    # any SE is processed.
     if routing_overrides is not None and candidates:
         first_dc = candidates[0]["dc"]
+        district = (dc_district_lookup or {}).get(first_dc.get("DC_ID"))
         ceilings = agent.resolve_routing_ceilings(
             first_dc.get("Node"), first_dc.get("State"),
             routing_overrides.get("node", {}), routing_overrides.get("state", {}),
+            district, routing_overrides.get("district", {}),
         )
         for attr, value in ceilings.items():
             setattr(agent, attr, value)
