@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -111,6 +112,83 @@ GOOGLE_ROUTE_CACHE_PATH = Path(os.environ.get("SE_AGENT_GOOGLE_ROUTE_CACHE", BAS
 # not prefetchable). Separate cache file from the route-leg cache above -- keyed by
 # pairwise coordinates, not by a whole ordered route sequence.
 GOOGLE_DISTANCE_MATRIX_CACHE_PATH = Path(os.environ.get("SE_AGENT_GOOGLE_MATRIX_CACHE", BASE_DIR / "output" / "google_distance_matrix_cache.json"))
+
+# Plan C -- LLM-Reasoned routing (added 2026-09-11, explicit user request -- "create the
+# separate system where system use anthropic api to create the route not the system
+# logic with reason why these route suggested"). Same `configured`-by-presence
+# convention as GOOGLE_MAPS_API_KEY/MetabaseClient above -- no separate feature flag.
+# See build_route_llm_reasoned's own docstring for the full design (what the model
+# decides vs. what the system independently verifies).
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# Haiku 4.5, not Sonnet (explicit user request, cost-driven) -- this task (pick <=5 DCs
+# from a short pre-scored list, order them, write 1-3 sentences of reasoning) doesn't
+# need Sonnet-level reasoning depth, and this could run once per SE per day across
+# thousands of SEs. Override via env var to point at a different model if quality ever
+# warrants the extra cost.
+ANTHROPIC_ROUTING_MODEL = os.environ.get("ANTHROPIC_ROUTING_MODEL", "claude-haiku-4-5-20251001")
+# OpenRouter (added 2026-09-11, explicit user request -- a free-tier alternative since
+# the Anthropic account above has no credit balance yet; OpenAI-compatible REST API, no
+# SDK needed, same raw-requests convention as every other external call in this module).
+# ":free"-suffixed OpenRouter models are genuinely free (rate-limited, not a trial).
+# CORRECTED 2026-09-11 -- the original default (nvidia/nemotron-3.5-lightning:free)
+# never returned even given a 110s budget in live testing (confirmed not a timeout-
+# tuning issue -- see LLM_ROUTING_TIMEOUT_SECONDS' own comment for the infra fix this
+# also drove). google/gemma-4-26b-a4b-it:free responded correctly in 1.7s on live
+# testing against OpenRouter's real, current free-model catalog (fetched via GET
+# /v1/models -- OpenRouter's free-tier lineup changes over time, so re-check that
+# endpoint if this one stops working rather than assuming the integration is broken).
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_ROUTING_MODEL = os.environ.get("OPENROUTER_ROUTING_MODEL", "google/gemma-4-26b-a4b-it:free")
+# Gemini / Google AI Studio (added 2026-09-11, explicit user request). A first key
+# (created via Cloud Console) hit persistent friction -- API not enabled, then
+# API-key-service-blocked once it was -- and was replaced with one generated directly
+# from aistudio.google.com, which comes pre-scoped correctly with no manual "enable
+# the API" step. CORRECTED 2026-09-11 TWICE live -- gemini-2.0-flash 404'd (not in the
+# current model lineup at all per GET /v1beta/models), then gemini-2.5-flash ALSO
+# 404'd with "no longer available to new users ... use models/gemini-3.6-flash"
+# (Google's own error message named the replacement). gemini-3.6-flash confirmed live
+# working -- real 200 response, correctly-formatted JSON. Pinned explicitly rather
+# than an auto-tracking "-latest" alias so this doesn't silently change again
+# underneath Plan C (same reasoning as pinning any other dependency version in this
+# repo) -- but given the model catalog has now moved twice in one session, treat this
+# as genuinely likely to need updating again; re-run GET /v1beta/models?key=... to
+# check the live current lineup before assuming a future 404 here is a code bug.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_ROUTING_MODEL = os.environ.get("GEMINI_ROUTING_MODEL", "gemini-3.6-flash")
+# Which provider actually serves Plan C -- explicit override always wins; otherwise
+# prefers gemini (most generous free-tier quota) > openrouter (free but tightly
+# rate-limited, confirmed live) > anthropic (best quality, but needs a funded account).
+# All three providers share the exact same prompt/response-parsing code below
+# (_parse_llm_route_response) -- only the raw HTTP call differs per provider.
+LLM_ROUTING_PROVIDER = os.environ.get(
+    "LLM_ROUTING_PROVIDER",
+    "gemini" if GEMINI_API_KEY else ("openrouter" if OPENROUTER_API_KEY else "anthropic"),
+)
+LLM_ROUTING_ENABLED = requests is not None and (
+    (LLM_ROUTING_PROVIDER == "anthropic" and bool(ANTHROPIC_API_KEY))
+    or (LLM_ROUTING_PROVIDER == "openrouter" and bool(OPENROUTER_API_KEY))
+    or (LLM_ROUTING_PROVIDER == "gemini" and bool(GEMINI_API_KEY))
+)
+# HARD wall-clock deadline for one Plan C LLM call (CORRECTED 2026-09-11, caught live in
+# TWO stages -- first a real OpenRouter free-tier call hung past 150s despite
+# requests.post's own timeout=60, since `requests`' timeout only resets per received
+# chunk, so a slowly-trickling/keep-alive response can run far past its configured
+# timeout without ever raising; enforcing this independently via a
+# concurrent.futures.ThreadPoolExecutor fixed THAT, but then surfaced a second,
+# subtler bug -- ThreadPoolExecutor registers a process-wide atexit hook that waits for
+# every submitted thread, including an abandoned/timed-out one, before the Python
+# process is allowed to exit at all. A live `manage.py generate_se_plan`/
+# `activate_tuff` run would finish all its real work and then hang indefinitely at
+# process exit waiting for that one stuck network call. Fixed by using a plain
+# daemon=True threading.Thread instead (see _run_with_hard_timeout) -- Python does not
+# wait for daemon threads on exit, so an abandoned call can never block the process,
+# only ever waste one thread's worth of resources until it eventually finishes or the
+# process exits.
+LLM_ROUTING_TIMEOUT_SECONDS = float(os.environ.get("LLM_ROUTING_TIMEOUT_SECONDS", "45"))
+# Cached per (origin, candidate DC-ID set + their priority scores) -- same reproducibility
+# motivation as the Google Maps caches: a repeat run against the same candidate pool/date
+# shouldn't re-bill the API or risk sampling a different LLM response.
+LLM_ROUTE_CACHE_PATH = Path(os.environ.get("SE_AGENT_LLM_ROUTE_CACHE", BASE_DIR / "output" / "llm_route_cache.json"))
 
 DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAnk.csv"))
 # Added 2026-09-04, explicit user request -- an independent allowlist on top of
@@ -4648,6 +4726,402 @@ def _cluster_candidates_by_density(
 
     clusters.extend([[c] for c in without_coords])
     return clusters
+
+
+_llm_route_cache: Optional[Dict[str, Dict[str, Any]]] = None
+
+
+def _load_llm_route_cache() -> Dict[str, Dict[str, Any]]:
+    global _llm_route_cache
+    if _llm_route_cache is None:
+        try:
+            _llm_route_cache = json.loads(LLM_ROUTE_CACHE_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            _llm_route_cache = {}
+    return _llm_route_cache
+
+
+def _save_llm_route_cache() -> None:
+    try:
+        LLM_ROUTE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LLM_ROUTE_CACHE_PATH.write_text(json.dumps(_llm_route_cache), encoding="utf-8")
+    except OSError:
+        pass  # best-effort cache, same convention as _save_google_route_cache
+
+
+def _llm_route_cache_key(origin: Tuple[float, float], candidates: List[Dict[str, Any]]) -> str:
+    # Includes each DC's priority_score -- a re-score (e.g. a new overdue payment
+    # clearing GR-28) must bust the cache, not reuse a stale LLM decision made against
+    # numbers that no longer hold. Also includes provider+model -- switching providers
+    # (or between models on the same provider) must never silently reuse a cached
+    # response generated by a different model.
+    _model_by_provider = {"anthropic": ANTHROPIC_ROUTING_MODEL, "openrouter": OPENROUTER_ROUTING_MODEL, "gemini": GEMINI_ROUTING_MODEL}
+    parts = [f"{LLM_ROUTING_PROVIDER}:{_model_by_provider.get(LLM_ROUTING_PROVIDER, '')}"]
+    parts.append(f"{origin[0]:.4f},{origin[1]:.4f}")
+    for c in sorted(candidates, key=lambda c: c["dc"]["DC_ID"]):
+        parts.append(f"{c['dc']['DC_ID']}:{round(c['priority_score'], 2)}")
+    return "|".join(parts)
+
+
+def _call_anthropic_messages_api(prompt: str) -> Optional[str]:
+    """Raw REST call to the Anthropic Messages API (no SDK dependency, same
+    thin-`requests`-wrapper convention as MetabaseClient/Google Maps elsewhere in this
+    module) -- temperature=0 for the most deterministic response the API allows (not a
+    hard guarantee; the disk cache above is what actually pins a re-run to the same
+    result). Returns the raw text content on success, None (never raises) on any
+    failure -- fail-open, same convention as google_directions_route_legs."""
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": ANTHROPIC_ROUTING_MODEL,
+                "max_tokens": 1024,
+                "temperature": 0,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        blocks = data.get("content") or []
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        return text or None
+    except Exception as e:
+        logger.warning("Anthropic Messages API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, e)
+        return None
+
+
+def _call_openrouter_chat_api(prompt: str) -> Optional[str]:
+    """Raw REST call to OpenRouter's OpenAI-compatible chat/completions endpoint (no SDK
+    dependency, same convention as _call_anthropic_messages_api above -- OpenRouter is
+    plain HTTP + Bearer auth, no client library needed for a single-turn call).
+    Deliberately does NOT set extra_body={"reasoning": {"enabled": True}} even for a
+    reasoning-capable free model -- that splits the response into separate content/
+    reasoning_details fields meant for a multi-turn conversation, which this single-shot
+    call has no use for; the reasoning we want is the "reasoning" key inside our own
+    requested JSON format (see the prompt), not the model's internal chain-of-thought.
+    Returns the raw text content on success, None (never raises) on any failure."""
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": OPENROUTER_ROUTING_MODEL,
+                "temperature": 0,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            logger.warning("OpenRouter chat API returned no choices -- Plan C route unavailable this run.")
+            return None
+        text = (choices[0].get("message") or {}).get("content")
+        return text or None
+    except Exception as e:
+        logger.warning("OpenRouter chat API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, e)
+        return None
+
+
+def _call_gemini_api(prompt: str) -> Optional[str]:
+    """Raw REST call to Google's Generative Language API (generateContent), same
+    no-SDK convention as the other two providers. Requires the Generative Language API
+    enabled on GEMINI_API_KEY's own Cloud project -- see that constant's own comment.
+    Returns the raw text content on success, None (never raises) on any failure."""
+    try:
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_ROUTING_MODEL}:generateContent",
+            params={"key": GEMINI_API_KEY},
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0},
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        candidates = data.get("candidates") or []
+        if not candidates:
+            logger.warning("Gemini API returned no candidates -- Plan C route unavailable this run.")
+            return None
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts)
+        return text or None
+    except Exception as e:
+        logger.warning("Gemini API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, e)
+        return None
+
+
+def _run_with_hard_timeout(fn: Callable[[], Optional[str]], timeout_s: float) -> Optional[str]:
+    """Enforces LLM_ROUTING_TIMEOUT_SECONDS independently of whatever the underlying HTTP
+    call does internally -- see that constant's own comment for why requests.post's own
+    `timeout` isn't sufficient on its own (a slowly-trickling response resets it per
+    chunk), and why this uses a daemon thread rather than concurrent.futures (whose
+    ThreadPoolExecutor would block process exit on an abandoned call). `result_box` is
+    how the daemon thread hands its return value back -- a thread's return value isn't
+    otherwise retrievable. If the thread is still alive after `timeout_s`, its result
+    (if it ever finishes) is simply never collected -- the caller moves on immediately,
+    never blocked past the deadline, and the process can still exit normally."""
+    result_box: Dict[str, Optional[str]] = {}
+
+    def _target() -> None:
+        try:
+            result_box["value"] = fn()
+        except Exception as e:
+            logger.warning("Plan C LLM call raised inside its worker thread (%s: %s).", type(e).__name__, e)
+            result_box["value"] = None
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_s)
+    if thread.is_alive():
+        logger.warning(
+            "Plan C LLM call exceeded the %.0fs hard timeout -- abandoning it and falling back "
+            "(the call keeps running in a daemon thread; its result, if any, is discarded, and "
+            "it will never block this process from exiting).",
+            timeout_s,
+        )
+        return None
+    return result_box.get("value")
+
+
+_LLM_PROVIDER_CALLS: Dict[str, Callable[[str], Optional[str]]] = {
+    "anthropic": _call_anthropic_messages_api,
+    "openrouter": _call_openrouter_chat_api,
+    "gemini": _call_gemini_api,
+}
+
+
+def _call_llm_for_routing(prompt: str) -> Optional[str]:
+    """Dispatches to whichever provider LLM_ROUTING_PROVIDER selects -- the rest of
+    build_route_llm_reasoned (prompt construction, response parsing/validation, cap
+    verification) is provider-agnostic, so adding another provider later only means one
+    more entry in _LLM_PROVIDER_CALLS, not touching anything downstream. Wrapped in a
+    hard wall-clock timeout (see _run_with_hard_timeout) -- never blocks a live
+    plan-generation run past LLM_ROUTING_TIMEOUT_SECONDS, no matter what the provider's
+    own HTTP behavior is."""
+    call = _LLM_PROVIDER_CALLS.get(LLM_ROUTING_PROVIDER, _call_anthropic_messages_api)
+    return _run_with_hard_timeout(lambda: call(prompt), LLM_ROUTING_TIMEOUT_SECONDS)
+
+
+def _parse_llm_route_response(text: str, valid_ids: Set[str]) -> Tuple[List[str], str, List[str]]:
+    """Extracts {"stops": [...], "reasoning": "..."} from the model's raw text (tolerant
+    of a ```json fence around it, since models do this even when told not to). Returns
+    (validated_stop_ids, reasoning, notes) -- notes records anything dropped (hallucinated
+    ID, duplicate, over the 5-stop cap) so the caller can fold that into the persisted
+    reasoning rather than silently discarding it. Never raises -- malformed/unparseable
+    JSON returns ([], "", [<note>])."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1] if len(cleaned.split("```")) > 1 else cleaned
+        cleaned = cleaned[4:] if cleaned.lower().startswith("json") else cleaned
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return [], "", ["Could not parse a JSON object out of the model's response"]
+
+    raw_stops = parsed.get("stops") if isinstance(parsed, dict) else None
+    reasoning = (parsed.get("reasoning") if isinstance(parsed, dict) else "") or ""
+    if not isinstance(raw_stops, list):
+        return [], reasoning, ["Response had no 'stops' list"]
+
+    notes: List[str] = []
+    seen: Set[str] = set()
+    validated: List[str] = []
+    for raw_id in raw_stops:
+        dc_id = normalize_id(raw_id) if isinstance(raw_id, str) else None
+        if dc_id is None:
+            notes.append(f"Dropped a non-string/unparseable stop entry: {raw_id!r}")
+            continue
+        if dc_id not in valid_ids:
+            notes.append(f"Dropped {dc_id} -- not in this SE's actual eligible candidate pool (hallucinated)")
+            continue
+        if dc_id in seen:
+            notes.append(f"Dropped a duplicate of {dc_id}")
+            continue
+        if len(validated) >= R1_7_MAX_STOPS:
+            notes.append(f"Dropped {dc_id} -- model proposed more than {R1_7_MAX_STOPS} stops")
+            continue
+        validated.append(dc_id)
+        seen.add(dc_id)
+    return validated, reasoning, notes
+
+
+def build_route_llm_reasoned(
+    candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
+    avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
+    exclude_stop_sets: Optional[List[Tuple[str, ...]]] = None,
+) -> Dict[str, Any]:
+    """Plan C (added 2026-09-11, explicit user request -- "create the separate system
+    where system use anthropic api to create the route not the system logic with reason
+    why these route suggested"). Anthropic Claude selects and orders up to 5 stops from
+    the already-scored, already-eligible candidate pool (the exact same `filtered` list
+    Plan A/B receive -- BO scoring and DC Selection eligibility already happened
+    upstream, this function doesn't re-decide either) and writes a natural-language
+    reason -- but the SYSTEM, not the model, computes and verifies real distance/time
+    (via the same Google Maps matrix already primed for this SE by
+    prime_google_distance_matrix -- _route_metrics below reads it exactly like Models
+    1-3 do) and enforces the same hard caps (_within_caps: R1_1_FIELD_MINUTES_CAP/
+    R1_2_MAX_TRAVEL_MINUTES/PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM/R1_7_MAX_STOPS). The model
+    is never trusted to do its own real-world arithmetic -- same fail-safe posture this
+    module already applies to every other live-data dependency (dc_datamart, Google
+    Maps itself). A model-proposed stop-set that breaches a cap gets the identical GR-R5
+    remedy Model 1 uses (trim the lowest-priority_score stop, recheck, repeat) rather
+    than being shown as-is or silently "fixed" by re-ordering -- the model's own
+    ordering/selection is what's being evaluated, not second-guessed.
+
+    Deliberately produces ONE route, not 3 (unlike Plan A/B's R5.1 "minimum 3 per
+    SE/day") -- asking one LLM 3 times for "different styles" doesn't have the same
+    guaranteed-distinct-algorithm property Plan A/B's 3 genuinely different construction
+    methods have, and would triple real per-call API cost for uncertain benefit.
+    Flagged as a deliberate scope decision, not an oversight.
+
+    Response cached to disk per (origin, candidate DC-ID set + priority scores) -- a
+    repeat run against the same candidate pool/date reuses the cached decision rather
+    than re-billing the API or risking a different sample (temperature=0 helps but isn't
+    a hard determinism guarantee the way Model 1's solution_limit is).
+
+    Fails open (empty route, feasible=True, llm_reasoning explains why) on:
+    LLM_ROUTING_ENABLED=False, no usable candidates, the API call failing, an
+    unparseable response, or every proposed stop being invalid -- never blocks plan
+    generation."""
+    if not candidates:
+        return {
+            "stops": [], "dropped": [], "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True,
+            "infeasibility_reason": "", "llm_reasoning": "",
+        }
+
+    with_coords = [c for c in candidates if None not in _candidate_coords(c)]
+    without_coords = [c for c in candidates if None in _candidate_coords(c)]
+    dropped = [{"dc_id": c["dc"]["DC_ID"], "reason": "Geo_Incomplete"} for c in without_coords]
+
+    if not with_coords:
+        return {
+            "stops": [], "dropped": dropped, "total_distance_km": 0.0, "total_travel_min": 0.0,
+            "total_visit_min": 0.0, "priority_score_captured": 0.0, "feasible": True,
+            "infeasibility_reason": "No candidate had usable geo-coordinates", "llm_reasoning": "",
+        }
+
+    if not LLM_ROUTING_ENABLED:
+        return {
+            "stops": [], "dropped": dropped + [{"dc_id": c["dc"]["DC_ID"], "reason": "Plan_C_Not_Configured"} for c in with_coords],
+            "total_distance_km": 0.0, "total_travel_min": 0.0, "total_visit_min": 0.0, "priority_score_captured": 0.0,
+            "feasible": True, "infeasibility_reason": "",
+            "llm_reasoning": f"No API key configured for the selected Plan C provider ({LLM_ROUTING_PROVIDER}) -- set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or GEMINI_API_KEY. Plan C is unavailable this run.",
+        }
+
+    by_id = {c["dc"]["DC_ID"]: c for c in with_coords}
+
+    cache = _load_llm_route_cache()
+    cache_key = _llm_route_cache_key(origin, with_coords)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        validated_ids, reasoning, notes = cached["stops"], cached["reasoning"], cached.get("notes", [])
+    else:
+        lines = [
+            "You are selecting a Sales Executive's visit route for today.",
+            f"Origin (SE start/end point): {origin[0]:.6f}, {origin[1]:.6f}",
+            "",
+            "Eligible candidate DCs (already scored and eligibility-checked by the system -- "
+            "you are choosing WHICH of these to visit and in WHAT ORDER, not re-scoring them):",
+        ]
+        for c in with_coords:
+            dc = c["dc"]
+            dist = _matrix_distance_km(origin[0], origin[1], dc["Latitude"], dc["Longitude"])
+            dist_label = f"{dist:.1f}" if dist is not None else "unknown"
+            lines.append(
+                f"- DC_ID={dc['DC_ID']} | {dc.get('DC_Name', '')} | Priority_Score={c['priority_score']:.1f} | "
+                f"Matched_Objectives={','.join(c['matched']) or 'Health-Focus'} | "
+                f"Real_Distance_From_Origin_Km={dist_label}"
+            )
+        lines += [
+            "",
+            "Hard constraints (a route breaching any of these will be rejected and re-trimmed by the system):",
+            f"- At most {R1_7_MAX_STOPS} stops.",
+            f"- Total round-trip travel time must not exceed {R1_2_MAX_TRAVEL_MINUTES:.0f} minutes.",
+            f"- Total round-trip distance must not exceed {PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM:.0f} km.",
+            f"- Total field time (travel + visits) must not exceed {R1_1_FIELD_MINUTES_CAP} minutes.",
+            "",
+            "Prefer higher Priority_Score DCs, but weigh real distance too -- a lower-priority DC "
+            "that is much closer may let you fit more total priority into the day than a farther "
+            "high-priority one that eats the whole travel budget alone.",
+            "",
+            'Respond with ONLY a JSON object, no other text: {"stops": ["dc_id_1", "dc_id_2", ...], '
+            '"reasoning": "1-3 sentences explaining why these DCs and this order"}. '
+            "stops must be DC_IDs from the list above, in visit order, closed loop back to origin implied.",
+        ]
+        prompt = "\n".join(lines)
+
+        raw_text = _call_llm_for_routing(prompt)
+        if raw_text is None:
+            return {
+                "stops": [], "dropped": dropped + [{"dc_id": c["dc"]["DC_ID"], "reason": "Plan_C_Api_Call_Failed"} for c in with_coords],
+                "total_distance_km": 0.0, "total_travel_min": 0.0, "total_visit_min": 0.0, "priority_score_captured": 0.0,
+                "feasible": True, "infeasibility_reason": "",
+                "llm_reasoning": f"{LLM_ROUTING_PROVIDER} API call failed or exceeded the {LLM_ROUTING_TIMEOUT_SECONDS:.0f}s timeout this run -- see logs. Falling back to no Plan C route.",
+            }
+        validated_ids, reasoning, notes = _parse_llm_route_response(raw_text, set(by_id.keys()))
+        cache[cache_key] = {"stops": validated_ids, "reasoning": reasoning, "notes": notes}
+        _save_llm_route_cache()
+
+    if not validated_ids:
+        return {
+            "stops": [], "dropped": dropped + [{"dc_id": c["dc"]["DC_ID"], "reason": "Not_Selected_By_LLM"} for c in with_coords],
+            "total_distance_km": 0.0, "total_travel_min": 0.0, "total_visit_min": 0.0, "priority_score_captured": 0.0,
+            "feasible": True, "infeasibility_reason": "",
+            "llm_reasoning": reasoning or "Model proposed no valid stops." + (" " + "; ".join(notes) if notes else ""),
+        }
+
+    visited_order = [by_id[dc_id] for dc_id in validated_ids]
+    visited_ids = set(validated_ids)
+    dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": "Not_Selected_By_LLM"} for c in with_coords if c["dc"]["DC_ID"] not in visited_ids]
+
+    # Same GR-R5 remedy Model 1 uses -- the model's proposal is evaluated against real
+    # caps, never shown as-is if it breaches them, never silently re-ordered to "fix" it.
+    metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
+    while visited_order and not _within_caps(metrics):
+        lowest = min(visited_order, key=lambda c: c["priority_score"])
+        visited_order = [c for c in visited_order if c is not lowest]
+        reason = "Distance_Ceiling_Exceeded" if metrics["total_distance_km"] > PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM else "Travel_Ceiling_Exceeded"
+        dropped.append({"dc_id": lowest["dc"]["DC_ID"], "reason": reason})
+        notes.append(f"System trimmed {lowest['dc']['DC_ID']} -- the model's proposed route breached a real cap")
+        metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
+
+    final_ids = {c["dc"]["DC_ID"] for c in visited_order}
+    excluded_pool = [c for c in with_coords if c["dc"]["DC_ID"] not in final_ids]
+    swapped, swapped_out = _distinctness_swap(visited_order, excluded_pool, exclude_stop_sets)
+    if swapped_out is not None:
+        trial_metrics = _route_metrics(swapped, origin, avg_speed_kmph)
+        if _within_caps(trial_metrics):
+            swapped_in_id = swapped[-1]["dc"]["DC_ID"]
+            visited_order, metrics = swapped, trial_metrics
+            dropped = [d for d in dropped if d["dc_id"] != swapped_in_id]
+            dropped.append({"dc_id": swapped_out["dc"]["DC_ID"], "reason": "Route_Diversity_Swap"})
+
+    feasible = _within_caps(metrics)
+    full_reasoning = reasoning or "(model returned no reasoning text)"
+    if notes:
+        full_reasoning += " [System notes: " + "; ".join(notes) + "]"
+    return {
+        "stops": metrics["stops"], "dropped": dropped,
+        "total_distance_km": metrics["total_distance_km"], "total_travel_min": metrics["total_travel_min"],
+        "total_visit_min": metrics["total_visit_min"], "priority_score_captured": metrics["priority_score_captured"],
+        "feasible": feasible,
+        "infeasibility_reason": "" if feasible else "Field_Time_Cap_Exceeded: even after trimming to the lowest-priority stop-set possible, the model's proposed route still exceeds a hard cap",
+        "llm_reasoning": full_reasoning,
+    }
 
 
 def _cumulative_bo_score(cluster: List[Dict[str, Any]], plan_date: str, potential_weight_by_dc: Optional[Dict[str, float]] = None) -> float:

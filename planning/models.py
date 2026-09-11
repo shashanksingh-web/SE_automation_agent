@@ -432,6 +432,15 @@ class RoutePlan(models.Model):
         CLUSTER_BASED = "CLUSTER_BASED", "Cluster-Based Efficiency (Plan B, Route 1)"
         CLUSTER_SCOREMAX = "CLUSTER_SCOREMAX", "Cluster-Based Score-Max (Plan B, Route 2)"
         CLUSTER_DISTMIN = "CLUSTER_DISTMIN", "Cluster-Based Distance-Min (Plan B, Route 3)"
+        # Plan C (added 2026-09-11, explicit user request -- "create the separate system
+        # where system use anthropic api to create the route not the system logic with
+        # reason why these route suggested"): Anthropic Claude selects/orders the stops
+        # from the same already-scored, already-eligible candidate pool Plan A/B use;
+        # the system still computes and enforces real distance/time caps (see
+        # se_daily_plan_agent.build_route_llm_reasoned). Deliberately ONE RoutePlan, not
+        # 3 -- see that function's own docstring for why R5.1's "minimum 3" doesn't
+        # apply here.
+        LLM_REASONED = "LLM_REASONED", "AI-Reasoned (Plan C, Anthropic Claude)"
 
     plan_run = models.ForeignKey(PlanRun, related_name="route_plans", on_delete=models.CASCADE)
     se_id = models.CharField(max_length=64)
@@ -497,6 +506,12 @@ class RoutePlan(models.Model):
     # silently re-decided (see apply_google_route_accuracy's own docstring for why stop
     # selection itself isn't re-run against the real numbers).
     google_exceeds_cap = models.BooleanField(default=False)
+
+    # Plan C only (added 2026-09-11) -- the Anthropic model's own natural-language
+    # explanation for why it picked these stops in this order, plus any system notes
+    # (a hallucinated DC_ID dropped, a cap-breach trim) appended -- see
+    # se_daily_plan_agent.build_route_llm_reasoned. Empty for every Plan A/B row.
+    llm_reasoning = models.TextField(blank=True, default="")
 
     feasible = models.BooleanField(default=True)
     # e.g. Travel_Ceiling_Exceeded when even the best available stop-set still exceeds

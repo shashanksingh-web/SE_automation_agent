@@ -322,6 +322,18 @@ def generate_route_plans_for_se(
             RoutePlan.PlanType.CLUSTER_DISTMIN: _build_plan_b_route("distance_min"),
         }
         default_plan_type = RoutePlan.PlanType.CLUSTER_BASED
+    elif plan_choice == "C":
+        # Plan C (added 2026-09-11, explicit user request -- "create the separate system
+        # where system use anthropic api to create the route not the system logic with
+        # reason why these route suggested"). ONE RoutePlan, not 3 -- see
+        # agent.build_route_llm_reasoned's own docstring for why R5.1's "minimum 3"
+        # doesn't apply to this plan choice. exclude_stop_sets is passed empty (nothing
+        # to be distinct FROM within this single call) but the parameter stays for
+        # signature parity with the other builders.
+        model_results = {
+            RoutePlan.PlanType.LLM_REASONED: agent.build_route_llm_reasoned(filtered, origin, constants, exclude_stop_sets=[]),
+        }
+        default_plan_type = RoutePlan.PlanType.LLM_REASONED
     else:
         # Built sequentially, not independently (2026-09-07, explicit user request --
         # extends Plan B's own 2026-09-01 "force 3 different routes even if 2 are
@@ -380,35 +392,43 @@ def generate_route_plans_for_se(
     #     surfaced here as a note appended to the persisted infeasibility_reason of the 2
     #     duplicate plans below, not by suppressing their RoutePlan rows outright (GR-R12
     #     still requires every model's own output stay logged).
-    stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
-    non_empty_sets = {s for s in stop_sets.values() if s}
-    max_stops_used = max((len(s) for s in stop_sets.values()), default=0)
-    pool_had_room_to_differ = len(filtered) > max_stops_used
-    # all_three_produced_stops guards against a real, confirmed case: Plan A's 3 models
-    # can legitimately disagree on FEASIBILITY itself (e.g. Distance-Min/Balanced both
-    # infeasible with 0 stops while Priority-Max succeeds) -- that collapses
-    # non_empty_sets to size 1 too, but it is NOT "3 models independently agreeing," it's
-    # 2 of 3 failing outright. Without this guard, that case would be mislabeled
-    # Plans_Converged; it now correctly falls through to the generic GR-R7 branch below.
-    all_three_produced_stops = all(len(s) > 0 for s in stop_sets.values())
-    plans_converged = pool_had_room_to_differ and len(non_empty_sets) == 1 and all_three_produced_stops
-    if plans_converged:
-        family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
-        converged_note = (
-            f"Plans_Converged (GR-R10): all 3 {family} independently produced the identical stop-set and "
-            f"sequence despite {len(filtered)} eligible candidates being available ({max_stops_used} used) -- "
-            f"this is one genuine route, not 3 distinct alternatives."
-        )
-        exceptions.append({"source": "RoutingAgent", "reason_code": "Plans_Converged", "detail": f"{who} @ {plan_date}: {converged_note}"})
-    elif len(non_empty_sets) < 3 and non_empty_sets:
-        family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
+    # GR-R7/GR-R10 only make sense comparing 3 independently-built plans -- Plan C
+    # (added 2026-09-11) deliberately produces exactly 1, so this whole comparison is
+    # skipped for it rather than misfiring "Insufficient_Candidates_For_3_Plans" on
+    # every single Plan C run (see build_route_llm_reasoned's own docstring for why
+    # R5.1's "minimum 3" doesn't apply to this plan choice).
+    if plan_choice == "C":
         converged_note = None
-        exceptions.append({
-            "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
-            "detail": f"{who} @ {plan_date}: only {len(non_empty_sets)} genuinely distinct stop set(s) across {family} ({len(filtered)} eligible candidates -- pool too small/uniform for real variety)",
-        })
     else:
-        converged_note = None
+        stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
+        non_empty_sets = {s for s in stop_sets.values() if s}
+        max_stops_used = max((len(s) for s in stop_sets.values()), default=0)
+        pool_had_room_to_differ = len(filtered) > max_stops_used
+        # all_three_produced_stops guards against a real, confirmed case: Plan A's 3 models
+        # can legitimately disagree on FEASIBILITY itself (e.g. Distance-Min/Balanced both
+        # infeasible with 0 stops while Priority-Max succeeds) -- that collapses
+        # non_empty_sets to size 1 too, but it is NOT "3 models independently agreeing," it's
+        # 2 of 3 failing outright. Without this guard, that case would be mislabeled
+        # Plans_Converged; it now correctly falls through to the generic GR-R7 branch below.
+        all_three_produced_stops = all(len(s) > 0 for s in stop_sets.values())
+        plans_converged = pool_had_room_to_differ and len(non_empty_sets) == 1 and all_three_produced_stops
+        if plans_converged:
+            family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
+            converged_note = (
+                f"Plans_Converged (GR-R10): all 3 {family} independently produced the identical stop-set and "
+                f"sequence despite {len(filtered)} eligible candidates being available ({max_stops_used} used) -- "
+                f"this is one genuine route, not 3 distinct alternatives."
+            )
+            exceptions.append({"source": "RoutingAgent", "reason_code": "Plans_Converged", "detail": f"{who} @ {plan_date}: {converged_note}"})
+        elif len(non_empty_sets) < 3 and non_empty_sets:
+            family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
+            converged_note = None
+            exceptions.append({
+                "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
+                "detail": f"{who} @ {plan_date}: only {len(non_empty_sets)} genuinely distinct stop set(s) across {family} ({len(filtered)} eligible candidates -- pool too small/uniform for real variety)",
+            })
+        else:
+            converged_note = None
 
     default_tasks: List[Any] = []
     default_basis = "routing_agent"
@@ -440,6 +460,7 @@ def generate_route_plans_for_se(
             alpha_used=result.get("alpha_used"),
             distance_source=result.get("distance_source", "haversine_x1.4"),
             google_exceeds_cap=result.get("google_exceeds_cap", False),
+            llm_reasoning=result.get("llm_reasoning", ""),
         )
         RouteStop.objects.bulk_create([
             RouteStop(

@@ -6,3 +6,4 @@ db.sqlite3
 .DS_Store
 output/google_route_cache.json
 output/google_distance_matrix_cache.json
+output/llm_route_cache.json

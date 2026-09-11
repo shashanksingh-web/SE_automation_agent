@@ -65,10 +65,12 @@ class Command(BaseCommand):
         parser.add_argument("--focus-product-crop-districts", help="comma-separated -- Step 3 input, omit to skip Step 3")
         parser.add_argument("--focus-product-related-products", help="comma-separated product names -- Step 3 input, omit to skip Step 3")
         parser.add_argument(
-            "--routing-plan", choices=["A", "B"], default=None,
+            "--routing-plan", choices=["A", "B", "C"], default=None,
             help="Which Routing Agent mode to run: A = Priority-Max/Distance-Min/Balanced (Models 1-3, default), "
-                 "B = Beat Planning / Cluster-Based Model (Plan B). Omit in an interactive terminal to be asked; "
-                 "omit under cron/scripting to default to Plan A (no auto-fallback -- see make_routing_plan_asker).",
+                 "B = Beat Planning / Cluster-Based Model (Plan B), C = AI-Reasoned via Anthropic Claude (Plan C, "
+                 "requires ANTHROPIC_API_KEY, one RoutePlan not three -- see build_route_llm_reasoned). Omit in an "
+                 "interactive terminal to be asked; omit under cron/scripting to default to Plan A (no "
+                 "auto-fallback -- see make_routing_plan_asker).",
         )
         parser.add_argument(
             "--enable-rotation", action="store_true",

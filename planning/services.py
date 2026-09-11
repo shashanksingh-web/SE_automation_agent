@@ -1324,8 +1324,9 @@ def make_routing_plan_asker(stdout, style) -> Optional[Callable[[], str]]:
         stdout.write(style.WARNING("\n  Routing Agent: which plan should generate today's routes?"))
         stdout.write("    Plan A -- Priority-Max / Distance-Min / Balanced (Models 1-3, existing default)")
         stdout.write("    Plan B -- Beat Planning / Cluster-Based Model (density clustering + BO-score maximization)")
-        answer = input("  Choice [A/b]: ").strip().upper()
-        return "B" if answer == "B" else "A"
+        stdout.write("    Plan C -- AI-Reasoned via Anthropic Claude (one route + a written reason; requires ANTHROPIC_API_KEY)")
+        answer = input("  Choice [A/b/c]: ").strip().upper()
+        return answer if answer in ("B", "C") else "A"
 
     return ask
 
