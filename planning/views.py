@@ -3,6 +3,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
@@ -12,7 +13,10 @@ from django.views.decorators.http import require_GET, require_http_methods
 from . import admin_config, dc_selection
 from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
-from .models import DailyTask, DCCard, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, ScheduledScope
+from .models import (
+    DailyTask, DCCard, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, RoutingScopeOverride,
+    ScheduledScope,
+)
 from .product_cohort import ProductCohortError, build_season_weeks, split_csv
 from .routing import RoutingError, list_route_plans, select_default_route_plan
 from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
@@ -816,6 +820,89 @@ def admin_generate_all_states(request):
         "log_file": str(log_path.relative_to(base_dir)),
         "message": "Generation started in the background for every state -- watch System Plan Runs for new entries.",
     })
+
+
+_ROUTING_OVERRIDE_FIELDS = (
+    "r1_2_max_travel_minutes", "plan_a_max_round_trip_distance_km",
+    "plan_b_max_daily_distance_km", "plan_b_max_daily_travel_minutes",
+)
+
+
+def _serialize_routing_override(o) -> Dict[str, Any]:
+    return {
+        "Scope_Type": o.scope_type, "Scope_Value": o.scope_value,
+        **{f: getattr(o, f) for f in _ROUTING_OVERRIDE_FIELDS},
+        "Updated_At": o.updated_at, "Updated_By": o.updated_by,
+    }
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def admin_routing_overrides(request):
+    """/api/planning/admin/routing-overrides/ -- per-scope Routing ceiling overrides
+    (added 2026-09-11, explicit user request -- "in routing parameter rule may be
+    different for node, district, state or overall"). See planning.models.
+    RoutingScopeOverride's own docstring for the NODE/STATE-only scope, per-parameter
+    nullability, and why DISTRICT isn't offered yet.
+
+    GET: every configured override, newest-updated first.
+
+    POST: body {"scope_type": "NODE"|"STATE", "scope_value": "...", plus any subset of
+    r1_2_max_travel_minutes/plan_a_max_round_trip_distance_km/
+    plan_b_max_daily_distance_km/plan_b_max_daily_travel_minutes (each a number or null
+    to clear it -- omitted keys are left untouched, not reset), "actor": "..."} --
+    upserts by (scope_type, scope_value), same partial-update convention as every other
+    admin write in this file. Returns the updated row.
+
+    csrf_exempt: same unauthenticated trust boundary as every other admin write here."""
+    if request.method == "GET":
+        qs = RoutingScopeOverride.objects.all().order_by("-updated_at")
+        return JsonResponse([_serialize_routing_override(o) for o in qs], safe=False, json_dumps_params={"default": str})
+
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    scope_type = str(body.get("scope_type") or "").upper()
+    scope_value = str(body.get("scope_value") or "").strip()
+    if scope_type not in RoutingScopeOverride.ScopeType.values:
+        return JsonResponse({"error": f"scope_type must be one of {RoutingScopeOverride.ScopeType.values}, got {scope_type!r}"}, status=400)
+    if not scope_value:
+        return JsonResponse({"error": "scope_value is required"}, status=400)
+
+    obj, _ = RoutingScopeOverride.objects.get_or_create(scope_type=scope_type, scope_value=scope_value)
+    for field in _ROUTING_OVERRIDE_FIELDS:
+        if field in body:
+            value = body[field]
+            if value is not None:
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    return JsonResponse({"error": f"{field} must be a number or null, got {value!r}"}, status=400)
+            setattr(obj, field, value)
+    obj.updated_by = str(body.get("actor") or "")
+    obj.save()
+    return JsonResponse(_serialize_routing_override(obj), json_dumps_params={"default": str})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def admin_routing_overrides_delete(request):
+    """/api/planning/admin/routing-overrides/delete/ -- body {"scope_type":,
+    "scope_value":} -- removes one override row entirely (reverting that scope fully to
+    whatever the next-less-specific scope/the global default resolves to). POST, not
+    DELETE, matching this file's existing convention of never using the DELETE verb."""
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    deleted, _ = RoutingScopeOverride.objects.filter(
+        scope_type=str(body.get("scope_type") or "").upper(), scope_value=str(body.get("scope_value") or ""),
+    ).delete()
+    if not deleted:
+        return JsonResponse({"error": "No matching override found"}, status=404)
+    return JsonResponse({"deleted": True})
 
 
 @csrf_exempt

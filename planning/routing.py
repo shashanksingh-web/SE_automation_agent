@@ -147,6 +147,7 @@ def generate_route_plans_for_se(
     constants: "agent.BusinessConstants",
     plan_choice: str = "A",
     enable_rotation: bool = False,
+    routing_overrides: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
 ) -> Dict[str, Any]:
     """candidates: the exact shape generate_se_daily_plan()'s route_selector branch
     builds -- [{"row": DailyTaskRow, "dc": dict, "priority_score": float, "matched":
@@ -193,6 +194,27 @@ def generate_route_plans_for_se(
             "detail": f"{who} @ {plan_date}: no punch-in exists yet (R0.4) -- route generation deferred, no plan produced this run",
         })
         return {"Tasks": [], "Sequencing_Basis": "routing_agent_deferred_no_origin", "Travel_Cap_Exceeded": False, "exceptions": exceptions}
+
+    # Per-scope Routing ceiling resolution (added 2026-09-11, explicit user request --
+    # "in routing parameter rule may be different for node, district, state or
+    # overall"). This SE's own Node/State come off its first DC candidate (every
+    # candidate for one SE shares the same Node/State -- see load_dc_master()'s own
+    # DC_Master row shape) -- free, no new query. Monkey-patches se_daily_plan_agent's
+    # module attributes directly, same mechanism (and same accepted process-global-
+    # mutation caveat) planning.admin_config already uses for the network-wide case --
+    # every model builder below reads these as bare module globals, so this is the only
+    # way to make them vary per-SE without threading a new parameter through the ~25
+    # call sites inside se_daily_plan_agent.py that read them today. Left in place after
+    # this call rather than restored -- harmless, since the next generate_plan_for_scope
+    # call re-resets them via load_business_constants() before any SE is processed.
+    if routing_overrides is not None and candidates:
+        first_dc = candidates[0]["dc"]
+        ceilings = agent.resolve_routing_ceilings(
+            first_dc.get("Node"), first_dc.get("State"),
+            routing_overrides.get("node", {}), routing_overrides.get("state", {}),
+        )
+        for attr, value in ceilings.items():
+            setattr(agent, attr, value)
 
     # GR-R1/GR-R2/R0.7 -- independent pre-generation guardrail pass (same "second check
     # even though upstream should already handle it" philosophy as GR-14 elsewhere in

@@ -3400,6 +3400,52 @@ PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM = 100.0
 R1_7_MAX_STOPS = 5  # R1.7, HARD cap (GR-R4)
 R3_2_DEFAULT_AVG_SPEED_KMPH = 25.0  # R3.2 -- undefined in the sheet; bottom of its own suggested 25-30 km/h range
 
+# Names of the 4 Routing ceilings that can be overridden per-scope (added 2026-09-11,
+# see resolve_routing_ceilings below) -- kept as a tuple of module-attr names, not a
+# fresh dict of literals, specifically so this always reflects whatever the module
+# attributes ALREADY are at call time (which may already carry a network-wide Admin
+# Control Panel override from planning.admin_config.load_business_constants) rather
+# than re-introducing the original hardcoded figures as a second, drifting copy.
+ROUTING_CEILING_ATTRS = (
+    "R1_2_MAX_TRAVEL_MINUTES",
+    "PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM",
+    "PLAN_B_MAX_DAILY_DISTANCE_KM",
+    "PLAN_B_MAX_DAILY_TRAVEL_MINUTES",
+)
+
+
+def resolve_routing_ceilings(
+    node: Optional[str], state: Optional[str],
+    node_overrides: Dict[str, Dict[str, float]], state_overrides: Dict[str, Dict[str, float]],
+) -> Dict[str, float]:
+    """Per-scope Routing ceiling resolution (added 2026-09-11, explicit user request --
+    "in routing parameter rule may be different for node, district, state or overall").
+    Pure function, no I/O: `node_overrides`/`state_overrides` are pre-fetched by the
+    caller (planning.routing.generate_route_plans_for_se, the one place a given SE's own
+    Node/State are already known for free from its DC candidates -- see
+    planning.models.RoutingScopeOverride's own docstring for why DISTRICT isn't a valid
+    key here yet) as {scope_value: {ceiling_attr: value_or_None}}.
+
+    Resolution is PER-PARAMETER, not per-row, per direct instruction ("most specific
+    wins"): for each of the 4 ceilings independently, a Node override wins if that
+    specific parameter is set on it; else a State override if set; else whatever the
+    module attribute already is right now (the network-wide default, itself possibly
+    already Admin Control Panel-overridden -- see ROUTING_CEILING_ATTRS's own docstring
+    for why this reads live attributes rather than hardcoded literals). A Node override
+    that only sets one of the 4 fields still lets the other 3 fall through to State/the
+    global default, rather than being all-or-nothing."""
+    node_row = node_overrides.get(node) if node else None
+    state_row = state_overrides.get(state) if state else None
+    resolved: Dict[str, float] = {}
+    for attr in ROUTING_CEILING_ATTRS:
+        if node_row and node_row.get(attr) is not None:
+            resolved[attr] = node_row[attr]
+        elif state_row and state_row.get(attr) is not None:
+            resolved[attr] = state_row[attr]
+        else:
+            resolved[attr] = globals()[attr]
+    return resolved
+
 
 def resolve_typical_origin(points: List[Tuple[float, float, str]], buffer_km: float = 0.5) -> Optional[Dict[str, Any]]:
     """Routing Agent R0.4 Origin_Point, REWRITTEN 2026-09-04 (explicit user request,

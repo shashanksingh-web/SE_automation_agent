@@ -722,3 +722,51 @@ class ProgramDCSelection(models.Model):
 
     def __str__(self):
         return f"ProgramDCSelection({len(self.rules)} rule(s), updated {self.updated_at})"
+
+
+class RoutingScopeOverride(models.Model):
+    """Per-scope Routing Agent ceiling overrides (added 2026-09-11, explicit user
+    request -- "in routing parameter rule may be different for node, district, state or
+    overall"). Until this, the 4 Routing ceilings (planning.admin_config's "Routing"
+    group) were single network-wide values -- no way to set a tighter cap for a dense
+    urban node or a looser one for a sprawling rural state. Resolution precedence, per
+    direct instruction ("most specific wins"): NODE overrides STATE overrides the
+    global Admin Control Panel / hardcoded default -- see se_daily_plan_agent.
+    resolve_routing_ceilings for the actual per-parameter resolution, called once per SE
+    from planning.routing.generate_route_plans_for_se (each SE's own DC candidates
+    already carry their own Node/State, no new query needed for those two).
+
+    DISTRICT is deliberately NOT a valid scope_type here yet, even though it's listed in
+    the request and PlanRun.ScopeType has it -- no District field reaches the per-SE
+    routing call site today (District only exists via a separate Geo_Mapping join used
+    for ABM/RBM/BLOCK/DISTRICT scope-resolution, a different code path entirely). Adding
+    a DISTRICT choice here without wiring that join would let an admin configure a
+    knob that silently never applies -- exactly the "fabricated knob" this codebase's
+    own convention avoids elsewhere (see e.g. Liquidation's Config_Ambiguous handling).
+    Wire the join first if District-level overrides are needed.
+
+    Each of the 4 ceiling fields is independently nullable -- an override row can set
+    just one parameter (e.g. only tighten the distance cap for one node) and let the
+    other 3 fall through to a less-specific scope or the global default, rather than
+    being forced to specify all 4 every time."""
+
+    class ScopeType(models.TextChoices):
+        NODE = "NODE", "Node"
+        STATE = "STATE", "State"
+
+    scope_type = models.CharField(max_length=10, choices=ScopeType.choices)
+    scope_value = models.CharField(max_length=255)
+    r1_2_max_travel_minutes = models.FloatField(null=True, blank=True)
+    plan_a_max_round_trip_distance_km = models.FloatField(null=True, blank=True)
+    plan_b_max_daily_distance_km = models.FloatField(null=True, blank=True)
+    plan_b_max_daily_travel_minutes = models.FloatField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=200, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["scope_type", "scope_value"], name="unique_routing_scope_override"),
+        ]
+
+    def __str__(self):
+        return f"RoutingScopeOverride({self.scope_type}:{self.scope_value})"

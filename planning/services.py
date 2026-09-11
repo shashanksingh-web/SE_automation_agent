@@ -41,7 +41,7 @@ import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, impor
 
 from . import data_cache, dc_selection, product_cohort, routing
 from .admin_config import load_business_constants
-from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, PlanRun
+from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, PlanRun, RoutingScopeOverride
 from .notify import send_alert
 
 
@@ -2290,6 +2290,34 @@ def generate_plan_for_scope(
         for s in DCVisitStreak.objects.filter(se_id__in=all_se_uids, dc_id__in=dc_ids)
     }
 
+    # Per-scope Routing ceiling overrides (added 2026-09-11, explicit user request --
+    # "in routing parameter rule may be different for node, district, state or
+    # overall") -- fetched ONCE for the whole scope, not per SE, then resolved per-SE
+    # inside routing.generate_route_plans_for_se (each SE's own Node/State already
+    # known there for free). {} for either level just means "no override configured
+    # at that level" -- resolve_routing_ceilings falls through to State then the
+    # global default in that case, same as if this dict were never built at all.
+    routing_overrides = {
+        "node": {
+            o.scope_value: {
+                "R1_2_MAX_TRAVEL_MINUTES": o.r1_2_max_travel_minutes,
+                "PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM": o.plan_a_max_round_trip_distance_km,
+                "PLAN_B_MAX_DAILY_DISTANCE_KM": o.plan_b_max_daily_distance_km,
+                "PLAN_B_MAX_DAILY_TRAVEL_MINUTES": o.plan_b_max_daily_travel_minutes,
+            }
+            for o in RoutingScopeOverride.objects.filter(scope_type="NODE")
+        },
+        "state": {
+            o.scope_value: {
+                "R1_2_MAX_TRAVEL_MINUTES": o.r1_2_max_travel_minutes,
+                "PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM": o.plan_a_max_round_trip_distance_km,
+                "PLAN_B_MAX_DAILY_DISTANCE_KM": o.plan_b_max_daily_distance_km,
+                "PLAN_B_MAX_DAILY_TRAVEL_MINUTES": o.plan_b_max_daily_travel_minutes,
+            }
+            for o in RoutingScopeOverride.objects.filter(scope_type="STATE")
+        },
+    }
+
     total_tasks = 0
     skipped_ses: List[Dict[str, Any]] = []
     # Collected across every SE and bulk_create()'d once after the loop, instead of one
@@ -2327,6 +2355,7 @@ def generate_plan_for_scope(
             result = routing.generate_route_plans_for_se(
                 plan_run, str(_uid), _email, plan_date_, candidates, origin, origin_basis, constants_,
                 plan_choice=resolved_routing_plan, enable_rotation=enable_rotation,
+                routing_overrides=routing_overrides,
             )
             run_exceptions.extend(result["exceptions"])
             return result
