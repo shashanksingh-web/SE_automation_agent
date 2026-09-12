@@ -282,6 +282,25 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "description": "Section 5 -- Plan B's round-trip travel-time budget. Both this and the distance ceiling above must be satisfied together.",
         "target": "module", "module_attr": "PLAN_B_MAX_DAILY_TRAVEL_MINUTES", "default": 180.0,
     },
+    # Added 2026-09-12, explicit user request -- both were previously hardcoded "HARD
+    # cap"/GR-R3/GR-R4 spec values, mistaken by the user (reasonably -- see each
+    # constant's own comment in se_daily_plan_agent.py) for two similarly-named,
+    # already-admin-editable fields above (max_daily_tasks, total_capacity_min) that
+    # actually govern a different layer (the SE Daily Task Agent's own daily caps, not
+    # the Routing Agent's per-route dimensions). These two are the real Routing Agent
+    # constants Plan A/B/C's own caps checks and Plan C's own prompt read.
+    {
+        "group": "Routing", "key": "r1_7_max_stops", "type": "int",
+        "label": "Max stops per route (all plans)", "unit": "stops", "min": 1, "max": 10,
+        "description": "R1.7 (GR-R4) -- the Routing Agent's own per-route stop-count ceiling, shared by Plan A's 3 models, Plan B's 3 routes, and Plan C's prompt. Distinct from the Daily Caps group's max_daily_tasks, which caps the SE Daily Task Agent's own daily task list before routing runs.",
+        "target": "module", "module_attr": "R1_7_MAX_STOPS", "default": 5,
+    },
+    {
+        "group": "Routing", "key": "r1_1_field_minutes_cap", "type": "float",
+        "label": "Max total field time (all plans)", "unit": "minutes", "min": 60, "max": 1440,
+        "description": "R1.1 (GR-R3) -- the Routing Agent's own total field-time ceiling (travel + visits combined), shared by Plan A's 3 models, Plan B's 3 routes, and Plan C's prompt. Distinct from the Daily Caps group's total_capacity_min, which also includes call time and governs the SE Daily Task Agent's own daily capacity, not routing.",
+        "target": "module", "module_attr": "R1_1_FIELD_MINUTES_CAP", "default": 420,
+    },
 ]
 
 _FIELD_BY_KEY: Dict[str, Dict[str, Any]] = {f["key"]: f for f in ADMIN_EDITABLE_FIELDS}

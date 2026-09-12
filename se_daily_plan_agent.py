@@ -3503,7 +3503,14 @@ def sequence_with_distance(
 # already happened before these are called, per planning/routing.py's docstring.
 
 R3_1_CIRCUITY_FACTOR = 1.4  # R3.1, FINAL: Haversine x 1.4 is the locked primary per-leg distance method.
-R1_1_FIELD_MINUTES_CAP = 420  # R1.1, HARD cap (GR-R3)
+# R1.1 (GR-R3). CHANGED 2026-09-12, explicit user request -- was documented "HARD cap,"
+# but the user pointed out a similarly-named Admin Panel field (total_capacity_min,
+# default 480 = 60 calls + 420 field) is a DIFFERENT constant that doesn't actually
+# govern this one -- confirmed live via grep, this exact gap was never admin-editable
+# despite Plan C's own prompt quoting it as a live "admin-configured" constraint. Now
+# genuinely Admin Control Panel-overridable, same module-attr monkey-patch mechanism as
+# R1_2_MAX_TRAVEL_MINUTES below (see load_business_constants).
+R1_1_FIELD_MINUTES_CAP = 420
 # R1.2, MAXIMUM CEILING -- CORRECTED 2026-09-06 via Routing_Agent_Configuration_Sheet_v9.
 # xlsx (explicit user request), which supersedes the v7-era "RE-CONFIRMED floor" reading
 # this constant carried before: v9's own header states this plainly ("CORRECTED: 3-hr
@@ -3524,7 +3531,13 @@ R1_2_MAX_TRAVEL_MINUTES = 180  # Admin Control Panel-overridable (planning.admin
 # monkey-patch mechanism as R1_2_MAX_TRAVEL_MINUTES above (see load_business_constants).
 # Applies to all 3 Plan A models uniformly via _within_caps, not model-specific.
 PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM = 100.0
-R1_7_MAX_STOPS = 5  # R1.7, HARD cap (GR-R4)
+# R1.7 (GR-R4). CHANGED 2026-09-12, explicit user request -- was documented "HARD cap,"
+# same situation as R1_1_FIELD_MINUTES_CAP above: a similarly-named Admin Panel field
+# (max_daily_tasks, default 5) is a DIFFERENT constant (the SE Daily Task Agent's own
+# overall daily cap, checked before routing even runs) that coincidentally shares this
+# default value but never actually controlled it. Now genuinely Admin Control
+# Panel-overridable, same module-attr mechanism as R1_2_MAX_TRAVEL_MINUTES.
+R1_7_MAX_STOPS = 5
 R3_2_DEFAULT_AVG_SPEED_KMPH = 25.0  # R3.2 -- undefined in the sheet; bottom of its own suggested 25-30 km/h range
 
 # Names of the 4 Routing ceilings that can be overridden per-scope (added 2026-09-11,
