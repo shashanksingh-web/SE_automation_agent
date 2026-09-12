@@ -346,8 +346,8 @@
     "Section": "Section 7 \u2014 Turning the 5 Objectives Into One Daily Priority",
     "Param_Key": "7.1",
     "Parameter": "# objectives feeding ranking",
-    "Configured_Value": "Confirmed \u2014 top 3 objectives",
-    "Formula": "Ranked_Objectives = TOP 3 objectives BY Objective_Score DESC (per DC or per SE)",
+    "Configured_Value": "Confirmed \u2014 top 3 objectives. REVERTED (business-confirmed): this rule stays on the ORIGINAL BO1-5 ranking mechanism, not touched by the Health Score replacement, which applies only to qualification criteria in 8.5",
+    "Formula": "Ranked_Objectives = TOP 3 objectives BY Objective_Score DESC (per DC or per SE) [ORIGINAL, unchanged]",
     "Status": "Confirmed Default"
   },
   {
@@ -355,7 +355,7 @@
     "Section": "Section 7 \u2014 Turning the 5 Objectives Into One Daily Priority",
     "Param_Key": "7.2",
     "Parameter": "1st/2nd/3rd priority weighting",
-    "Configured_Value": "Confirmed \u2014 40% / 35% / 25%",
+    "Configured_Value": "Confirmed \u2014 40% / 35% / 25% | Weighting mechanism (40/35/25%) unchanged by the BO-to-Health-Score substitution - only WHICH scores feed the ranking changed, not how they combine",
     "Formula": "Daily_Priority_Score = 0.40 \u00d7 Score_Rank1 + 0.35 \u00d7 Score_Rank2 + 0.25 \u00d7 Score_Rank3",
     "Status": "Confirmed Default"
   },
@@ -364,8 +364,8 @@
     "Section": "Section 7 \u2014 Turning the 5 Objectives Into One Daily Priority",
     "Param_Key": "7.3",
     "Parameter": "Default tie-break order",
-    "Configured_Value": "Custom order confirmed: Outstanding Payments, Private Label Sale, DC Visits, Long-Term Growth",
-    "Formula": "Tie_Break_Order = [Outstanding Payments, Private Label, DC Visits, Long-Term Growth, Overall Sales(position TBD)]",
+    "Configured_Value": "Custom order confirmed: Outstanding Payments, Private Label Sale, DC Visits, Long-Term Growth. REVERTED (business-confirmed): this tie-break order stays on the ORIGINAL BO-named objectives, not touched by the Health Score replacement",
+    "Formula": "Tie_Break_Order = [Outstanding Payments, Private Label, DC Visits, Long-Term Growth, Overall Sales(position TBD)] [ORIGINAL, unchanged]",
     "Status": "Overridden"
   },
   {
@@ -373,8 +373,8 @@
     "Section": "Section 7 \u2014 Turning the 5 Objectives Into One Daily Priority",
     "Param_Key": "7.4",
     "Parameter": "Override rules",
-    "Configured_Value": "Rule (b) explicitly confirmed \u2014 all-D reorder to Visits, PL, Overall Sales, Outstanding, Long-Term. Rule (a) [Outstanding=D caps Overall Sales at B] not explicitly re-confirmed",
-    "Formula": "Rule_A [applied by default]: IF BO3_Grade=\"D\" THEN BO4_Grade = MIN(BO4_Grade,\"B\"). Rule_B [confirmed]: IF ALL(BO1..BO5 Grades)=\"D\" THEN Priority_Order = [Visits, PL, Overall Sales, Outstanding, Long-Term]",
+    "Configured_Value": "Rule (b) explicitly confirmed \u2014 all-D reorder to Visits, PL, Overall Sales, Outstanding, Long-Term. Rule (a) [Outstanding=D caps Overall Sales at B] not explicitly re-confirmed. REVERTED (business-confirmed): this rule stays on the ORIGINAL A-D letter-grade logic, not touched by the Health Score replacement",
+    "Formula": "Rule_A [applied by default]: IF BO3_Grade=\"D\" THEN BO4_Grade = MIN(BO4_Grade,\"B\"). Rule_B [confirmed]: IF ALL(BO1..BO5 Grades)=\"D\" THEN Priority_Order = [Visits, PL, Overall Sales, Outstanding, Long-Term] [ORIGINAL, unchanged]",
     "Status": "Agent-Determined (Dynamic)"
   },
   {
@@ -418,8 +418,8 @@
     "Section": "Section 8 \u2014 Turning Priorities Into a Realistic Daily Plan",
     "Param_Key": "8.5",
     "Parameter": "Qualification conditions per list",
-    "Configured_Value": "Confirmed with one override \u2014 Visits: not visited in 14 days (= \u2605 default) \u00b7 Outstanding: balance \u2265\u20b920,000 & overdue \u226515 days (overridden from \u2605 \u20b95,000/30 days) \u00b7 PL: <3 orders in 30 days (= \u2605 default) \u00b7 Long-Term: had PL sales in last 90 days (= \u2605 default)",
-    "Formula": "Qualify_Visits = (Days_Since_Last_Visit > 14); Qualify_Outstanding = (Balance \u2265 20000 AND Days_Overdue \u2265 15); Qualify_PL = (PL_Order_Count_30d < 3); Qualify_LongTerm = (Had_PL_Sale_Last_90d = TRUE)",
+    "Configured_Value": "REVISED (business-confirmed): Qualify_Outstanding and Qualify_PL now driven by Health Score buckets instead of the original Rupee/day thresholds. Qualify_Visits and Qualify_LongTerm are UNCHANGED (BO2 and BO5 stay outside the Health Score replacement, per business decision)",
+    "Formula": "Qualify_Visits = (Days_Since_Last_Visit > 14) [UNCHANGED]. Qualify_Outstanding = (OD_Score in Weak or Worst bucket, i.e. <=60%) [REVISED from original OD grade thresholds]. Qualify_PL = (PL_Contribution_Score in Weak or Worst bucket, i.e. <=60%) [REVISED from original PL_Order_Count_30d<3]. Qualify_LongTerm = (Had_PL_Sale_Last_90d = TRUE) [UNCHANGED]. NOTE: original Rupee-based Outstanding threshold (>=20000 & >=15 days overdue) and PL order-count threshold are now superseded by these bucket-based equivalents - old thresholds retained in the row above for reference only",
     "Status": "Overridden"
   },
   {
