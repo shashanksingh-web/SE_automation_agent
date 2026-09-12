@@ -312,9 +312,29 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
     # steered toward a different emphasis.
     {
         "group": "Plan C (AI-Reasoned)", "key": "plan_c_decision_style", "type": "choice",
-        "label": "Decision style", "unit": "", "choices": ["balanced", "priority_focused", "distance_focused", "time_focused"],
-        "description": "Steers the one guidance sentence in Plan C's prompt: balanced (default) weighs priority against distance; priority_focused maximizes total Priority_Score captured even at the cost of more distance/time; distance_focused prefers the tightest geographic cluster over raw priority; time_focused prefers the fewest/fastest legs. The system's own cap verification and trimming apply identically regardless of style.",
+        "label": "Decision style", "unit": "",
+        "choices": ["balanced", "priority_focused", "distance_focused", "time_focused", "cluster_based"],
+        "description": "Steers the one guidance sentence in Plan C's prompt: balanced (default) weighs priority against distance; priority_focused maximizes total Priority_Score captured even at the cost of more distance/time; distance_focused prefers the tightest geographic cluster over raw priority; time_focused prefers the fewest/fastest legs; cluster_based has the system pre-compute real geographic clusters (same partitioning as Plan B -- see the two fields below) and steers the model to build its route from within a single cluster. The system's own cap verification and trimming apply identically regardless of style.",
         "target": "module", "module_attr": "PLAN_C_DECISION_STYLE", "default": "balanced",
+    },
+    # Cluster DEFINITION for the cluster_based decision style above (added 2026-09-12,
+    # explicit user request -- "related parameter for cluster based should be added in
+    # admin panel like how we decide the cluster (definition)"). Only ever read/used when
+    # plan_c_decision_style == "cluster_based"; harmless (never referenced) otherwise. See
+    # PLAN_C_CLUSTER_MAX_INTRA_KM/PLAN_C_CLUSTER_TARGET_SIZE's own comment in
+    # se_daily_plan_agent.py for why these are Plan C's own independent knobs rather than
+    # a re-use of Plan B's plan_b_max_daily_distance_km-derived default.
+    {
+        "group": "Plan C (AI-Reasoned)", "key": "plan_c_cluster_max_intra_km", "type": "float",
+        "label": "Cluster definition -- max intra-cluster spread", "unit": "km", "min": 1, "max": 200,
+        "description": "Only used when Decision style = cluster_based. The same max-pairwise-distance bound Plan B's own clustering uses (Section 3.2): a DC can only join a cluster if doing so keeps every pair within the cluster no farther apart than this.",
+        "target": "module", "module_attr": "PLAN_C_CLUSTER_MAX_INTRA_KM", "default": 45.0,
+    },
+    {
+        "group": "Plan C (AI-Reasoned)", "key": "plan_c_cluster_target_size", "type": "int",
+        "label": "Cluster definition -- target DCs per cluster", "unit": "DCs", "min": 1, "max": 10,
+        "description": "Only used when Decision style = cluster_based. A cluster stops absorbing new DCs once it reaches this many members (subject to the spread cap above) -- default matches the Max stops per route ceiling, since Plan C never proposes more stops than that anyway.",
+        "target": "module", "module_attr": "PLAN_C_CLUSTER_TARGET_SIZE", "default": 5,
     },
 ]
 

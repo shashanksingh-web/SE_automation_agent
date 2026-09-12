@@ -3568,7 +3568,32 @@ PLAN_C_DECISION_STYLE_GUIDANCE: Dict[str, str] = {
         "Prioritize minimizing total round-trip travel time -- prefer the fewest/fastest legs "
         "between DCs, even if a different combination would cover slightly less distance."
     ),
+    # Static fallback text only -- build_route_llm_reasoned overrides this at call time
+    # with a dynamic sentence naming the ACTUAL clusters computed for that call (see
+    # PLAN_C_CLUSTER_MAX_INTRA_KM/PLAN_C_CLUSTER_TARGET_SIZE below). Kept as a real dict
+    # entry anyway so admin_config's "choices" list and get_config_state's descriptions
+    # have real text to show even before a candidate pool exists.
+    "cluster_based": (
+        "Prefer selecting stops from a single geographic cluster rather than mixing DCs from "
+        "different clusters -- clusters are computed by the system, not you; pick the cluster "
+        "with the best total Priority_Score for its size, then order its stops."
+    ),
 }
+
+# Plan C cluster-based decision style's cluster DEFINITION knobs (added 2026-09-12,
+# explicit user request -- "add one more model ... for cluster based approach in plan c
+# and related parameter for cluster based should be added in admin panel like how we
+# decide the cluster (definition)"). Reuses the EXACT same _cluster_candidates_by_density
+# partitioning Plan B already uses below (greedy nearest-neighbor agglomeration bounded by
+# a max-pairwise-intra-cluster distance + a target member count) -- "cluster" means the
+# same thing in Plan C as it does in Plan B, just with Plan C's own independent knob
+# values, since an admin may reasonably want a looser/tighter cluster definition for the
+# one AI-reasoned route than for Beat Planning's 3-stage territory split. Both read
+# directly (module-global, not a bound default) by build_route_llm_reasoned at call time,
+# same mechanism as PLAN_C_DECISION_STYLE, so an Admin Control Panel override takes effect
+# on the next call with no process restart.
+PLAN_C_CLUSTER_MAX_INTRA_KM = PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM * 0.45  # 45.0 at the current 100km cap -- same 0.45x ratio (Section 3.2's "~40-50% of the daily distance budget") Plan B derives its own PLAN_B_MAX_INTRA_CLUSTER_DISTANCE_KM default from
+PLAN_C_CLUSTER_TARGET_SIZE = R1_7_MAX_STOPS  # unlike Plan B's PLAN_B_TARGET_CLUSTER_SIZE=6, Plan C never proposes more than R1_7_MAX_STOPS stops anyway -- no reason to target a cluster larger than the route could ever use
 
 # Names of the 4 Routing ceilings that can be overridden per-scope (added 2026-09-11,
 # see resolve_routing_ceilings below) -- kept as a tuple of module-attr names, not a
@@ -4670,6 +4695,24 @@ PLAN_B_RECENCY_DECAY_CAP = 2.0          # Edge Case #2: caps decay so a cluster 
 PLAN_B_NEW_BO_RECENCY_WEIGHT = PLAN_B_RECENCY_DECAY_CAP  # Edge Case #6: a BO with no visit history gets max recency urgency, not zero
 
 
+def _max_pairwise_real_km(group: List[Dict[str, Any]]) -> float:
+    """Real (matrix-backed, via _matrix_distance_km) max pairwise distance across every
+    DC-to-DC pair in `group`. Factored out of _cluster_candidates_by_density's own
+    max_pairwise_km closure below (which now just calls this) so build_route_llm_
+    reasoned's cluster-reshape validation (see _evaluate_cluster_adjustment) can reuse
+    the IDENTICAL real-distance check that decides cluster membership in the first
+    place, rather than a second copy that could quietly drift from it. Returns 0.0 for
+    a group of fewer than 2 (nothing to compare)."""
+    if len(group) < 2:
+        return 0.0
+    worst = 0.0
+    for i in range(len(group)):
+        for j in range(i + 1, len(group)):
+            d = _matrix_distance_km(*_candidate_coords(group[i]), *_candidate_coords(group[j])) or 0.0
+            worst = max(worst, d)
+    return worst
+
+
 def _cluster_candidates_by_density(
     candidates: List[Dict[str, Any]],
     max_intra_cluster_km: Optional[float] = None,
@@ -4694,10 +4737,13 @@ def _cluster_candidates_by_density(
     made afterward (planning.admin_config patches the module attribute at plan-
     generation time, see that module's own docstring) would never reach this one
     function's default, since it was already frozen at import. Resolved fresh on every
-    call instead, from whatever PLAN_B_MAX_DAILY_DISTANCE_KM currently is -- this is the
-    only caller (see call site) and it never passes this explicitly, so the sentinel-
-    default resolution below is what actually makes the admin override take effect for
-    it.
+    call instead, from whatever PLAN_B_MAX_DAILY_DISTANCE_KM currently is -- Plan B (its
+    original caller) never passes this explicitly, so the sentinel-default resolution
+    below is what makes the admin override take effect for it. Plan C's cluster_based
+    decision style (added 2026-09-12, see build_route_llm_reasoned) is now a SECOND
+    caller and DOES pass this explicitly (its own PLAN_C_CLUSTER_MAX_INTRA_KM, read live
+    at its own call site) -- the sentinel branch below is simply skipped for that call,
+    same live-override guarantee via a different route.
 
     BUG FIXED 2026-09-08 (caught in a self-audit): this docstring previously sat AFTER
     the sentinel-resolution `if` block below, which silently demoted it from a real
@@ -4720,18 +4766,12 @@ def _cluster_candidates_by_density(
         return sum(lats) / len(lats), sum(lons) / len(lons)
 
     def max_pairwise_km(cluster: List[Dict[str, Any]]) -> float:
-        # Real DC-to-DC pair (both cluster members) -- uses _matrix_distance_km (real
-        # Google distance when primed, see prime_google_distance_matrix). Unlike the
-        # centroid-distance calls below (seed selection, nearest-to-centroid growth),
-        # this is a comparison between two REAL, prefetchable points.
-        if len(cluster) < 2:
-            return 0.0
-        worst = 0.0
-        for i in range(len(cluster)):
-            for j in range(i + 1, len(cluster)):
-                d = _matrix_distance_km(*_candidate_coords(cluster[i]), *_candidate_coords(cluster[j])) or 0.0
-                worst = max(worst, d)
-        return worst
+        # Real DC-to-DC pair (both cluster members) -- delegates to the module-level
+        # _max_pairwise_real_km (uses _matrix_distance_km, real Google distance when
+        # primed). Unlike the centroid-distance calls below (seed selection,
+        # nearest-to-centroid growth), this is a comparison between two REAL,
+        # prefetchable points.
+        return _max_pairwise_real_km(cluster)
 
     # Seed-selection and nearest-to-centroid growth below stay on circuity_distance_km
     # (Haversine x 1.4) deliberately, NOT _matrix_distance_km -- a centroid is a computed
@@ -4808,9 +4848,16 @@ def _llm_route_cache_key(origin: Tuple[float, float], candidates: List[Dict[str,
     # (or between models on the same provider) must never silently reuse a cached
     # response generated by a different model. Also includes PLAN_C_DECISION_STYLE
     # (added 2026-09-12) -- an admin switching styles must get a fresh decision under
-    # the new guidance, never a decision cached under a different (or no) steering.
+    # the new guidance, never a decision cached under a different (or no) steering. Also
+    # includes PLAN_C_CLUSTER_MAX_INTRA_KM/PLAN_C_CLUSTER_TARGET_SIZE (added 2026-09-12)
+    # -- these only ever change the prompt when style=="cluster_based", but are cheap to
+    # always include so a later style switch back to cluster_based can't silently reuse a
+    # decision cached under a since-changed cluster definition.
     _model_by_provider = {"anthropic": ANTHROPIC_ROUTING_MODEL, "openrouter": OPENROUTER_ROUTING_MODEL, "gemini": GEMINI_ROUTING_MODEL}
-    parts = [f"{LLM_ROUTING_PROVIDER}:{_model_by_provider.get(LLM_ROUTING_PROVIDER, '')}:{PLAN_C_DECISION_STYLE}"]
+    parts = [
+        f"{LLM_ROUTING_PROVIDER}:{_model_by_provider.get(LLM_ROUTING_PROVIDER, '')}:{PLAN_C_DECISION_STYLE}:"
+        f"{PLAN_C_CLUSTER_MAX_INTRA_KM}:{PLAN_C_CLUSTER_TARGET_SIZE}"
+    ]
     parts.append(f"{origin[0]:.4f},{origin[1]:.4f}")
     for c in sorted(candidates, key=lambda c: c["dc"]["DC_ID"]):
         parts.append(f"{c['dc']['DC_ID']}:{round(c['priority_score'], 2)}")
@@ -5038,6 +5085,105 @@ def _parse_llm_route_response(text: str, valid_ids: Set[str]) -> Tuple[List[str]
     return validated, reasoning, notes
 
 
+def _parse_cluster_adjustment(text: str) -> Optional[Dict[str, Any]]:
+    """cluster_based-only, best-effort extraction of an optional top-level
+    "cluster_adjustment" key from the same raw JSON _parse_llm_route_response already
+    parses -- kept as its own tiny parser (not folded into that function's return
+    tuple) so every other decision style's call site stays untouched by this addition.
+    Never raises -- malformed/missing/non-dict returns None, treated by the caller
+    exactly like an explicit {"type": "none"} (nothing proposed)."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1] if len(cleaned.split("```")) > 1 else cleaned
+        cleaned = cleaned[4:] if cleaned.lower().startswith("json") else cleaned
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+    adjustment = parsed.get("cluster_adjustment") if isinstance(parsed, dict) else None
+    return adjustment if isinstance(adjustment, dict) else None
+
+
+def _evaluate_cluster_adjustment(
+    adjustment: Optional[Dict[str, Any]],
+    scored_clusters: List[Dict[str, Any]],
+    by_id: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    """cluster_based-only (explicit user request: "let it propose merges/splits with a
+    stated reason, then the system re-validates that proposal against real distances
+    before accepting it -- never trusting the AI's cluster boundary outright"). Checks
+    an LLM-proposed reshape -- merge two of the system's clusters (by their 1-indexed
+    Cluster_ID as shown in the prompt), or move one DC into a different cluster --
+    against _max_pairwise_real_km, the SAME real-distance check that decided cluster
+    membership in the first place (see _cluster_candidates_by_density). The model's
+    claim that "these are actually close enough to merge" is verified, never taken at
+    face value, same fail-safe posture this module applies to every other live-data
+    claim it can't independently confirm.
+
+    Purely advisory: returns a note for the audit trail (folded into llm_reasoning by
+    the caller) and nothing else -- it never changes which stops are selectable, never
+    re-shapes the clusters for a later step, and never triggers a second LLM call. Plan
+    C stays exactly one API call per route regardless of what this returns (see this
+    function's own docstring on why a 2nd call was rejected). Returns None when there
+    is nothing to note: no proposal, "type": "none", or a malformed/out-of-range one
+    (a hallucinated cluster id or DC_ID is silently ignored here rather than crashing --
+    the same tolerant-of-nonsense posture _parse_llm_route_response already has)."""
+    if not isinstance(adjustment, dict):
+        return None
+    adj_type = adjustment.get("type")
+    reason = str(adjustment.get("reason") or "no reason given")[:300]
+    n = len(scored_clusters)
+
+    if adj_type == "merge":
+        raw_ids = adjustment.get("clusters")
+        if not isinstance(raw_ids, list) or len(raw_ids) != 2:
+            return None
+        try:
+            i, j = int(raw_ids[0]), int(raw_ids[1])
+        except (TypeError, ValueError):
+            return None
+        if i == j or not (1 <= i <= n) or not (1 <= j <= n):
+            return None
+        combined = scored_clusters[i - 1]["cluster"] + scored_clusters[j - 1]["cluster"]
+        spread = _max_pairwise_real_km(combined)
+        if spread <= PLAN_C_CLUSTER_MAX_INTRA_KM:
+            return (
+                f"System VALIDATED and ACCEPTED the model's proposed merge of Cluster_{i}/Cluster_{j} -- "
+                f"real max pairwise distance {spread:.1f}km is within the {PLAN_C_CLUSTER_MAX_INTRA_KM:.0f}km "
+                f"cluster definition. Model's reason: {reason}"
+            )
+        return (
+            f"System REJECTED the model's proposed merge of Cluster_{i}/Cluster_{j} -- real max pairwise "
+            f"distance {spread:.1f}km exceeds the {PLAN_C_CLUSTER_MAX_INTRA_KM:.0f}km cluster definition; "
+            f"clusters kept separate. Model's reason: {reason}"
+        )
+
+    if adj_type == "move":
+        raw_dc_id = adjustment.get("dc_id")
+        dc_id = normalize_id(raw_dc_id) if isinstance(raw_dc_id, str) else None
+        try:
+            target = int(adjustment.get("target_cluster"))
+        except (TypeError, ValueError):
+            return None
+        if dc_id is None or dc_id not in by_id or not (1 <= target <= n):
+            return None
+        combined = scored_clusters[target - 1]["cluster"] + [by_id[dc_id]]
+        spread = _max_pairwise_real_km(combined)
+        if spread <= PLAN_C_CLUSTER_MAX_INTRA_KM:
+            return (
+                f"System VALIDATED and ACCEPTED the model's proposal to move {dc_id} into Cluster_{target} -- "
+                f"real max pairwise distance {spread:.1f}km is within the {PLAN_C_CLUSTER_MAX_INTRA_KM:.0f}km "
+                f"cluster definition. Model's reason: {reason}"
+            )
+        return (
+            f"System REJECTED the model's proposal to move {dc_id} into Cluster_{target} -- real max "
+            f"pairwise distance {spread:.1f}km exceeds the {PLAN_C_CLUSTER_MAX_INTRA_KM:.0f}km cluster "
+            f"definition; DC kept in its original cluster. Model's reason: {reason}"
+        )
+
+    return None  # "none" or an unrecognized type -- nothing to note
+
+
 def build_route_llm_reasoned(
     candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
     avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
@@ -5111,6 +5257,76 @@ def build_route_llm_reasoned(
     if cached is not None:
         validated_ids, reasoning, notes = cached["stops"], cached["reasoning"], cached.get("notes", [])
     else:
+        # cluster_based reuses Plan B's own _cluster_candidates_by_density partitioning
+        # (see PLAN_C_CLUSTER_MAX_INTRA_KM/PLAN_C_CLUSTER_TARGET_SIZE's own comment for
+        # why Plan C gets independent knob values rather than sharing Plan B's) so the
+        # model is steered by clusters the SYSTEM actually computed, not asked to eyeball
+        # geography itself from raw coordinates -- same fail-safe posture as the real
+        # distance/time math it's never trusted to do on its own.
+        cluster_id_by_dc: Dict[str, int] = {}
+        cluster_guidance = None
+        if PLAN_C_DECISION_STYLE == "cluster_based":
+            clusters = _cluster_candidates_by_density(
+                with_coords, max_intra_cluster_km=PLAN_C_CLUSTER_MAX_INTRA_KM, target_size=PLAN_C_CLUSTER_TARGET_SIZE,
+            )
+            # Rank each cluster exactly the way Plan B's own Stage 3 ranks clusters
+            # (explicit user request: cluster_based should "use the Plan C para also and
+            # other para used in [the function] which use[s] AI to create the route" --
+            # i.e. reuse the SAME admin-configurable ceilings/algorithm Plan C's own
+            # AI-route-creation already reads, not a parallel, separately-tuned set) --
+            # "maximum output" (total Priority_Score), "km" (the cluster's own REAL
+            # closed-tour distance from Origin, sequenced via the identical
+            # Clarke-Wright + 2-opt + or-opt heuristic Models 2/3 and Plan B use, not a
+            # rough estimate), and "DC coverage" (member count) are the 3 axes an
+            # explicit follow-up request named. score_per_km (output/km) is Plan B's own
+            # "efficiency" ranking_criterion formula verbatim (see build_route_cluster_
+            # based's Step 2) -- reused here rather than invented fresh. Feasibility uses
+            # _within_caps, the one caps helper every Plan A model AND this function's own
+            # final trim-loop already call (PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM/
+            # R1_2_MAX_TRAVEL_MINUTES/R1_1_FIELD_MINUTES_CAP) -- a cluster that can't even
+            # fit as a whole is ranked last, never hidden from the model (same
+            # never-silent posture as the rest of this module).
+            scored_clusters = []
+            for cl in clusters:
+                order = _or_opt(_two_opt(_clarke_wright_order(cl, origin), origin, avg_speed_kmph), origin, avg_speed_kmph)
+                cl_metrics = _route_metrics(order, origin, avg_speed_kmph)
+                output = sum(c["priority_score"] for c in cl)
+                km = cl_metrics["total_distance_km"]
+                scored_clusters.append({
+                    "cluster": cl, "output": output, "km": km, "coverage": len(cl),
+                    "score_per_km": (output / km) if km > 1e-6 else output,
+                    "within_caps": _within_caps(cl_metrics),
+                })
+            scored_clusters.sort(key=lambda sc: (not sc["within_caps"], -sc["score_per_km"], -sc["coverage"], sc["km"]))
+
+            for idx, sc in enumerate(scored_clusters, start=1):
+                for c in sc["cluster"]:
+                    cluster_id_by_dc[c["dc"]["DC_ID"]] = idx
+            cluster_summary = "; ".join(
+                f"Cluster_{idx} ({sc['coverage']} DC(s), output(Priority_Score)={sc['output']:.1f}, "
+                f"real_km={sc['km']:.1f}, output_per_km={sc['score_per_km']:.2f}"
+                + ("" if sc["within_caps"] else ", EXCEEDS a hard cap as a whole cluster")
+                + ")"
+                for idx, sc in enumerate(scored_clusters, start=1)
+            )
+            cluster_guidance = (
+                f"Clusters below were computed AND ranked by the system (max {PLAN_C_CLUSTER_MAX_INTRA_KM:.0f}km "
+                f"intra-cluster spread, target {PLAN_C_CLUSTER_TARGET_SIZE} DCs/cluster; ranked by output-per-km "
+                "efficiency, then DC coverage, then lower km -- Cluster_1 is the system's top-ranked pick), not "
+                f"by you: {cluster_summary}. Prefer selecting stops from a SINGLE cluster rather than mixing DCs "
+                "from different clusters -- start from Cluster_1 unless a lower-ranked cluster clearly captures "
+                "more total Priority_Score within the hard constraints below.\n\n"
+                "If you believe two of these clusters should really be treated as one, or that a specific DC "
+                "would fit better in a different cluster than the system placed it in, you may say so -- but the "
+                "system will independently check the real distance before accepting it, so state your reasoning. "
+                'Include it as an optional \'"cluster_adjustment"\' key in your response: '
+                '{"type": "merge", "clusters": [<Cluster_ID>, <Cluster_ID>], "reason": "..."} to propose merging '
+                'two clusters, {"type": "move", "dc_id": "<DC_ID>", "target_cluster": <Cluster_ID>, "reason": '
+                '"..."} to propose moving one DC, or {"type": "none"} (or omit the key) if no adjustment is '
+                "needed. This never changes which stops you're allowed to pick -- you may already choose stops "
+                "from more than one cluster when justified, per the constraint above."
+            )
+
         lines = [
             "You are selecting a Sales Executive's visit route for today.",
             f"Origin (SE start/end point): {origin[0]:.6f}, {origin[1]:.6f}",
@@ -5122,10 +5338,11 @@ def build_route_llm_reasoned(
             dc = c["dc"]
             dist = _matrix_distance_km(origin[0], origin[1], dc["Latitude"], dc["Longitude"])
             dist_label = f"{dist:.1f}" if dist is not None else "unknown"
+            cluster_label = f" | Cluster_ID={cluster_id_by_dc[dc['DC_ID']]}" if dc["DC_ID"] in cluster_id_by_dc else ""
             lines.append(
                 f"- DC_ID={dc['DC_ID']} | {dc.get('DC_Name', '')} | Priority_Score={c['priority_score']:.1f} | "
                 f"Matched_Objectives={','.join(c['matched']) or 'Health-Focus'} | "
-                f"Real_Distance_From_Origin_Km={dist_label}"
+                f"Real_Distance_From_Origin_Km={dist_label}{cluster_label}"
             )
         lines += [
             "",
@@ -5135,11 +5352,17 @@ def build_route_llm_reasoned(
             f"- Total round-trip distance must not exceed {PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM:.0f} km.",
             f"- Total field time (travel + visits) must not exceed {R1_1_FIELD_MINUTES_CAP} minutes.",
             "",
-            PLAN_C_DECISION_STYLE_GUIDANCE.get(PLAN_C_DECISION_STYLE, PLAN_C_DECISION_STYLE_GUIDANCE["balanced"]),
+            cluster_guidance or PLAN_C_DECISION_STYLE_GUIDANCE.get(PLAN_C_DECISION_STYLE, PLAN_C_DECISION_STYLE_GUIDANCE["balanced"]),
             "",
-            'Respond with ONLY a JSON object, no other text: {"stops": ["dc_id_1", "dc_id_2", ...], '
-            '"reasoning": "1-3 sentences explaining why these DCs and this order"}. '
-            "stops must be DC_IDs from the list above, in visit order, closed loop back to origin implied.",
+            (
+                'Respond with ONLY a JSON object, no other text: {"stops": ["dc_id_1", "dc_id_2", ...], '
+                '"reasoning": "1-3 sentences explaining why these DCs and this order", "cluster_adjustment": '
+                '{"type": "none"|"merge"|"move", ...}}. '
+                if PLAN_C_DECISION_STYLE == "cluster_based" else
+                'Respond with ONLY a JSON object, no other text: {"stops": ["dc_id_1", "dc_id_2", ...], '
+                '"reasoning": "1-3 sentences explaining why these DCs and this order"}. '
+            )
+            + "stops must be DC_IDs from the list above, in visit order, closed loop back to origin implied.",
         ]
         prompt = "\n".join(lines)
 
@@ -5159,6 +5382,12 @@ def build_route_llm_reasoned(
         # (primary provider just works) shouldn't carry a note implying anything unusual.
         if len(attempted_providers) > 1:
             notes = [f"Routed via {attempted_providers[-1]} after {', '.join(attempted_providers[:-1])} failed"] + notes
+        if PLAN_C_DECISION_STYLE == "cluster_based":
+            adjustment_note = _evaluate_cluster_adjustment(
+                _parse_cluster_adjustment(raw_text), scored_clusters, by_id,
+            )
+            if adjustment_note:
+                notes.append(adjustment_note)
         cache[cache_key] = {"stops": validated_ids, "reasoning": reasoning, "notes": notes}
         _save_llm_route_cache()
 
