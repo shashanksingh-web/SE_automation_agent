@@ -301,6 +301,21 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "description": "R1.1 (GR-R3) -- the Routing Agent's own total field-time ceiling (travel + visits combined), shared by Plan A's 3 models, Plan B's 3 routes, and Plan C's prompt. Distinct from the Daily Caps group's total_capacity_min, which also includes call time and governs the SE Daily Task Agent's own daily capacity, not routing.",
         "target": "module", "module_attr": "R1_1_FIELD_MINUTES_CAP", "default": 420,
     },
+    # Plan C decision style (added 2026-09-12, explicit user request -- "provide the
+    # functionality in admin panel to decide on which temperament ai decide the best
+    # possible route"). The FIRST non-numeric ADMIN_EDITABLE_FIELDS entry -- "type":
+    # "choice" validated against `choices` below, see apply_overrides' own new branch.
+    # Only ever changes ONE sentence of guidance inside build_route_llm_reasoned's
+    # prompt (see PLAN_C_DECISION_STYLE_GUIDANCE in se_daily_plan_agent.py) -- does NOT
+    # change the caps, the validation, the fallback chain, or the "one route, not
+    # three" scope decision; the AI still only ever proposes one route per call, just
+    # steered toward a different emphasis.
+    {
+        "group": "Plan C (AI-Reasoned)", "key": "plan_c_decision_style", "type": "choice",
+        "label": "Decision style", "unit": "", "choices": ["balanced", "priority_focused", "distance_focused", "time_focused"],
+        "description": "Steers the one guidance sentence in Plan C's prompt: balanced (default) weighs priority against distance; priority_focused maximizes total Priority_Score captured even at the cost of more distance/time; distance_focused prefers the tightest geographic cluster over raw priority; time_focused prefers the fewest/fastest legs. The system's own cap verification and trimming apply identically regardless of style.",
+        "target": "module", "module_attr": "PLAN_C_DECISION_STYLE", "default": "balanced",
+    },
 ]
 
 _FIELD_BY_KEY: Dict[str, Dict[str, Any]] = {f["key"]: f for f in ADMIN_EDITABLE_FIELDS}
@@ -375,6 +390,17 @@ def apply_overrides(changes: Dict[str, Any], updated_by: str = "") -> Dict[str, 
         field = _FIELD_BY_KEY.get(key)
         if not field:
             errors[key] = "Not an editable field"
+            continue
+        if field["type"] == "choice":
+            # Added 2026-09-12, explicit user request (Plan C decision style) -- the
+            # first non-numeric ADMIN_EDITABLE_FIELDS entry, so this is the first branch
+            # that isn't a float()/int() cast. Validated against the field's own
+            # `choices` list rather than any type coercion; min/max don't apply here.
+            if not isinstance(raw_value, str) or raw_value not in field.get("choices", []):
+                errors[key] = f"Must be one of {field.get('choices', [])}"
+                continue
+            overrides[key] = raw_value
+            applied = True
             continue
         try:
             value = float(raw_value) if field["type"] == "float" else int(raw_value)
