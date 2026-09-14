@@ -3601,6 +3601,19 @@ PLAN_C_DECISION_STYLE_GUIDANCE: Dict[str, str] = {
         "Prioritize minimizing total round-trip travel time -- prefer the fewest/fastest legs "
         "between DCs, even if a different combination would cover slightly less distance."
     ),
+    # Added 2026-09-15, explicit user request ("provide proper how its effect the roi in
+    # no [number]") -- the third of Plan C's 3 forced-distinct routes (see
+    # generate_route_plans_for_se's plan_choice=="C" branch): every candidate line
+    # already carries its real Present_Outstanding/Last_Order_Value (see the prompt-
+    # building loop below) so the model can reason about Rupee value on every style call,
+    # but this style is the one explicitly told to optimize for it, same as
+    # priority_focused/distance_focused/time_focused each optimize for their own metric.
+    "value_focused": (
+        "Prioritize maximizing total real Rupee value captured (Present_Outstanding + "
+        "Last_Order_Value, shown per DC below) across the route -- prefer DCs with a larger "
+        "combined Rupee figure even if their Priority_Score is lower, as long as the hard "
+        "constraints below are still met."
+    ),
     # Static fallback text only -- build_route_llm_reasoned overrides this at call time
     # with a dynamic sentence naming the ACTUAL clusters computed for that call (see
     # PLAN_C_CLUSTER_MAX_INTRA_KM/PLAN_C_CLUSTER_TARGET_SIZE below). Kept as a real dict
@@ -4135,6 +4148,60 @@ def apply_google_route_accuracy(route_result: Dict[str, Any], origin: Tuple[floa
     route_result["distance_source"] = "google_maps"
     route_result["google_exceeds_cap"] = not (
         total_travel <= R1_2_MAX_TRAVEL_MINUTES and total_distance <= PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM
+    )
+    return route_result
+
+
+def attach_roi_metrics(route_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Overlays a real-Rupee ROI figure onto an already-built route (added 2026-09-15,
+    explicit user request -- "provide proper how its effect the roi in no [number]").
+    Shared by all 3 plan families (Model 1-3, Plan B's 3 routes, Plan C's 3 routes) --
+    every one of them produces the same _route_metrics stop shape, so this doesn't need
+    to know which family built the route.
+
+    Expected_Value_Captured = sum of (Present_Outstanding + Last_Order_Value) across this
+    route's stops -- the two real, already-computed per-DC Rupee figures actually
+    available at ROUTE-generation time. Deliberately NOT the Pitching Agent's AI Sales
+    Forecast (planning.ai_sales_forecast) -- that runs AFTER Routing in the pipeline
+    (Pitching Agent and Routing Agent "share no output tables at all," see this module's
+    own position-in-pipeline notes), so it structurally cannot exist yet when a route is
+    being built, not a gap in this function. Present_Outstanding is real money currently
+    collectable at that DC; Last_Order_Value is its last actual order size, the closest
+    available proxy for what a Sale-purpose visit might realize again -- neither is
+    fabricated, both are None-skipped (a DC with neither on file contributes 0, not a
+    fabricated figure), and the count of stops that actually contributed is always
+    returned alongside the total so "Rs.0 from 5 stops" and "Rs.0 from 0 stops with real
+    data" are never confused with each other.
+
+    Value_Per_Km = Expected_Value_Captured / total_distance_km -- lets routes of
+    different lengths be compared on Rupees-realized-per-kilometre-driven, not just raw
+    total (a longer route can look better on the raw total alone while actually being
+    less efficient per km travelled). None whenever Expected_Value_Captured itself is
+    None or the route's distance is ~0 (a 1-stop or empty route - division would be
+    meaningless, not "free efficiency")."""
+    stops = route_result.get("stops") or []
+    contributing = 0
+    total_value = 0.0
+    for s in stops:
+        row = s["row"]
+        stop_value = 0.0
+        stop_has_value = False
+        if row.Present_Outstanding is not None:
+            stop_value += row.Present_Outstanding
+            stop_has_value = True
+        if row.Last_Order_Value is not None:
+            stop_value += row.Last_Order_Value
+            stop_has_value = True
+        if stop_has_value:
+            contributing += 1
+            total_value += stop_value
+
+    route_result["expected_value_captured"] = round(total_value, 2) if contributing else None
+    route_result["expected_value_dc_count"] = contributing
+    route_result["expected_value_total_stops"] = len(stops)
+    distance = route_result.get("total_distance_km") or 0.0
+    route_result["value_per_km"] = (
+        round(total_value / distance, 2) if contributing and distance > 1e-6 else None
     )
     return route_result
 
@@ -4882,26 +4949,39 @@ def _save_llm_route_cache() -> None:
         pass  # best-effort cache, same convention as _save_google_route_cache
 
 
-def _llm_route_cache_key(origin: Tuple[float, float], candidates: List[Dict[str, Any]]) -> str:
+def _llm_route_cache_key(
+    origin: Tuple[float, float], candidates: List[Dict[str, Any]],
+    decision_style: Optional[str] = None, exclude_stop_sets: Optional[List[Tuple[str, ...]]] = None,
+) -> str:
     # Includes each DC's priority_score -- a re-score (e.g. a new overdue payment
     # clearing GR-28) must bust the cache, not reuse a stale LLM decision made against
     # numbers that no longer hold. Also includes provider+model -- switching providers
     # (or between models on the same provider) must never silently reuse a cached
-    # response generated by a different model. Also includes PLAN_C_DECISION_STYLE
-    # (added 2026-09-12) -- an admin switching styles must get a fresh decision under
-    # the new guidance, never a decision cached under a different (or no) steering. Also
-    # includes PLAN_C_CLUSTER_MAX_INTRA_KM/PLAN_C_CLUSTER_TARGET_SIZE (added 2026-09-12)
-    # -- these only ever change the prompt when style=="cluster_based", but are cheap to
-    # always include so a later style switch back to cluster_based can't silently reuse a
-    # decision cached under a since-changed cluster definition.
+    # response generated by a different model. Also includes the EFFECTIVE decision
+    # style (added 2026-09-12; `decision_style` param added 2026-09-15 for Plan C's 3
+    # forced-distinct routes -- see build_route_llm_reasoned's own docstring) -- an
+    # admin switching styles, or Plan C calling this 3x with 3 different styles for the
+    # same candidate pool, must each get a fresh decision under their own guidance,
+    # never a decision cached under a different steering. Also includes
+    # PLAN_C_CLUSTER_MAX_INTRA_KM/PLAN_C_CLUSTER_TARGET_SIZE (added 2026-09-12) -- these
+    # only ever change the prompt when style=="cluster_based", but are cheap to always
+    # include so a later style switch back to cluster_based can't silently reuse a
+    # decision cached under a since-changed cluster definition. Also includes
+    # exclude_stop_sets (added 2026-09-15) -- without this, Plan C's routes 2/3 (same
+    # candidate pool AND same style as some earlier call, only exclude_stop_sets
+    # differs) would collide on route 1's cache entry and silently return route 1's
+    # already-cached stop-set instead of being forced distinct from it.
     _model_by_provider = {"anthropic": ANTHROPIC_ROUTING_MODEL, "openrouter": OPENROUTER_ROUTING_MODEL, "gemini": GEMINI_ROUTING_MODEL}
+    effective_style = decision_style or PLAN_C_DECISION_STYLE
     parts = [
-        f"{LLM_ROUTING_PROVIDER}:{_model_by_provider.get(LLM_ROUTING_PROVIDER, '')}:{PLAN_C_DECISION_STYLE}:"
+        f"{LLM_ROUTING_PROVIDER}:{_model_by_provider.get(LLM_ROUTING_PROVIDER, '')}:{effective_style}:"
         f"{PLAN_C_CLUSTER_MAX_INTRA_KM}:{PLAN_C_CLUSTER_TARGET_SIZE}"
     ]
     parts.append(f"{origin[0]:.4f},{origin[1]:.4f}")
     for c in sorted(candidates, key=lambda c: c["dc"]["DC_ID"]):
         parts.append(f"{c['dc']['DC_ID']}:{round(c['priority_score'], 2)}")
+    for excl in exclude_stop_sets or []:
+        parts.append("excl:" + ",".join(sorted(excl)))
     return "|".join(parts)
 
 
@@ -5229,6 +5309,7 @@ def build_route_llm_reasoned(
     candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
     avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
     exclude_stop_sets: Optional[List[Tuple[str, ...]]] = None,
+    decision_style_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Plan C (added 2026-09-11, explicit user request -- "create the separate system
     where system use anthropic api to create the route not the system logic with reason
@@ -5248,22 +5329,30 @@ def build_route_llm_reasoned(
     than being shown as-is or silently "fixed" by re-ordering -- the model's own
     ordering/selection is what's being evaluated, not second-guessed.
 
-    Deliberately produces ONE route, not 3 (unlike Plan A/B's R5.1 "minimum 3 per
-    SE/day") -- asking one LLM 3 times for "different styles" doesn't have the same
-    guaranteed-distinct-algorithm property Plan A/B's 3 genuinely different construction
-    methods have, and would triple real per-call API cost for uncertain benefit.
-    Flagged as a deliberate scope decision, not an oversight.
+    Produces 3 routes per call site, not 1 (CHANGED 2026-09-15, explicit user request --
+    "in plan c provide all routes" -- previously deliberately ONE route; see
+    generate_route_plans_for_se's plan_choice=="C" branch for the 3 sequential calls,
+    same exclude_stop_sets-threading pattern Plan A/B already use to force genuine
+    distinctness rather than hoping 3 independent calls happen to differ). Each of the 3
+    calls passes a different `decision_style_override` (the admin's own configured
+    PLAN_C_DECISION_STYLE for route 1 -- unchanged default behavior --, then
+    "value_focused" and "distance_focused" for routes 2/3) rather than asking the same
+    question 3 times, so each route has a genuinely different, model-legible objective to
+    reason from -- this DOES triple real per-call LLM API cost, a tradeoff explicitly
+    accepted over the previous single-call default.
 
-    Response cached to disk per (origin, candidate DC-ID set + priority scores) -- a
-    repeat run against the same candidate pool/date reuses the cached decision rather
-    than re-billing the API or risking a different sample (temperature=0 helps but isn't
-    a hard determinism guarantee the way Model 1's solution_limit is).
+    Response cached to disk per (origin, candidate DC-ID set + priority scores, decision
+    style, exclude_stop_sets) -- a repeat run against the same candidate pool/date/style/
+    exclusion set reuses the cached decision rather than re-billing the API or risking a
+    different sample (temperature=0 helps but isn't a hard determinism guarantee the way
+    Model 1's solution_limit is).
 
     Fails open (empty route, feasible=True, llm_reasoning explains why) on:
     LLM_ROUTING_ENABLED=False, no usable candidates, every configured provider's API
     call failing (see _call_llm_for_routing's fallback across providers), an
     unparseable response, or every proposed stop being invalid -- never blocks plan
     generation."""
+    effective_style = decision_style_override or PLAN_C_DECISION_STYLE
     if not candidates:
         return {
             "stops": [], "dropped": [], "total_distance_km": 0.0, "total_travel_min": 0.0,
@@ -5293,7 +5382,7 @@ def build_route_llm_reasoned(
     by_id = {c["dc"]["DC_ID"]: c for c in with_coords}
 
     cache = _load_llm_route_cache()
-    cache_key = _llm_route_cache_key(origin, with_coords)
+    cache_key = _llm_route_cache_key(origin, with_coords, decision_style=effective_style, exclude_stop_sets=exclude_stop_sets)
     cached = cache.get(cache_key)
     if cached is not None:
         validated_ids, reasoning, notes = cached["stops"], cached["reasoning"], cached.get("notes", [])
@@ -5306,7 +5395,7 @@ def build_route_llm_reasoned(
         # distance/time math it's never trusted to do on its own.
         cluster_id_by_dc: Dict[str, int] = {}
         cluster_guidance = None
-        if PLAN_C_DECISION_STYLE == "cluster_based":
+        if effective_style == "cluster_based":
             clusters = _cluster_candidates_by_density(
                 with_coords, max_intra_cluster_km=PLAN_C_CLUSTER_MAX_INTRA_KM, target_size=PLAN_C_CLUSTER_TARGET_SIZE,
             )
@@ -5380,8 +5469,21 @@ def build_route_llm_reasoned(
             dist = _matrix_distance_km(origin[0], origin[1], dc["Latitude"], dc["Longitude"])
             dist_label = f"{dist:.1f}" if dist is not None else "unknown"
             cluster_label = f" | Cluster_ID={cluster_id_by_dc[dc['DC_ID']]}" if dc["DC_ID"] in cluster_id_by_dc else ""
+            # Real Rupee figures shown on EVERY style's prompt (added 2026-09-15), not
+            # just value_focused's -- so the model's own reasoning can weigh Rupee value
+            # even when a different objective is what it was actually told to optimize
+            # for. "unknown" (never 0) when a DC genuinely has neither on file -- same
+            # never-fabricate convention as attach_roi_metrics' None-skipping.
+            row = c["row"]
+            value_bits = []
+            if row.Present_Outstanding is not None:
+                value_bits.append(f"Present_Outstanding=Rs.{row.Present_Outstanding:,.0f}")
+            if row.Last_Order_Value is not None:
+                value_bits.append(f"Last_Order_Value=Rs.{row.Last_Order_Value:,.0f}")
+            value_label = " | ".join(value_bits) if value_bits else "Present_Outstanding=unknown | Last_Order_Value=unknown"
             lines.append(
                 f"- DC_ID={dc['DC_ID']} | {dc.get('DC_Name', '')} | Priority_Score={c['priority_score']:.1f} | "
+                f"{value_label} | "
                 f"Matched_Objectives={','.join(c['matched']) or 'Health-Focus'} | "
                 f"Real_Distance_From_Origin_Km={dist_label}{cluster_label}"
             )
@@ -5393,13 +5495,13 @@ def build_route_llm_reasoned(
             f"- Total round-trip distance must not exceed {PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM:.0f} km.",
             f"- Total field time (travel + visits) must not exceed {R1_1_FIELD_MINUTES_CAP} minutes.",
             "",
-            cluster_guidance or PLAN_C_DECISION_STYLE_GUIDANCE.get(PLAN_C_DECISION_STYLE, PLAN_C_DECISION_STYLE_GUIDANCE["balanced"]),
+            cluster_guidance or PLAN_C_DECISION_STYLE_GUIDANCE.get(effective_style, PLAN_C_DECISION_STYLE_GUIDANCE["balanced"]),
             "",
             (
                 'Respond with ONLY a JSON object, no other text: {"stops": ["dc_id_1", "dc_id_2", ...], '
                 '"reasoning": "1-3 sentences explaining why these DCs and this order", "cluster_adjustment": '
                 '{"type": "none"|"merge"|"move", ...}}. '
-                if PLAN_C_DECISION_STYLE == "cluster_based" else
+                if effective_style == "cluster_based" else
                 'Respond with ONLY a JSON object, no other text: {"stops": ["dc_id_1", "dc_id_2", ...], '
                 '"reasoning": "1-3 sentences explaining why these DCs and this order"}. '
             )
@@ -5423,7 +5525,7 @@ def build_route_llm_reasoned(
         # (primary provider just works) shouldn't carry a note implying anything unusual.
         if len(attempted_providers) > 1:
             notes = [f"Routed via {attempted_providers[-1]} after {', '.join(attempted_providers[:-1])} failed"] + notes
-        if PLAN_C_DECISION_STYLE == "cluster_based":
+        if effective_style == "cluster_based":
             adjustment_note = _evaluate_cluster_adjustment(
                 _parse_cluster_adjustment(raw_text), scored_clusters, by_id,
             )

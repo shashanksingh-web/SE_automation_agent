@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sys
 from datetime import date as _date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
@@ -26,6 +27,7 @@ from django.db.models import Q
 sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
+from .data_cache import load_output_json  # noqa: E402
 from .models import BeatZoneAssignment, PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
 
 
@@ -325,13 +327,30 @@ def generate_route_plans_for_se(
     elif plan_choice == "C":
         # Plan C (added 2026-09-11, explicit user request -- "create the separate system
         # where system use anthropic api to create the route not the system logic with
-        # reason why these route suggested"). ONE RoutePlan, not 3 -- see
-        # agent.build_route_llm_reasoned's own docstring for why R5.1's "minimum 3"
-        # doesn't apply to this plan choice. exclude_stop_sets is passed empty (nothing
-        # to be distinct FROM within this single call) but the parameter stays for
-        # signature parity with the other builders.
+        # reason why these route suggested"). CHANGED 2026-09-15, explicit user request
+        # ("in plan c provide all routes") -- 3 RoutePlans now, same sequential
+        # exclude_stop_sets-forced-distinctness pattern as Plan B above (and Plan A
+        # below): route 1 (the admin's own configured PLAN_C_DECISION_STYLE, unconstrained
+        # -- its pick is never sacrificed for 2/3's distinctness) is computed first, then
+        # routes 2/3 each get an explicit, different objective (value_focused/
+        # distance_focused) AND every earlier route's stop-set to avoid, rather than
+        # asking the same LLM the same question 3 times and hoping for genuinely
+        # different answers. Triples Plan C's real per-call LLM API cost -- an explicitly
+        # accepted tradeoff, see build_route_llm_reasoned's own docstring.
+        exclude_stop_sets_c: List[Tuple[str, ...]] = []
+
+        def _build_plan_c_route(decision_style_override: Optional[str] = None) -> Dict[str, Any]:
+            result = agent.build_route_llm_reasoned(
+                filtered, origin, constants, exclude_stop_sets=list(exclude_stop_sets_c),
+                decision_style_override=decision_style_override,
+            )
+            exclude_stop_sets_c.append(tuple(s["row"].DC_ID for s in result["stops"]))
+            return result
+
         model_results = {
-            RoutePlan.PlanType.LLM_REASONED: agent.build_route_llm_reasoned(filtered, origin, constants, exclude_stop_sets=[]),
+            RoutePlan.PlanType.LLM_REASONED: _build_plan_c_route(),
+            RoutePlan.PlanType.LLM_REASONED_VALUE_MAX: _build_plan_c_route("value_focused"),
+            RoutePlan.PlanType.LLM_REASONED_DISTMIN: _build_plan_c_route("distance_focused"),
         }
         default_plan_type = RoutePlan.PlanType.LLM_REASONED
     else:
@@ -369,6 +388,13 @@ def generate_route_plans_for_se(
     # unaffected either way.
     for result in model_results.values():
         agent.apply_google_route_accuracy(result, origin)
+        # ROI overlay (added 2026-09-15, explicit user request -- "provide proper how
+        # its effect the roi in no [number]") -- real-Rupee expected_value_captured/
+        # value_per_km for every route in every plan family, not just Plan C, since
+        # they all share the identical _route_metrics stop shape (see
+        # agent.attach_roi_metrics' own docstring for the formula and why it's NOT the
+        # Pitching Agent's AI Sales Forecast).
+        agent.attach_roi_metrics(result)
     agent.clear_google_distance_matrix()  # this SE's primed matrix must not leak into the next SE's candidate pool
 
     # GR-R7 (Routing_Agent_Configuration_Sheet_v8, "Never generate fewer than 3 feasible
@@ -392,43 +418,39 @@ def generate_route_plans_for_se(
     #     surfaced here as a note appended to the persisted infeasibility_reason of the 2
     #     duplicate plans below, not by suppressing their RoutePlan rows outright (GR-R12
     #     still requires every model's own output stay logged).
-    # GR-R7/GR-R10 only make sense comparing 3 independently-built plans -- Plan C
-    # (added 2026-09-11) deliberately produces exactly 1, so this whole comparison is
-    # skipped for it rather than misfiring "Insufficient_Candidates_For_3_Plans" on
-    # every single Plan C run (see build_route_llm_reasoned's own docstring for why
-    # R5.1's "minimum 3" doesn't apply to this plan choice).
-    if plan_choice == "C":
+    # GR-R7/GR-R10 apply to every plan family the same way now (CHANGED 2026-09-15 --
+    # Plan C used to deliberately produce exactly 1 route, exempting it from this
+    # 3-way comparison entirely; now that it produces 3 like Plan A/B, an LLM
+    # genuinely converging on the same stop-set across 3 differently-framed prompts is
+    # just as worth flagging as Plan A/B's models converging).
+    family = {"B": "Plan B's 3 routes", "C": "Plan C's 3 routes"}.get(plan_choice, "Models 1-3")
+    stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
+    non_empty_sets = {s for s in stop_sets.values() if s}
+    max_stops_used = max((len(s) for s in stop_sets.values()), default=0)
+    pool_had_room_to_differ = len(filtered) > max_stops_used
+    # all_three_produced_stops guards against a real, confirmed case: Plan A's 3 models
+    # can legitimately disagree on FEASIBILITY itself (e.g. Distance-Min/Balanced both
+    # infeasible with 0 stops while Priority-Max succeeds) -- that collapses
+    # non_empty_sets to size 1 too, but it is NOT "3 models independently agreeing," it's
+    # 2 of 3 failing outright. Without this guard, that case would be mislabeled
+    # Plans_Converged; it now correctly falls through to the generic GR-R7 branch below.
+    all_three_produced_stops = all(len(s) > 0 for s in stop_sets.values())
+    plans_converged = pool_had_room_to_differ and len(non_empty_sets) == 1 and all_three_produced_stops
+    if plans_converged:
+        converged_note = (
+            f"Plans_Converged (GR-R10): all 3 {family} independently produced the identical stop-set and "
+            f"sequence despite {len(filtered)} eligible candidates being available ({max_stops_used} used) -- "
+            f"this is one genuine route, not 3 distinct alternatives."
+        )
+        exceptions.append({"source": "RoutingAgent", "reason_code": "Plans_Converged", "detail": f"{who} @ {plan_date}: {converged_note}"})
+    elif len(non_empty_sets) < 3 and non_empty_sets:
         converged_note = None
+        exceptions.append({
+            "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
+            "detail": f"{who} @ {plan_date}: only {len(non_empty_sets)} genuinely distinct stop set(s) across {family} ({len(filtered)} eligible candidates -- pool too small/uniform for real variety)",
+        })
     else:
-        stop_sets = {ptype: tuple(s["row"].DC_ID for s in r["stops"]) for ptype, r in model_results.items()}
-        non_empty_sets = {s for s in stop_sets.values() if s}
-        max_stops_used = max((len(s) for s in stop_sets.values()), default=0)
-        pool_had_room_to_differ = len(filtered) > max_stops_used
-        # all_three_produced_stops guards against a real, confirmed case: Plan A's 3 models
-        # can legitimately disagree on FEASIBILITY itself (e.g. Distance-Min/Balanced both
-        # infeasible with 0 stops while Priority-Max succeeds) -- that collapses
-        # non_empty_sets to size 1 too, but it is NOT "3 models independently agreeing," it's
-        # 2 of 3 failing outright. Without this guard, that case would be mislabeled
-        # Plans_Converged; it now correctly falls through to the generic GR-R7 branch below.
-        all_three_produced_stops = all(len(s) > 0 for s in stop_sets.values())
-        plans_converged = pool_had_room_to_differ and len(non_empty_sets) == 1 and all_three_produced_stops
-        if plans_converged:
-            family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
-            converged_note = (
-                f"Plans_Converged (GR-R10): all 3 {family} independently produced the identical stop-set and "
-                f"sequence despite {len(filtered)} eligible candidates being available ({max_stops_used} used) -- "
-                f"this is one genuine route, not 3 distinct alternatives."
-            )
-            exceptions.append({"source": "RoutingAgent", "reason_code": "Plans_Converged", "detail": f"{who} @ {plan_date}: {converged_note}"})
-        elif len(non_empty_sets) < 3 and non_empty_sets:
-            family = "Plan B's 3 routes" if plan_choice == "B" else "Models 1-3"
-            converged_note = None
-            exceptions.append({
-                "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
-                "detail": f"{who} @ {plan_date}: only {len(non_empty_sets)} genuinely distinct stop set(s) across {family} ({len(filtered)} eligible candidates -- pool too small/uniform for real variety)",
-            })
-        else:
-            converged_note = None
+        converged_note = None
 
     default_tasks: List[Any] = []
     default_basis = "routing_agent"
@@ -460,6 +482,9 @@ def generate_route_plans_for_se(
             alpha_used=result.get("alpha_used"),
             distance_source=result.get("distance_source", "haversine_x1.4"),
             google_exceeds_cap=result.get("google_exceeds_cap", False),
+            expected_value_captured=result.get("expected_value_captured"),
+            value_per_km=result.get("value_per_km"),
+            expected_value_dc_count=result.get("expected_value_dc_count", 0),
             llm_reasoning=result.get("llm_reasoning", ""),
         )
         RouteStop.objects.bulk_create([
@@ -588,6 +613,23 @@ def resolve_route_plan_run(se: str, plan_date: str, plan_run_id: Optional[int] =
     return candidate.plan_run
 
 
+def _dc_geo_lookup() -> Dict[str, Dict[str, Any]]:
+    """dc_id -> {dc_name, latitude, longitude} from DC_Master_Normalized.json.
+    RouteStop persists no lat/lon of its own (see that model's own docstring - only
+    directory/dcs/ has DC geo) so list_route_plans attaches it here rather than making
+    the frontend do a second round-trip per stop. Added 2026-09-15, explicit user
+    request ("real dc mapped and route visible according to google map api") - RouteMap
+    previously plotted only the origin pin, nothing else on the map."""
+    output_dir = Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output"
+    dc_master = load_output_json(output_dir, "DC_Master_Normalized.json")
+    return {
+        str(r.get("DC_ID")): {
+            "dc_name": r.get("DC_Name"), "latitude": r.get("Latitude"), "longitude": r.get("Longitude"),
+        }
+        for r in dc_master
+    }
+
+
 def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None) -> Dict[str, Any]:
     """Returns {"plan_run_id", "se_id", "plans": [...]} -- R5.2's presentation fields for
     each of the SE's synced RoutePlans (>=3 per R5.1), each with its stops and dropped
@@ -598,6 +640,7 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
     if not routes.exists():
         raise RoutingError(f"PlanRun #{plan_run.id} has no RoutePlans for se={se!r} on {plan_date}.")
 
+    dc_geo = _dc_geo_lookup()
     plans = []
     for r in routes.order_by("plan_type"):
         plans.append({
@@ -622,6 +665,15 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             # re-deciding stops (see apply_google_route_accuracy).
             "distance_source": r.distance_source,
             "google_exceeds_cap": r.google_exceeds_cap,
+            # ROI overlay (added 2026-09-15, see RoutePlan.expected_value_captured's own
+            # docstring for the exact formula) -- expected_value_captured is null (not 0)
+            # whenever NONE of this route's stops had a real Present_Outstanding/
+            # Last_Order_Value figure on file; expected_value_dc_count says how many of
+            # stop_count actually contributed, so "Rs.0 from 0 of 5" is never confused
+            # with "Rs.0 from 5 of 5 that genuinely have no value at stake."
+            "expected_value_captured": r.expected_value_captured,
+            "value_per_km": r.value_per_km,
+            "expected_value_dc_count": r.expected_value_dc_count,
             # Plan C only (planning/models.py RoutePlan.llm_reasoning) -- the model's own
             # explanation for these stops/order, plus any system notes (a hallucinated
             # DC_ID dropped, a cap-breach trim) appended by build_route_llm_reasoned.
@@ -640,6 +692,12 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
                     "sequence_no": s.sequence_no, "dc_id": s.dc_id, "purposes": s.purposes,
                     "distance_from_prev_km": s.distance_from_prev_km,
                     "travel_time_from_prev_min": s.travel_time_from_prev_min,
+                    # Real DC name/geo (added 2026-09-15) - None/None when this dc_id
+                    # isn't in DC_Master_Normalized.json (shouldn't happen for a stop
+                    # that was actually selected from it, but never assumed).
+                    "dc_name": dc_geo.get(s.dc_id, {}).get("dc_name"),
+                    "latitude": dc_geo.get(s.dc_id, {}).get("latitude"),
+                    "longitude": dc_geo.get(s.dc_id, {}).get("longitude"),
                 }
                 for s in r.stops.order_by("sequence_no")
             ],

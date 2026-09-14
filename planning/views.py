@@ -59,11 +59,12 @@ def _routing_plan_choice_from_get(request) -> "str | None":
     the UI too") -- planning.routing.generate_route_plans_for_se/services.py's
     resolved_routing_plan already handled "C" generically since Plan C's own commit
     (54597b7); this validator was the one remaining hardcoded A/B-only gate. Note this
-    makes a real, possibly slow/rate-limited LLM call per SE (see
-    se_daily_plan_agent.build_route_llm_reasoned's own docstring) -- fine for a single
-    SE/day request, but a STATE/NODE-scope request now fans that out across every SE in
-    scope sequentially, same as Plan A/B always have for their own (cheaper, local)
-    per-SE work."""
+    makes 3 real, possibly slow/rate-limited LLM calls per SE (CHANGED 2026-09-15 from 1
+    -- see se_daily_plan_agent.build_route_llm_reasoned's own docstring for why Plan C
+    now produces 3 routes per SE like Plan A/B) -- fine for a single SE/day request, but
+    a STATE/NODE-scope request now fans that out across every SE in scope sequentially,
+    same as Plan A/B always have for their own (cheaper, local) per-SE work -- 3x the
+    per-SE cost now applies here too."""
     raw = request.GET.get("routing_plan")
     if not raw:
         return None

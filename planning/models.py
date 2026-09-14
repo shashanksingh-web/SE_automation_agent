@@ -482,17 +482,26 @@ class RoutePlan(models.Model):
         # reason why these route suggested"): Anthropic Claude selects/orders the stops
         # from the same already-scored, already-eligible candidate pool Plan A/B use;
         # the system still computes and enforces real distance/time caps (see
-        # se_daily_plan_agent.build_route_llm_reasoned). Deliberately ONE RoutePlan, not
-        # 3 -- see that function's own docstring for why R5.1's "minimum 3" doesn't
-        # apply here.
-        LLM_REASONED = "LLM_REASONED", "AI-Reasoned (Plan C, Anthropic Claude)"
+        # se_daily_plan_agent.build_route_llm_reasoned). CHANGED 2026-09-15, explicit
+        # user request ("in plan c provide all routes") -- now 3 RoutePlans, same
+        # sequential exclude_stop_sets-forced-distinctness pattern as Plan A's 3
+        # models/Plan B's 3 routes above. LLM_REASONED (route 1, default) keeps its
+        # original name/value for backward compatibility with rows generated before
+        # this change, still steered by whatever PLAN_C_DECISION_STYLE the admin has
+        # configured; the other two are always explicitly value_focused/
+        # distance_focused regardless of that admin setting (see
+        # build_route_llm_reasoned's own docstring for why each of the 3 calls gets its
+        # own explicit objective rather than asking the same question 3 times).
+        LLM_REASONED = "LLM_REASONED", "AI-Reasoned (Plan C, Route 1 - admin's configured style)"
+        LLM_REASONED_VALUE_MAX = "LLM_REASONED_VALUE_MAX", "AI-Reasoned (Plan C, Route 2 - Value-Max)"
+        LLM_REASONED_DISTMIN = "LLM_REASONED_DISTMIN", "AI-Reasoned (Plan C, Route 3 - Distance-Min)"
 
     plan_run = models.ForeignKey(PlanRun, related_name="route_plans", on_delete=models.CASCADE)
     se_id = models.CharField(max_length=64)
     se_name = models.CharField(max_length=255, blank=True, null=True)
     plan_date = models.DateField()
 
-    plan_type = models.CharField(max_length=16, choices=PlanType.choices)
+    plan_type = models.CharField(max_length=24, choices=PlanType.choices)
 
     origin_lat = models.FloatField(blank=True, null=True)
     origin_lon = models.FloatField(blank=True, null=True)
@@ -551,6 +560,24 @@ class RoutePlan(models.Model):
     # silently re-decided (see apply_google_route_accuracy's own docstring for why stop
     # selection itself isn't re-run against the real numbers).
     google_exceeds_cap = models.BooleanField(default=False)
+
+    # ROI overlay (added 2026-09-15, explicit user request -- "provide proper how its
+    # effect the roi in no [number]"), every plan family (A/B/C) -- see
+    # se_daily_plan_agent.attach_roi_metrics' own docstring for the exact formula
+    # (Present_Outstanding + Last_Order_Value across this route's stops) and why it is
+    # deliberately NOT the Pitching Agent's AI Sales Forecast (that runs after Routing
+    # in the pipeline, so it structurally can't exist yet at route-generation time).
+    # None (not 0) whenever not even one stop on this route had either figure on file --
+    # never fabricated, same never-treat-missing-as-zero convention as BO_Composite_Score.
+    expected_value_captured = models.FloatField(blank=True, null=True)
+    # expected_value_captured / total_distance_km -- lets routes of different lengths be
+    # compared on real-Rupees-realized-per-km, not just raw total. None whenever
+    # expected_value_captured itself is None, or distance is ~0.
+    value_per_km = models.FloatField(blank=True, null=True)
+    # How many of this route's stops actually had a real Present_Outstanding/
+    # Last_Order_Value figure to contribute -- so "Rs.0 from 0 of 5 stops with data" is
+    # never confused with "Rs.0 from 5 of 5 stops that genuinely have no value at stake."
+    expected_value_dc_count = models.IntegerField(default=0)
 
     # Plan C only (added 2026-09-11) -- the Anthropic model's own natural-language
     # explanation for why it picked these stops in this order, plus any system notes
