@@ -142,8 +142,23 @@ def list_ses(output_dir: Path, state: Optional[str] = None, node: Optional[str] 
     """DC-assigned SEs (DC_Master.Assigned_SE_Email) -- deliberately narrower than
     planning.headcount's "active SE" definition (task/plan activity in the last 90d).
     This answers "which SE values can I pass to GET /se/<email>/", which is scope
-    resolution's own definition of an SE (resolve_scope_dcs), not an activity signal."""
+    resolution's own definition of an SE (resolve_scope_dcs), not an activity signal.
+
+    emp_id_se (added 2026-09-14, explicit user request -- "Username will be Employee ID
+    (dropdown)") -- Geo_Mapping_Normalized.json's own SE employee code, joined in by
+    email since Geo_Mapping is keyed by sales_rep_email, not DC_Master's own
+    Assigned_SE_Email (same real-world identity, different table/casing convention --
+    matched case-insensitively). None (not fabricated) for the ~18% of SEs (confirmed
+    live: 373/453) whose email has no matching Geo_Mapping row this run -- an SE with no
+    real employee ID on file genuinely cannot be assigned one, so this is never guessed
+    from the email local-part or anything else."""
     dc_master = _load(output_dir, "DC_Master_Normalized.json")
+    geo = _load(output_dir, "Geo_Mapping_Normalized.json")
+    emp_id_by_email: Dict[str, str] = {}
+    for r in geo:
+        email, emp_id = _norm(r.get("sales_rep_email")), _norm(r.get("emp_id_se"))
+        if email and emp_id:
+            emp_id_by_email[email.lower()] = emp_id
     by_se: Dict[str, Dict[str, Any]] = {}
     for r in dc_master:
         email = _norm(r.get("Assigned_SE_Email"))
@@ -159,7 +174,13 @@ def list_ses(output_dir: Path, state: Optional[str] = None, node: Optional[str] 
             bucket["nodes"].add(nd)
         bucket["dc_count"] += 1
     return sorted(
-        [{"se_email": e, "states": sorted(b["states"]), "nodes": sorted(b["nodes"]), "dc_count": b["dc_count"]} for e, b in by_se.items()],
+        [
+            {
+                "se_email": e, "emp_id_se": emp_id_by_email.get(e.lower()),
+                "states": sorted(b["states"]), "nodes": sorted(b["nodes"]), "dc_count": b["dc_count"],
+            }
+            for e, b in by_se.items()
+        ],
         key=lambda x: x["se_email"],
     )
 
