@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -829,3 +830,54 @@ class RoutingScopeOverride(models.Model):
 
     def __str__(self):
         return f"RoutingScopeOverride({self.scope_type}:{self.scope_value})"
+
+
+class UserProfile(models.Model):
+    """Real authentication (added 2026-09-14, explicit user request -- "in admin panel
+    provide user creation and password creation active and deactivate the user and
+    change the password with backend capability"). Until this, the app had NO real
+    auth anywhere: login was a client-side-only Role/Name/Email/Employee-code picker
+    (src/features/auth/AuthContext.tsx) that never called the backend at all, and every
+    admin write endpoint was @csrf_exempt with no session/permission check (see e.g.
+    admin_pipeline_config's own prior docstring, "same unauthenticated trust boundary as
+    every other admin write in this file -- this app has no session/login system
+    anywhere"). This introduces the first one.
+
+    Deliberately a OneToOne profile on top of django.contrib.auth.User rather than a
+    custom AUTH_USER_MODEL -- auth.User already gives password hashing (set_password/
+    check_password), is_active (activate/deactivate, and authenticate() already refuses
+    an inactive user for free), and Django's own AUTH_PASSWORD_VALIDATORS (already
+    configured in settings.py, previously unused) for free; swapping AUTH_USER_MODEL
+    after migrations already exist is a well-known Django foot-gun, not worth it here
+    for what's otherwise just 4 extra fields.
+
+    role/email/employee_code exist ONLY to keep the frontend's existing AuthenticatedUser
+    contract (src/features/rbac/types.ts) working unchanged post-login -- role picks the
+    default view (rbac.resolveDefaultView), email is the SE role's own scope_value,
+    employee_code is ABM/RBM/ZBM's own scope_value. name is a separate display field
+    (not User.first_name/last_name, which don't map cleanly to a single "Name" login
+    field the old picker already used) -- deliberately NOT reusing User.email either,
+    since a login *username* and an SE's own *scope-identity* email are conceptually
+    different things that happen to often be the same value, not the same field."""
+
+    class Role(models.TextChoices):
+        SE = "SE", "SE"
+        ABM = "ABM", "ABM"
+        RBM = "RBM", "RBM"
+        ZBM = "ZBM", "ZBM"
+        NATIONAL = "NATIONAL", "National"
+        ADMIN = "ADMIN", "Admin"
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
+    role = models.CharField(max_length=10, choices=Role.choices)
+    name = models.CharField(max_length=255, blank=True, default="")
+    # SE's own scope_value (rbac.ts: resolveDefaultView's "SE" case) -- blank for
+    # roles that don't use it.
+    email = models.CharField(max_length=255, blank=True, default="")
+    # ABM/RBM/ZBM's own scope_value (rbac.ts) -- blank for roles that don't use it.
+    employee_code = models.CharField(max_length=32, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username} ({self.role})"

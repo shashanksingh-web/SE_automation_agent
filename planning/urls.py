@@ -1,10 +1,18 @@
 from django.urls import path
 
-from . import views
+from . import auth_views, views
 
 app_name = "planning"
 
 urlpatterns = [
+    path("auth/login/", auth_views.auth_login, name="auth_login"),
+    path("auth/logout/", auth_views.auth_logout, name="auth_logout"),
+    path("auth/me/", auth_views.auth_me, name="auth_me"),
+    path("auth/change-password/", auth_views.auth_change_password, name="auth_change_password"),
+    path("admin/users/", auth_views.admin_users_list, name="admin_users_list"),
+    path("admin/users/create/", auth_views.admin_users_create, name="admin_users_create"),
+    path("admin/users/<int:user_id>/set-active/", auth_views.admin_users_set_active, name="admin_users_set_active"),
+    path("admin/users/<int:user_id>/reset-password/", auth_views.admin_users_reset_password, name="admin_users_reset_password"),
     path("se/<str:scope_value>/", views.se_plan, name="se_plan"),
     path("abm/<str:scope_value>/", views.abm_plan, name="abm_plan"),
     path("rbm/<str:scope_value>/", views.rbm_plan, name="rbm_plan"),
