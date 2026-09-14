@@ -371,6 +371,34 @@ def _serialize_recommended_products(products: list) -> list:
     ]
 
 
+def _serialize_ai_sales_forecast(forecast: dict):
+    """PitchScript.ai_sales_forecast (planning.ai_sales_forecast.build_ai_pitch, added
+    2026-09-12) -- everything the AI-Generated Pitch returned EXCEPT script_hindi itself
+    (that's already folded into Script_Hindi above, whether or not the AI version won
+    over the templated fallback -- see Data_Sources_Used's own "AI-Generated Script"
+    entry for which one actually did). None when {} (the AI pitch wasn't used this run
+    at all -- no provider configured, nothing real to build from, every provider
+    failed, or the response had no usable script), not an empty object, so the frontend
+    can tell "not applicable" apart from "AI ran but had nothing to add," same
+    convention as RoutePlan.llm_reasoning."""
+    if not forecast:
+        return None
+    return {
+        "Window_Days": forecast.get("window_days"),
+        "Products": [{"Name": p.get("name"), "Reason": p.get("reason")} for p in forecast.get("products") or []],
+        "Reasoning": forecast.get("reasoning") or None,
+        "Club_Context": forecast.get("club_context"),
+        "Scheme_Context": [
+            {
+                "Name": s.get("name"), "Category": s.get("category"), "Brand": s.get("brand"),
+                "Valid_Until": s.get("valid_until"),
+            }
+            for s in forecast.get("scheme_context") or []
+        ],
+        "Notes": forecast.get("notes") or [],
+    }
+
+
 @require_GET
 def pitch_script(request, daily_task_id: int):
     """GET /api/planning/pitch/<daily_task_id>/ -- the Pitching Agent's output for one
@@ -397,6 +425,7 @@ def pitch_script(request, daily_task_id: int):
         "Recommended_Products": _serialize_recommended_products(pitch.recommended_products),
         "Data_Sources_Used": pitch.data_sources_used,
         "Data_Sources_Skipped": pitch.data_sources_skipped,
+        "AI_Sales_Forecast": _serialize_ai_sales_forecast(pitch.ai_sales_forecast),
         "Generated_At": pitch.generated_at,
     }, safe=False, json_dumps_params={"default": str})
 

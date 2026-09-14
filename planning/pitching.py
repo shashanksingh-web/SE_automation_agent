@@ -42,6 +42,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from .ai_sales_forecast import build_ai_pitch
 from .models import DailyTask, PitchScript, PlanRun
 from .pitch_config_loader import get_pitch_config
 
@@ -532,18 +533,39 @@ def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str,
             ctx["present_overdue"] = task.present_overdue
             ctx["overdue_aging_bucket"] = task.overdue_aging_bucket
             ctx["ytd_private_label"] = task.ytd_private_label
+            # Templated script computed UNCONDITIONALLY first (cheap, deterministic,
+            # already-tested) -- this is the safety-net fallback the AI-generated script
+            # below falls back to whenever it returns nothing, never the other way
+            # around. used/skipped (the S1-S8 audit trail) always reflect this templated
+            # pass regardless of which script actually gets saved.
             script, used, skipped = _compose(task, ctx)
             _, matched_key, _ = _match_script(task.purpose_of_visit or "")
             # Same list already folded into script's own S1 sentence via
             # _format_product_list - captured structured here too. Empty list means
             # neither this DC's own category-scoped peers nor the geographic fallback
             # had anything to recommend this run.
+            #
+            # AI-Generated Pitch (added 2026-09-12, explicit user request -- "script and
+            # scheme and benifit of sales and outstanding clearance from ai") -- isolated
+            # in its own try/except so a provider outage or malformed response degrades
+            # cleanly to the templated script above, never breaks the pitch entirely.
+            # Only OVERRIDES script_hindi when it actually produced a non-empty one --
+            # see build_ai_pitch's own docstring for the full caller contract.
+            try:
+                ai_pitch = build_ai_pitch(task.dc_id, matched_key or task.purpose_of_visit or "", ctx)
+            except Exception as e:
+                logger.warning("AI-Generated Pitch failed for DC %s (task %s): %s: %s", task.dc_id, task.id, type(e).__name__, e)
+                ai_pitch = {}
+            final_script = ai_pitch.get("script_hindi") or script
+            final_used = used + ["AI-Generated Script"] if ai_pitch.get("script_hindi") else used
+            ai_sales_forecast = {k: v for k, v in ai_pitch.items() if k != "script_hindi"}
             PitchScript.objects.update_or_create(
                 daily_task=task,
                 defaults={
-                    "purpose_key": matched_key or task.purpose_of_visit, "script_hindi": script,
-                    "data_sources_used": used, "data_sources_skipped": skipped,
+                    "purpose_key": matched_key or task.purpose_of_visit, "script_hindi": final_script,
+                    "data_sources_used": final_used, "data_sources_skipped": skipped,
                     "recommended_products": ctx.get("recommended_products") or [],
+                    "ai_sales_forecast": ai_sales_forecast,
                 },
             )
             created += 1

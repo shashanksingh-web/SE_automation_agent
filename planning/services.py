@@ -105,6 +105,21 @@ def _sql_geo_mapping_full() -> str:
 
 
 def _sql_last_visit(dc_ids: List[str], se_user_ids: List[int], lookback_days: int) -> str:
+    # NOTE 2026-09-13: a fix was attempted here to also count self-logged Liquidation
+    # visits (visit_type_id=3 "External Meeting" + visit_purpose_name mentioning
+    # "liquidation") toward Days_Since_Last_Visit/Last_Visit_Date -- explicit user
+    # request "add the visit purpose if se add the liqudation by himself so it reflect
+    # in the plan". REVERTED after live verification: every one of the confirmed 879
+    # "done" Liquidation tasks has partner_id/block_id/district_id ALL NULL and
+    # type='unplanned' -- there is no field anywhere in task_management_task (or
+    # task_management_visitpurposedetails, checked directly for these exact task IDs)
+    # that attributes these tasks to a specific DC. A join on cc.id = t.partner_id
+    # (the only DC-linking key this query has) eliminates every single one of them
+    # before the WHERE clause is even reached, making that fix a silent no-op -- kept
+    # reverted rather than leaving code in that implies a capability that doesn't
+    # exist. Confirmed genuine data gap, not a query bug: these tasks would need a real
+    # DC attribution added at the source (the app SEs log them in) before this query
+    # could ever recognize them.
     return f"""
     SELECT cc.partner_id AS sap_partner_id, p.user_id AS se_user_id, p.plan_execution_date, t.status AS task_status
     FROM task_management_task t
@@ -239,6 +254,35 @@ def _sql_club_mapping(dc_ids: List[str]) -> str:
     SELECT partner_id AS dc_id, partner_name, node, state
     FROM dc_mapping_club_scheme
     WHERE partner_id::text IN ({_sql_list(dc_ids)})
+    """
+
+
+def _sql_active_schemes_for_nodes(nodes: List[str], plan_date: str) -> str:
+    """Active Sales/ABS Schemes -- added 2026-09-12, explicit user request ("dc club and
+    scheme are different in the system" -- a genuinely separate live system from the DC
+    Club/Scheme-Tier loyalty program above, confirmed live before building this:
+    scheme_details.created_at reaches 2026-09-11 (i.e. current), and every one of its
+    currently-active scheme_code values (e.g. "DS Supreme Red Onion ABS MP Rabi26",
+    valid 2026-09-11 to 2026-09-30) is also present in abs_scheme -- the two tables are
+    in sync, not stale. abs_scheme itself carries no reliable validity_start_time/
+    validity_end_time (confirmed live: NULL on every row) or Node-only scope; the actual
+    current/expiry window comes from scheme_details via a scheme_code join instead.
+    Node join key confirmed live: 100% of DC_Master's 93 distinct Node values match
+    abs_scheme.node exactly, no fallback/fuzzy-match needed. Both tables live on "dev"
+    (agent.REDSHIFT_DB_ID), same database dc_mapping_club_scheme/coupon_analysis
+    already use above.
+
+    DISTINCT since abs_scheme carries one row per (node, material) slab tier -- callers
+    want one entry per scheme+product, not one per pricing bracket."""
+    return f"""
+    SELECT DISTINCT a.node, a.material_name, a.brand_name, a.business_category,
+           a.product_sub_category, s.name AS scheme_name, s.description, s.scheme_end_date
+    FROM abs_scheme a
+    JOIN scheme_details s ON s.scheme_code = a.scheme_code
+    WHERE a.node IN ({_sql_list(nodes)})
+      AND a.active = 'true'
+      AND s.is_active = 'true'
+      AND s.scheme_end_date >= '{plan_date}'
     """
 
 
@@ -1390,6 +1434,23 @@ def generate_plan_for_scope(
     # live admin overrides applied on top. See planning.admin_config's own docstring for
     # exactly which fields are overridable and why.
     constants = load_business_constants()
+
+    # Weekly off-day gate (added 2026-09-13, explicit user request -- "no planing
+    # creating on sunday and its setting provide in admin panel"). Checked immediately
+    # after load_business_constants() (so a live admin override to this field always
+    # takes effect) and before any live data pull, DC resolution, or client connection --
+    # an off day means there's nothing to plan for anyone in this scope, not a per-SE
+    # condition worth spending a live Metabase/Redshift round trip to discover. This is
+    # entirely independent of R0.4 Origin_Point resolution below -- missing a punch-in
+    # on a normal working day never blocks that day's plan when 30-day history exists
+    # (prev_30d_punch_in wins regardless of today_punch_in); this gate only fires for a
+    # day the admin has explicitly marked as a network-wide off day.
+    if agent.PLAN_GENERATION_WEEKLY_OFF_DAY != "None" and datetime.fromisoformat(plan_date).strftime("%A") == agent.PLAN_GENERATION_WEEKLY_OFF_DAY:
+        raise PlanningError(
+            f"{plan_date} is {agent.PLAN_GENERATION_WEEKLY_OFF_DAY}, the configured weekly off day "
+            f"(Admin Control Panel: Scheduling) -- no plan generated for {scope_type}='{scope_value}'."
+        )
+
     client = agent.get_client()
     resolved_routing_plan = routing_plan_choice or (routing_plan_asker() if routing_plan_asker else None) or "A"
 
@@ -1447,12 +1508,31 @@ def generate_plan_for_scope(
         uids = [se_user_ids[e] for e in se_emails]
         fatigue_start = (datetime.fromisoformat(plan_date) - timedelta(days=constants.contact_fatigue_window_days)).date().isoformat()
 
+        # Contact Attempt mode (added 2026-09-13) -- see CONTACT_ATTEMPT_MODE's own
+        # comment in se_daily_plan_agent.py. contact_only/visit_plus_contact both need
+        # real call-attempt data, which doesn't exist anywhere in this pipeline yet
+        # (confirmed live) -- flagged once per run rather than silently treating a visit
+        # as a call, or crashing. visit_only (default) is unaffected -- exactly today's
+        # existing behavior.
+        count_visits_as_attempts = agent.CONTACT_ATTEMPT_MODE in ("visit_only", "visit_plus_contact")
+        if agent.CONTACT_ATTEMPT_MODE in ("contact_only", "visit_plus_contact"):
+            run_exceptions.append({
+                "source": "contact_attempt_mode", "reason_code": "Contact_Data_Not_Configured",
+                "detail": (
+                    f"Admin Control Panel Contact attempt mode is '{agent.CONTACT_ATTEMPT_MODE}', which needs real "
+                    "call-attempt data -- no call/IVR/telecall table exists anywhere in this pipeline's reachable "
+                    "databases (confirmed live). Call attempts contribute 0 this run"
+                    + (", falling back to visit-only counting" if count_visits_as_attempts else " -- Contact Fatigue will never trigger (0 attempts for every DC)")
+                    + "; never silently substituted."
+                ),
+            })
+
         try:
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_last_visit(dc_ids, uids, agent.LOOKBACK_DAYS)):
                 dc_id, uid, date, status = row["sap_partner_id"], row["se_user_id"], agent.standardize_date(row["plan_execution_date"]), row["task_status"]
                 if dc_id not in last_visit_by_dc or date > last_visit_by_dc[dc_id]:
                     last_visit_by_dc[dc_id] = date
-                if fatigue_start <= date < plan_date:
+                if count_visits_as_attempts and fatigue_start <= date < plan_date:
                     recent_attempts_by_se_dc.setdefault(uid, {})
                     recent_attempts_by_se_dc[uid][dc_id] = recent_attempts_by_se_dc[uid].get(dc_id, 0) + 1
                 visits_last30_by_se.setdefault(uid, set()).add(dc_id)
@@ -2129,6 +2209,26 @@ def generate_plan_for_scope(
             run_exceptions.append({"source": "dc_mapping_club_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
         run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in club_exc.rows)
 
+        # Active Sales/ABS Schemes (added 2026-09-12) -- see _sql_active_schemes_for_nodes'
+        # own docstring for why this is a genuinely separate system from the DC Club
+        # pull just above, confirmed live before building. Batched by distinct Node
+        # (abs_scheme/scheme_details are Node-scoped, not DC-scoped) rather than per-DC,
+        # same one-query-for-the-whole-run economy as every other Source pull here.
+        active_schemes_by_node: Dict[str, List[Dict[str, Any]]] = {}
+        node_by_dc: Dict[str, Optional[str]] = {d["DC_ID"]: d.get("Node") for d in scoped_dcs}
+        try:
+            dc_nodes = sorted({d["Node"] for d in scoped_dcs if d.get("Node")})
+            if dc_nodes:
+                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_active_schemes_for_nodes(dc_nodes, plan_date)):
+                    active_schemes_by_node.setdefault(row["node"], []).append({
+                        "name": row.get("scheme_name"), "description": row.get("description"),
+                        "category": row.get("business_category"), "sub_category": row.get("product_sub_category"),
+                        "brand": row.get("brand_name"), "material_name": row.get("material_name"),
+                        "valid_until": str(row["scheme_end_date"]) if row.get("scheme_end_date") else None,
+                    })
+        except Exception as e:
+            run_exceptions.append({"source": "abs_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+
         try:
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_punch_in(uids, plan_date)):
                 uid = row["se_user_id"]
@@ -2697,6 +2797,12 @@ def generate_plan_for_scope(
                     entry["business_area_strength"] = business_area_current_by_dc.get(dc_id)
                     entry["business_area_strength_prior_year"] = business_area_prior_by_dc.get(dc_id)
                     entry["club"] = dc_club_by_id.get(dc_id)
+                    # Active Sales/ABS Schemes (added 2026-09-12) -- distinct from
+                    # entry["club"] just above (see _sql_active_schemes_for_nodes' own
+                    # docstring). Node-scoped, not DC-scoped -- every DC in the same Node
+                    # shares the same list, deliberately (that's the real scope these
+                    # schemes are defined at).
+                    entry["active_schemes"] = active_schemes_by_node.get(node_by_dc.get(dc_id), [])
                     # YoY PL comparison (confirmed 2026-08-18) -- PL-specific, distinct
                     # from purchase_last_fy/purchase_ytd above (those are overall
                     # purchase, not PL-tagged). ytd_pl itself is already in DailyTaskRow

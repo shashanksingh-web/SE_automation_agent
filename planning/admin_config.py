@@ -189,6 +189,23 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "label": "Fatigue priority discount", "unit": "fraction", "min": 0, "max": 1,
         "description": "Priority_Score is multiplied by (1 - this) once a DC's contact attempts hit the fatigue trigger.",
     },
+    # Added 2026-09-13, explicit user request -- "contact attempt means user visit plus
+    # call, its condition based 1) visit and contact count not consider 2) contact count
+    # consider 3) Visit + Contact (combine), this setting in control panel". Only
+    # "visit_only" is actually wired to real data -- confirmed live (searched
+    # input_backend_db and dev/Redshift) that NO call/IVR/telecall table exists
+    # anywhere in this pipeline's reachable databases. Choosing contact_only/
+    # visit_plus_contact is allowed (never blocks plan generation) but logs a clear
+    # Contact_Data_Not_Configured exception every run rather than silently treating a
+    # visit as a call or fabricating a call count -- see planning.services' own comment
+    # at the recent_attempts_by_se_dc loop.
+    {
+        "group": "Priority Score", "key": "contact_attempt_mode", "type": "choice",
+        "label": "Contact attempt counts", "unit": "",
+        "choices": ["visit_only", "contact_only", "visit_plus_contact"],
+        "description": "What counts as a \"contact attempt\" for Contact Fatigue: visit_only (default, DC Visit tasks only -- the only mode with real data behind it today); contact_only (calls only -- NO call data source exists in this pipeline yet, so this always counts 0 attempts and Contact Fatigue never triggers); visit_plus_contact (both -- visits still count, calls contribute 0 until a real call data source exists). Both non-default modes log a Contact_Data_Not_Configured exception every run.",
+        "target": "module", "module_attr": "CONTACT_ATTEMPT_MODE", "default": "visit_only",
+    },
     {
         "group": "Priority Score", "key": "overdue_90_plus_priority_boost", "type": "float",
         "label": "90+ day overdue queue-jump", "unit": "additive boost", "min": 0, "max": 100,
@@ -335,6 +352,27 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "label": "Cluster definition -- target DCs per cluster", "unit": "DCs", "min": 1, "max": 10,
         "description": "Only used when Decision style = cluster_based. A cluster stops absorbing new DCs once it reaches this many members (subject to the spread cap above) -- default matches the Max stops per route ceiling, since Plan C never proposes more stops than that anyway.",
         "target": "module", "module_attr": "PLAN_C_CLUSTER_TARGET_SIZE", "default": 5,
+    },
+    # --- Pitching -- AI Sales Forecast ---
+    # Added 2026-09-12, explicit user request. No separate enable/disable field --
+    # same configured-by-presence convention as Plan C (runs automatically whenever at
+    # least one LLM provider key is set, LLM_ROUTING_ENABLED), not a second feature flag.
+    {
+        "group": "Pitching (AI Sales Forecast)", "key": "pitch_ai_forecast_window_days", "type": "int",
+        "label": "Forecast window", "unit": "days", "min": 15, "max": 20,
+        "description": "How many days ahead the AI Sales Forecast (planning.ai_sales_forecast) frames its product recommendation for -- e.g. \"important to pitch over the next N days.\" Runs automatically whenever an LLM provider is configured, same as Plan C; only ever recommends from real, already-computed nearby-DC purchase data (see PitchScript.ai_sales_forecast's own docstring for why nearby-farmer data is excluded).",
+        "target": "module", "module_attr": "PITCH_AI_FORECAST_WINDOW_DAYS", "default": 18,
+    },
+    # --- Scheduling ---
+    # Added 2026-09-13, explicit user request -- "no planing creating on sunday and its
+    # setting provide in admin panel". Checked once at the very top of generate_plan_for_
+    # scope, before any live pull -- see that gate's own comment in se_daily_plan_agent.py.
+    {
+        "group": "Scheduling", "key": "plan_generation_weekly_off_day", "type": "choice",
+        "label": "Weekly off day (no plan generated)", "unit": "",
+        "choices": ["None", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+        "description": "When plan_date falls on this day of the week, generate_plan_for_scope raises immediately (no PlanRun/DailyTask/RoutePlan/PitchScript rows created for anyone in scope) instead of pulling live data and planning -- \"None\" disables this check entirely. Default is Sunday because that's the specific day requested, not a confirmed network-wide SE weekly-off policy.",
+        "target": "module", "module_attr": "PLAN_GENERATION_WEEKLY_OFF_DAY", "default": "Sunday",
     },
 ]
 

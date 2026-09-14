@@ -199,6 +199,39 @@ LLM_ROUTING_TIMEOUT_SECONDS = float(os.environ.get("LLM_ROUTING_TIMEOUT_SECONDS"
 # shouldn't re-bill the API or risk sampling a different LLM response.
 LLM_ROUTE_CACHE_PATH = Path(os.environ.get("SE_AGENT_LLM_ROUTE_CACHE", BASE_DIR / "output" / "llm_route_cache.json"))
 
+# Pitching Agent's AI Sales Forecast (added 2026-09-12, explicit user request -- see
+# planning.ai_sales_forecast's own module docstring for the full design). Lives here,
+# not in planning/ai_sales_forecast.py itself, ONLY because every "module"-target Admin
+# Control Panel field is patched onto THIS module by planning.admin_config.
+# load_business_constants() (setattr(agent, ...) where agent == this module) -- the
+# established mechanism for any live-editable module constant in this codebase, not a
+# routing/normalization-specific one. planning.ai_sales_forecast reads this as
+# `se_daily_plan_agent.PITCH_AI_FORECAST_WINDOW_DAYS` at call time, same live-read
+# pattern as PLAN_C_DECISION_STYLE.
+PITCH_AI_FORECAST_WINDOW_DAYS = 18  # admin-editable, 15-20 per direct instruction ("provide what important product for 15 to 20 days for sale")
+
+# Weekly off-day gate (added 2026-09-13, explicit user request -- "no planing creating on
+# sunday and its setting provide in admin panel"). Checked once, at the very top of
+# planning.services.generate_plan_for_scope, before any live data pull or DC resolution
+# -- an off day means there's nothing to plan for anyone in scope, not a per-SE
+# condition, so this is cheaper and clearer to gate globally than to thread through
+# every SE's own candidate/origin resolution. "None" (any other string) disables this
+# entirely -- Sunday is the default because that's the specific day named, not because
+# every SE's actual weekly off is confirmed to be Sunday network-wide.
+PLAN_GENERATION_WEEKLY_OFF_DAY = "Sunday"  # one of Monday..Sunday, or "None" to disable
+
+# Contact Attempt mode (added 2026-09-13, explicit user request -- "contact attempt
+# means user visit plus call, its condition based 1) visit and contact count not
+# consider 2) contact count consider 3) Visit + Contact (combine), this setting in
+# control panel"). Read directly by planning.services' recent_attempts_by_se_dc loop
+# (Contact Fatigue's own attempt-counting, see BusinessConstants.contact_fatigue_*
+# above -- note that field's own original spec comment already named "failed call" as
+# part of contact-fatigue's intent, confirming this was always meant to include calls,
+# just never wired up). "visit_only" is the only mode with real data behind it --
+# confirmed live that no call/IVR/telecall table exists anywhere in this pipeline's
+# reachable databases (searched input_backend_db and dev/Redshift, zero hits).
+CONTACT_ATTEMPT_MODE = "visit_only"  # one of visit_only/contact_only/visit_plus_contact
+
 DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAnk.csv"))
 # Added 2026-09-04, explicit user request -- an independent allowlist on top of
 # DC_RAnk.csv's own Rank<=6000 eligibility (see BusinessConstants.max_eligible_rank),
@@ -3809,16 +3842,22 @@ def prime_google_distance_matrix(points: List[Tuple[Optional[float], Optional[fl
     below) for any
     cache misses) and sets the module-level active matrix every real-DC-pair distance
     lookup below (_route_metrics, _greedy_nearest_neighbor, _clarke_wright_order,
-    _cluster_candidates_by_density's max_pairwise_km) checks first, falling back to
+    _cluster_candidates_by_density's max_pairwise_km AND, CHANGED 2026-09-13, its seed
+    selection/growth via mean_real_distance_to_cluster) checks first, falling back to
     Haversine x 1.4 per-pair on any miss (missing coords, a failed chunk, or the feature
     disabled entirely).
 
-    Deliberately does NOT reach Plan B clustering's centroid-based comparisons (seed
-    selection, nearest-to-current-centroid growth) -- a centroid is a computed average
-    point, not a real prefetchable location, so querying it live per-comparison would
-    defeat the entire point of batching this once up front. Those stay Haversine-based;
-    every comparison between two REAL DCs (which is what actually decides route
-    membership/order once a cluster or K-set is chosen) uses the real matrix.
+    Plan B clustering's seed selection and nearest-neighbor growth (added 2026-09-13,
+    explicit user request -- "use google api for accurate distance and time
+    identification of cluster") now also read this primed matrix, via
+    mean_real_distance_to_cluster: instead of a Haversine estimate to a cluster's
+    CENTROID (a computed average point that was never a real, prefetchable location),
+    each comparison is the mean of real primed distances from the candidate to every
+    real DC already in that cluster -- zero new API calls, since every one of those
+    pairs was already fetched in this same upfront batch. Only the centroid itself
+    (never a real location, and never queryable no matter how this is computed) stays
+    permanently out of reach of the live API -- everything else Plan B's clustering
+    compares is now real-distance-backed wherever the matrix has data.
 
     No-op (leaves the active matrix at None, i.e. every lookup below transparently falls
     back to Haversine) when GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED is False or fewer than 2
@@ -4760,42 +4799,44 @@ def _cluster_candidates_by_density(
     remaining = list(with_coords)
     clusters: List[List[Dict[str, Any]]] = []
 
-    def centroid(cluster: List[Dict[str, Any]]) -> Tuple[float, float]:
-        lats = [_candidate_coords(c)[0] for c in cluster]
-        lons = [_candidate_coords(c)[1] for c in cluster]
-        return sum(lats) / len(lats), sum(lons) / len(lons)
-
     def max_pairwise_km(cluster: List[Dict[str, Any]]) -> float:
         # Real DC-to-DC pair (both cluster members) -- delegates to the module-level
         # _max_pairwise_real_km (uses _matrix_distance_km, real Google distance when
-        # primed). Unlike the centroid-distance calls below (seed selection,
-        # nearest-to-centroid growth), this is a comparison between two REAL,
-        # prefetchable points.
+        # primed).
         return _max_pairwise_real_km(cluster)
 
-    # Seed-selection and nearest-to-centroid growth below stay on circuity_distance_km
-    # (Haversine x 1.4) deliberately, NOT _matrix_distance_km -- a centroid is a computed
-    # average point, not a real DC location, so it can't be prefetched into
-    # prime_google_distance_matrix's matrix ahead of time; querying it live per-comparison
-    # here would mean one API call per candidate per growth step, defeating the entire
-    # point of priming the matrix once up front. max_pairwise_km above (a real DC-to-DC
-    # comparison) is the part of this function that gets the real-distance upgrade.
+    def mean_real_distance_to_cluster(candidate: Dict[str, Any], cluster: List[Dict[str, Any]]) -> float:
+        # CHANGED 2026-09-13, explicit user request ("use google api for accurate
+        # distance and time identification of cluster") -- seed selection and growth
+        # used to compare each candidate against a cluster's CENTROID (a computed
+        # average point, not a real DC, so it could never be prefetched into
+        # prime_google_distance_matrix -- querying it live per-comparison would mean one
+        # API call per candidate per growth step, defeating the entire point of priming
+        # the matrix once up front). This replaces that centroid comparison with the
+        # mean of _matrix_distance_km (real, primed Google distance, same automatic
+        # fallback to Haversine x 1.4 per pair on any individual miss) from `candidate`
+        # to every DC ALREADY IN the cluster -- every one of those pairs was already
+        # fetched in this SE's one upfront batch call, so this costs ZERO new API calls
+        # while being real-distance-accurate wherever the matrix has data, unlike a
+        # straight-line guess to a point that was never a real location to begin with.
+        lat, lon = _candidate_coords(candidate)
+        dists = [_matrix_distance_km(lat, lon, *_candidate_coords(m)) or 0.0 for m in cluster]
+        return sum(dists) / len(dists)
+
     while remaining:
         if not clusters:
             seed = remaining.pop(0)
         else:
-            existing_centroids = [centroid(cl) for cl in clusters]
             seed = max(
                 remaining,
-                key=lambda c: min(circuity_distance_km(*_candidate_coords(c), *ec) or 0.0 for ec in existing_centroids),
+                key=lambda c: min(mean_real_distance_to_cluster(c, cl) for cl in clusters),
             )
             remaining.remove(seed)
         cluster = [seed]
 
         while remaining and len(cluster) < target_size:
-            c_lat, c_lon = centroid(cluster)
-            nearest = min(remaining, key=lambda c: circuity_distance_km(c_lat, c_lon, *_candidate_coords(c)) or 1e9)
-            dist_to_nearest = circuity_distance_km(c_lat, c_lon, *_candidate_coords(nearest)) or 0.0
+            nearest = min(remaining, key=lambda c: mean_real_distance_to_cluster(c, cluster))
+            dist_to_nearest = mean_real_distance_to_cluster(nearest, cluster)
             # Density-boundary stop: target_size alone would happily bridge a genuine
             # gap between two natural pockets just to hit the target count (confirmed
             # bug -- a 4+4 two-pocket synthetic test produced one 6-member cluster

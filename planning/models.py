@@ -305,6 +305,14 @@ class PitchScript(models.Model):
 
     daily_task = models.OneToOneField(DailyTask, related_name="pitch", on_delete=models.CASCADE)
     purpose_key = models.CharField(max_length=255)
+    # AI-Generated Pitch (added 2026-09-12, explicit user request -- "script and scheme
+    # and benifit of sales and outstanding clearance from ai by using data feed from
+    # ssytem"): planning.ai_sales_forecast.build_ai_pitch is tried FIRST and its
+    # script_hindi wins whenever it produces one -- the template below (_compose) is a
+    # safety-net fallback, not the other way around, used whenever the AI call fails,
+    # isn't configured, or has nothing real to build a pitch from. data_sources_used
+    # gets an extra "AI-Generated Script" entry whenever the AI version won, so a reader
+    # can always tell which one actually produced this text.
     script_hindi = models.TextField()
     # e.g. ["S5 Outstanding", "S8 YTD PL Sale"] / ["S4 Current Inventory (no DC-level source)"]
     data_sources_used = models.JSONField(default=list, blank=True)
@@ -324,6 +332,42 @@ class PitchScript(models.Model):
     # had zero purchase data in its category, or it has no dominant_category at all).
     # Never padded to a fixed count -- a DC with only 2 real candidates just gets 2.
     recommended_products = models.JSONField(default=list, blank=True)
+
+    # AI-Generated Pitch's non-script output (added 2026-09-12) -- the script_hindi part
+    # of the same AI call lives in script_hindi above (when it won over the template);
+    # everything else the call produced is kept here so it's never silently lost. Same
+    # LLM-provider fallback chain and configured-by-presence convention as Plan C's
+    # build_route_llm_reasoned (se_daily_plan_agent.py) -- no separate enable flag, runs
+    # automatically whenever at least one LLM provider key is configured
+    # (LLM_ROUTING_ENABLED). Built ONLY from real, already-computed data -- see
+    # planning.ai_sales_forecast's own module docstring for the full input list and for
+    # what was deliberately excluded (nearby-farmer purchase data, and Product Cohort as
+    # a product source -- both investigated live and confirmed genuine dead ends, not
+    # silently worked around).
+    #
+    # Shape: {} (not yet generated / no LLM provider configured / nothing real to build
+    # a pitch from) or {"window_days": int, "products": [{"name": str, "reason": str}],
+    # "reasoning": str, "club_context": str|None, "scheme_context": [{"name",
+    # "category", "brand", "valid_until"}, ...], "notes": [str]}. Every product name is
+    # verified against the real candidate pool (recommended_products above) before being
+    # kept -- a hallucinated product name is dropped and noted, never trusted at face
+    # value, same posture as Plan C's DC_ID validation. The free-text script_hindi
+    # itself is instructed never to state an unstated fact, but -- unlike product names
+    # -- that instruction cannot be mechanically verified word-for-word; a real, accepted
+    # limitation, not silently assumed airtight.
+    #
+    # club_context is this DC's DC Club (loyalty-tier) standing -- the exact same
+    # ctx["club"] data the template pitch's own "Club" talking point already renders.
+    # scheme_context is this DC's currently-active Sales/ABS Schemes -- a genuinely
+    # SEPARATE system (planning.services._sql_active_schemes_for_nodes, a live join of
+    # scheme_details + abs_scheme scoped to this DC's own Node; confirmed live before
+    # building -- scheme_details.created_at reaches 2026-09-11). Explicit user
+    # correction 2026-09-12: "dc club and scheme are different in the system" -- an
+    # earlier version of this field conflated the two under one scheme_context key that
+    # was actually only ever Club data; both are now separate, real inputs. Given to the
+    # AI as context (never as candidate products in their own right) and echoed back
+    # here so a reader can see them without re-deriving anything.
+    ai_sales_forecast = models.JSONField(default=dict, blank=True)
 
     def __str__(self):
         return f"Pitch for {self.daily_task_id} ({self.purpose_key})"
