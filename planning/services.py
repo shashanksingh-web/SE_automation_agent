@@ -861,6 +861,41 @@ def _sql_last_discount(dc_ids: List[str], plan_date: str) -> str:
     """
 
 
+_PRODUCT_TAXONOMY_CACHE_PATH = agent.BASE_DIR / "output" / "product_taxonomy_cache.json"
+_product_taxonomy: Optional[Dict[str, Dict[str, str]]] = None
+
+
+def _load_product_taxonomy() -> Dict[str, Dict[str, str]]:
+    """MCP-sourced snapshot (2026-09-14) of products_category/products_subcategory/
+    products_brand -- worked around here because redshift_metabase_readonly lost SELECT
+    on those 3 tables (still blocked as of this writing; see the DC Card "dc ko pehchaane"
+    generation-failure investigation, which traced the crash to these 3 tables on top of
+    the 5 already fixed). All 3 are small, slow-changing reference tables (5/27/1208 rows
+    as of the snapshot) -- a static id->name lookup is a reasonable interim stand-in
+    until the GRANT lands, not a permanent replacement. The 3 SQL builders below now
+    select the raw *_id columns off products_template instead of LEFT JOINing the
+    blocked tables; callers resolve id->name from this cache in Python."""
+    global _product_taxonomy
+    if _product_taxonomy is None:
+        try:
+            _product_taxonomy = json.loads(_PRODUCT_TAXONOMY_CACHE_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            _product_taxonomy = {"category": {}, "subcategory": {}, "brand": {}}
+    return _product_taxonomy
+
+
+def _category_name(category_id: Optional[str]) -> Optional[str]:
+    return _load_product_taxonomy()["category"].get(str(category_id)) if category_id is not None else None
+
+
+def _subcategory_name(sub_category_id: Optional[str]) -> Optional[str]:
+    return _load_product_taxonomy()["subcategory"].get(str(sub_category_id)) if sub_category_id is not None else None
+
+
+def _brand_name(brand_id: Optional[str]) -> Optional[str]:
+    return _load_product_taxonomy()["brand"].get(str(brand_id)) if brand_id is not None else None
+
+
 def _sql_block_category_purchase(dc_ids: List[str], plan_date: str) -> str:
     # Pitching Agent (S1, Same-Block Purchase), wired 2026-08-08 -- trailing-30d purchase
     # summed by (dc_id, category), for the caller to aggregate into a block-level peer
@@ -870,18 +905,20 @@ def _sql_block_category_purchase(dc_ids: List[str], plan_date: str) -> str:
     # phrasing ("PL फर्टिलाइज़र ₹15,000") reasonably well without full per-product detail.
     d = datetime.fromisoformat(plan_date).date()
     month_start = (d - timedelta(days=30)).isoformat()
+    # products_category is currently blocked for this DB role (see _load_product_taxonomy
+    # docstring) -- selects the raw category_id here instead of joining; the caller
+    # resolves category_id -> category_name from the local MCP-sourced cache.
     return f"""
-    SELECT cc.partner_id AS dc_id, cat.name AS category_name,
+    SELECT cc.partner_id AS dc_id, tmpl.category_id::text AS category_id,
            SUM(sol.price_unit * sol.quantity) AS purchase_30d
     FROM sale_orderrequest o
     JOIN customer_management_customer cc ON cc.id = o.partner_id
     JOIN sale_orderrequestline sol ON sol.order_request_id = o.id
     JOIN products_product prod ON prod.id = sol.product_id
     JOIN products_template tmpl ON tmpl.id = prod.template_id
-    LEFT JOIN products_category cat ON cat.id = tmpl.category_id
     WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND o.status = 'processed'
       AND o.created_at >= '{month_start}'
-    GROUP BY cc.partner_id, cat.name
+    GROUP BY cc.partner_id, tmpl.category_id
     """
 
 
@@ -908,9 +945,13 @@ def _sql_block_product_purchase(dc_ids: List[str], plan_date: str) -> str:
     # "Business_Category") appear to refer to the same confirmed field, not two.
     d = datetime.fromisoformat(plan_date).date()
     month_start = (d - timedelta(days=30)).isoformat()
+    # products_category/products_subcategory/products_brand are currently blocked for
+    # this DB role (see _load_product_taxonomy docstring) -- selects the raw *_id columns
+    # here instead of joining; the caller resolves id -> name from the local cache.
     return f"""
-    SELECT cc.partner_id AS dc_id, cat.name AS category_name, sub.name AS sub_category_name,
-           tmpl.name AS product_name, brand.name AS product_brand,
+    SELECT cc.partner_id AS dc_id, tmpl.category_id::text AS category_id,
+           tmpl.sub_category_id::text AS sub_category_id,
+           tmpl.name AS product_name, tmpl.brand_id::text AS brand_id,
            tmpl.business_segment_name AS business_segment_name,
            SUM(sol.price_unit * sol.quantity) AS purchase_30d
     FROM sale_orderrequest o
@@ -918,12 +959,9 @@ def _sql_block_product_purchase(dc_ids: List[str], plan_date: str) -> str:
     JOIN sale_orderrequestline sol ON sol.order_request_id = o.id
     JOIN products_product prod ON prod.id = sol.product_id
     JOIN products_template tmpl ON tmpl.id = prod.template_id
-    LEFT JOIN products_category cat ON cat.id = tmpl.category_id
-    LEFT JOIN products_subcategory sub ON sub.id = tmpl.sub_category_id
-    LEFT JOIN products_brand brand ON brand.id = tmpl.brand_id
     WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND o.status = 'processed'
       AND o.created_at >= '{month_start}'
-    GROUP BY cc.partner_id, cat.name, sub.name, tmpl.name, brand.name, tmpl.business_segment_name
+    GROUP BY cc.partner_id, tmpl.category_id, tmpl.sub_category_id, tmpl.name, tmpl.brand_id, tmpl.business_segment_name
     """
 
 
@@ -967,9 +1005,15 @@ def _sql_business_area_strength_detailed(dc_ids: List[str], window_start: str, w
     # disagreed by the full discount amount (confirmed live: DC 1000006972 showed
     # gross=Rs695,090 vs net=Rs510,568, a 26.6% gap). Now gross throughout, matching
     # _sql_ytd_pl and every other PL figure in this pipeline.
+    # products_category/products_subcategory are currently blocked for this DB role (see
+    # _load_product_taxonomy docstring) -- selects the raw *_id columns here instead of
+    # joining; the caller (_build_business_area_tree) resolves id -> name from the local
+    # cache. sol.product_brand is unaffected -- it's a direct column on
+    # sale_orderrequestline, never joined off products_brand.
     return f"""
     SELECT
-      cc.partner_id AS dc_id, cat.name AS category_name, sub.name AS sub_category_name,
+      cc.partner_id AS dc_id, tmpl.category_id::text AS category_id,
+      tmpl.sub_category_id::text AS sub_category_id,
       CASE WHEN tmpl.business_segment_name = 'PRIVATE LABEL' THEN 'Private Label' ELSE 'Branded' END AS brand_tier,
       sol.product_name, sol.product_brand,
       SUM(sol.price_unit * sol.quantity) AS product_gross_value
@@ -978,12 +1022,10 @@ def _sql_business_area_strength_detailed(dc_ids: List[str], window_start: str, w
     JOIN customer_management_customer cc ON cc.id = sor.partner_id
     JOIN products_product prod ON prod.id = sol.product_id
     JOIN products_template tmpl ON tmpl.id = prod.template_id
-    LEFT JOIN products_category cat ON cat.id = tmpl.category_id
-    LEFT JOIN products_subcategory sub ON sub.id = tmpl.sub_category_id
     WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
       AND sor.status = 'processed'
       AND sor.created_at >= '{window_start}' AND sor.created_at <= '{window_end}'
-    GROUP BY cc.partner_id, cat.name, sub.name, brand_tier, sol.product_name, sol.product_brand
+    GROUP BY cc.partner_id, tmpl.category_id, tmpl.sub_category_id, brand_tier, sol.product_name, sol.product_brand
     """
 
 
@@ -1017,14 +1059,16 @@ def _build_business_area_tree(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict
     fix -- see _sql_business_area_strength_detailed's own docstring), matching
     _sql_ytd_pl elsewhere in this file. Zero/negative rows (a sub-category that's all
     returns this window) are dropped, same convention as every other value-ranked list
-    in this file."""
+    in this file. Resolves sub_category_id -> sub_category_name from the local taxonomy
+    cache here (see _load_product_taxonomy) since the query itself no longer joins the
+    currently-blocked products_subcategory table."""
     tree: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for row in rows:
         dc_id = agent.normalize_id(row.get("dc_id"))
         value = agent.parse_number(row.get("product_gross_value")) or 0.0
         if not dc_id or value <= 0:
             continue
-        subcat_name = row.get("sub_category_name") or "Unclassified"
+        subcat_name = _subcategory_name(row.get("sub_category_id")) or "Unclassified"
         segment_name = row.get("brand_tier") or "Branded"
         subcats = tree.setdefault(dc_id, {})
         sc = subcats.setdefault(subcat_name, {"total": 0.0, "segments": {}})
@@ -1163,6 +1207,9 @@ def _attach_nearby_product_recommendations(
     for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_product_purchase(combined_ids, plan_date)):
         dc_id = agent.normalize_id(row.get("dc_id"))
         if dc_id:
+            row["category_name"] = _category_name(row.get("category_id"))
+            row["sub_category_name"] = _subcategory_name(row.get("sub_category_id"))
+            row["product_brand"] = _brand_name(row.get("brand_id"))
             purchases_by_dc.setdefault(dc_id, []).append(row)
 
     def _top_products(candidate_ids: List[str], category: Optional[str]) -> List[Dict[str, Any]]:
@@ -2649,7 +2696,7 @@ def generate_plan_for_scope(
 
                 per_dc_category: Dict[str, Dict[str, float]] = {}
                 for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_category_purchase(pull_dc_ids, plan_date)):
-                    dc_id, cat = agent.normalize_id(row.get("dc_id")), row.get("category_name")
+                    dc_id, cat = agent.normalize_id(row.get("dc_id")), _category_name(row.get("category_id"))
                     if dc_id and cat:
                         per_dc_category.setdefault(dc_id, {})[cat] = agent.parse_number(row.get("purchase_30d")) or 0.0
 
@@ -2663,12 +2710,12 @@ def generate_plan_for_scope(
                 # last-row-wins on duplicates is fine -- they don't vary within a product.
                 per_dc_category_product: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
                 for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_product_purchase(pull_dc_ids, plan_date)):
-                    dc_id, cat, product = agent.normalize_id(row.get("dc_id")), row.get("category_name"), row.get("product_name")
+                    dc_id, cat, product = agent.normalize_id(row.get("dc_id")), _category_name(row.get("category_id")), row.get("product_name")
                     if dc_id and cat and product:
                         per_dc_category_product.setdefault(dc_id, {}).setdefault(cat, {})[product] = {
                             "value": agent.parse_number(row.get("purchase_30d")) or 0.0,
-                            "sub_category": row.get("sub_category_name"),
-                            "brand": row.get("product_brand"),
+                            "sub_category": _subcategory_name(row.get("sub_category_id")),
+                            "brand": _brand_name(row.get("brand_id")),
                             "business_segment": row.get("business_segment_name") or None,
                         }
 

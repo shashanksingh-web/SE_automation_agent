@@ -100,6 +100,30 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        # Django's sqlite3 default connect timeout is 5s. The frontend fires
+        # routing_plan=B and routing_plan=C as two concurrent requests for the same SE,
+        # each independently reading DC/order data then writing a full PlanRun.
+        # Confirmed live 2026-09-15, in 3 stages:
+        #  1. Raising 'timeout' alone does nothing -- SQLite's default DEFERRED
+        #     transaction mode lets two connections each acquire a read lock, then BOTH
+        #     try to upgrade to a write lock at once. That's SQLITE_BUSY (rollback-
+        #     journal mode) or SQLITE_BUSY_SNAPSHOT (WAL mode) -- both return
+        #     "database is locked" INSTANTLY, not after a wait, because no amount of
+        #     retrying resolves a two-way upgrade conflict / stale read snapshot.
+        #  2. journal_mode=WAL alone (set once on the db file, reasserted here since
+        #     it's a per-connection PRAGMA) doesn't fix it either, for the same reason --
+        #     WAL still hits SQLITE_BUSY_SNAPSHOT on a stale-snapshot write attempt.
+        #  3. transaction_mode='IMMEDIATE' is what actually fixes it -- makes every
+        #     Django atomic() block issue BEGIN IMMEDIATE, acquiring the write lock
+        #     upfront (before any reads) instead of deferring, so a second concurrent
+        #     request cleanly queues behind the first (honoring 'timeout') instead of
+        #     deadlocking. Django >=5.1 native OPTIONS key. WAL is kept too -- it's still
+        #     the right on-disk mode for concurrent readers once writers stop deadlocking.
+        'OPTIONS': {
+            'timeout': 30,
+            'init_command': 'PRAGMA journal_mode=WAL;',
+            'transaction_mode': 'IMMEDIATE',
+        },
     }
 }
 
