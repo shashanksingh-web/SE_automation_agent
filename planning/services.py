@@ -1422,6 +1422,319 @@ def make_routing_plan_asker(stdout, style) -> Optional[Callable[[], str]]:
     return ask
 
 
+def run_pitching_and_dc_card_agents(
+    plan_run: PlanRun, plan_date: str, client, geo_mapping_cache: Optional[dict] = None,
+    dc_financials: Optional[Dict[str, Any]] = None, dc_club_by_id: Optional[Dict[str, Any]] = None,
+    active_schemes_by_node: Optional[Dict[str, Any]] = None, ytd_pl_last_year_by_dc: Optional[Dict[str, Any]] = None,
+    yoy_pl_growth_fn: Optional[Callable[[str], Tuple[float, Optional[float]]]] = None,
+) -> List[dict]:
+    """Runs Pitching Agent + DC Card generation for every DC currently on plan_run's
+    DailyTask set. Extracted 2026-09-15 from generate_plan_for_scope's own inline block
+    (unchanged body) so it can also be called by planning.routing whenever DailyTask
+    rows change after initial generation -- route plan switch (select_default_route_plan/
+    accept_route_plan) or SE add/remove-stop (edit_route_stops), all of which funnel
+    through resync_daily_tasks_from_selected_plan. Re-derives task_dc_ids fresh from the
+    DB each call rather than taking it as a parameter, so it's safe to call again any
+    time: generate_pitches_for_plan_run/generate_dc_cards_for_plan_run both use
+    update_or_create keyed on daily_task (OneToOne), so an existing DC's pitch/card is
+    simply refreshed, never duplicated, and a genuinely new DC gets one for the first
+    time. Returns exception dicts for the caller to persist via ExceptionRecord.bulk_create.
+
+    dc_financials/dc_club_by_id/active_schemes_by_node/ytd_pl_last_year_by_dc/
+    yoy_pl_growth_fn are the DC-Card-only enrichment context generate_plan_for_scope
+    already has computed earlier in its own run (Sources 3d/3g/3h's own live pulls) --
+    passed through unchanged for that call site, so its behavior here is a pure
+    refactor. A caller that doesn't have these on hand (planning.routing, after a
+    plan-switch/add-stop) omits them: they default to empty/neutral, meaning the
+    PITCH SCRIPT itself (S1/S2 recommended products + discount, computed fresh from
+    task_dc_ids/pull_dc_ids inside this function, no outer dependency) is always fully
+    populated, but a DC newly added via route-switch/add-stop gets a DC Card with its
+    Business Area Strength/Club/Active Schemes/YoY PL sections blank until the next
+    full activate_tuff/generate_se_plan re-run repopulates them -- same honest-degrade
+    convention as every other missing-source case in this file, not fabricated."""
+    dc_financials = dc_financials or {}
+    dc_club_by_id = dc_club_by_id or {}
+    active_schemes_by_node = active_schemes_by_node or {}
+    ytd_pl_last_year_by_dc = ytd_pl_last_year_by_dc or {}
+    if yoy_pl_growth_fn is None:
+        def yoy_pl_growth_fn(dc_id: str) -> Tuple[float, Optional[float]]:
+            return 1.0, None
+    dc_master = load_dc_master()
+    run_exceptions: List[dict] = []
+    total_tasks = plan_run.tasks.filter(dc_id__isnull=False).count()
+
+    if client.configured and total_tasks > 0:
+        try:
+            task_dc_ids = list(plan_run.tasks.exclude(dc_id__isnull=True).values_list("dc_id", flat=True).distinct())
+            if task_dc_ids:
+                # Block resolution -- unconditional now (previously only pulled for
+                # ABM/BLOCK/DISTRICT scopes). Unfiltered pull, matched to dc_ids in
+                # Python. Routed through geo_mapping_cache -- an ABM/BLOCK/DISTRICT scoped
+                # run already fetched this exact full-table query in resolve_scope_dcs(),
+                # so this reuses it instead of hitting Redshift a second time. Known
+                # limitation carried over from SQL_GEO_MAPPING_1C's own is_dc=true filter
+                # (a previously-identified bug class in a sibling query, _sql_geo()) -- a
+                # DC missing here just means S1 gets skipped for it, same honest-degrade
+                # path as any other missing source.
+                geo_mapping = _resolve_geo_mapping(client, geo_mapping_cache)
+                block_by_dc = {row["dc_id"]: row["block"] for row in geo_mapping if row.get("block")}
+                task_blocks = {block_by_dc[d] for d in task_dc_ids if d in block_by_dc}
+                peer_dc_ids = sorted({row["dc_id"] for row in geo_mapping if row.get("block") in task_blocks}) if task_blocks else []
+                # Node-level peer pool, pulled alongside the block-level one -- fallback
+                # for S1/PL_Recommendation when a DC's own block has too few peers (or
+                # none) with trailing-30d purchase data to rank anything from (a real,
+                # common gap for small/single-DC blocks, not an edge case). See the
+                # per-DC entry-building loop below for where block is tried first and
+                # node is only used if block yields nothing -- never the reverse, since
+                # block is the more locally-relevant comparison when it has data.
+                # dc_id-gated (not just node-gated) -- confirmed live 2026-08-17: unlike
+                # block, some geo_mapping rows carry a real node value with no dc_id at
+                # all (a node-level rollup row, not tied to one DC), which crashed
+                # sorted() below on None-vs-str comparison the first time this ran
+                # against Bihar's full geo_mapping. Filtered out here rather than loosened
+                # into the block line above, which has no such rows in practice.
+                node_by_dc = {row["dc_id"]: row["node"] for row in geo_mapping if row.get("node") and row.get("dc_id")}
+                task_nodes = {node_by_dc[d] for d in task_dc_ids if d in node_by_dc}
+                node_peer_dc_ids = (
+                    sorted({row["dc_id"] for row in geo_mapping if row.get("dc_id") and row.get("node") in task_nodes})
+                    if task_nodes else []
+                )
+                pull_dc_ids = sorted(set(task_dc_ids) | set(peer_dc_ids) | set(node_peer_dc_ids))
+
+                purchase_by_dc: Dict[str, Dict[str, Any]] = {}
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_dc_purchase_summary(pull_dc_ids, plan_date)):
+                    dc_id = agent.normalize_id(row.get("dc_id"))
+                    if dc_id:
+                        purchase_by_dc[dc_id] = {
+                            "purchase_30d": agent.parse_number(row.get("purchase_30d")),
+                            "purchase_last_fy": agent.parse_number(row.get("purchase_last_fy")),
+                            "purchase_ytd": agent.parse_number(row.get("purchase_ytd")),
+                        }
+
+                discount_by_dc: Dict[str, float] = {}
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_last_discount(task_dc_ids, plan_date)):
+                    dc_id = agent.normalize_id(row.get("dc_id"))
+                    # discount_price_unit is the post-discount unit price (confirmed live
+                    # 2026-08-08: always <= price_unit, typically 85-100% of it -- never
+                    # the discount amount itself, which would make e.g. 65/69 read as a
+                    # 94% discount instead of the real ~6% discount off list price).
+                    discounted_price, list_price = agent.parse_number(row.get("discount_price_unit")), agent.parse_number(row.get("price_unit"))
+                    if dc_id and discounted_price is not None and list_price:
+                        discount_by_dc[dc_id] = ((list_price - discounted_price) / list_price) * 100.0
+
+                # S2b Suggested Discount raw input (see _sql_coupon_discount_history
+                # docstring) -- pulled once for pull_dc_ids (task DCs + block + node
+                # peers), looked up per (dc_id, product_name) below rather than queried
+                # per DC.
+                coupon_discount_by_dc_product: Dict[str, Dict[str, float]] = {}
+                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_coupon_discount_history(pull_dc_ids, plan_date)):
+                    dc_id, product = agent.normalize_id(row.get("dc_id")), row.get("product_name")
+                    avg_discount = agent.parse_number(row.get("avg_discount_per_unit"))
+                    if dc_id and product and avg_discount is not None:
+                        coupon_discount_by_dc_product.setdefault(dc_id, {})[product] = avg_discount
+
+                per_dc_category: Dict[str, Dict[str, float]] = {}
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_category_purchase(pull_dc_ids, plan_date)):
+                    dc_id, cat = agent.normalize_id(row.get("dc_id")), _category_name(row.get("category_id"))
+                    if dc_id and cat:
+                        per_dc_category.setdefault(dc_id, {})[cat] = agent.parse_number(row.get("purchase_30d")) or 0.0
+
+                # DC Card "Recommended Product & Brief" + Pitching Agent S1 -- product-
+                # name granularity (_sql_block_product_purchase), wired 2026-08-14,
+                # S1b enrichment (sub-category/brand/business segment) added 2026-08-15.
+                # dc_id -> category -> product -> {value, sub_category, brand,
+                # business_segment}, so the caller can find the single top-selling
+                # PRODUCT (not just category) among a DC's block peers, with its full
+                # S1b context attached. Attributes are template-level, not per-order, so
+                # last-row-wins on duplicates is fine -- they don't vary within a product.
+                per_dc_category_product: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
+                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_product_purchase(pull_dc_ids, plan_date)):
+                    dc_id, cat, product = agent.normalize_id(row.get("dc_id")), _category_name(row.get("category_id")), row.get("product_name")
+                    if dc_id and cat and product:
+                        per_dc_category_product.setdefault(dc_id, {}).setdefault(cat, {})[product] = {
+                            "value": agent.parse_number(row.get("purchase_30d")) or 0.0,
+                            "sub_category": _subcategory_name(row.get("sub_category_id")),
+                            "brand": _brand_name(row.get("brand_id")),
+                            "business_segment": row.get("business_segment_name") or None,
+                        }
+
+                # DC Card / "Dehaat Center Ko Jaano" Section 1 "कौन" -- Business Area
+                # Strength (Source 3h), wired 2026-08-14 alongside the DC Card feature.
+                # Rebuilt 2026-08-22 (see _sql_business_area_strength_detailed docstring):
+                # ALL sub-categories (not top-5), current-FY YTD window, each split
+                # Branded/Private Label with a share%, product-wise within each segment
+                # -- paired with the same structure over the prior FY's YTD window
+                # ("Historical Performance") for sub-category-level trend. Only
+                # task_dc_ids, not the wider pull_dc_ids -- unlike S1's block comparison,
+                # this is never compared against peers, so there's no reason to pull it
+                # for DCs never actually on a task this run.
+                fy_start = _fiscal_year_start(plan_date)
+                business_area_current_by_dc = _build_business_area_tree(
+                    list(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength_detailed(task_dc_ids, fy_start, plan_date)))
+                )
+                prior_fy_start, prior_plan_date = _prior_fy_window(plan_date)
+                business_area_prior_by_dc = _build_business_area_tree(
+                    list(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength_detailed(task_dc_ids, prior_fy_start, prior_plan_date)))
+                )
+
+                extra_data_by_dc: Dict[str, Dict[str, Any]] = {}
+                needs_geo_fallback: List[str] = []
+                for dc_id in task_dc_ids:
+                    entry = dict(purchase_by_dc.get(dc_id, {}))
+                    entry["last_discount"] = discount_by_dc.get(dc_id)
+                    # dc_datamart's weighted_avg_repayment_days -- already pulled by
+                    # _sql_outstanding() into dc_financials, just wasn't forwarded to the
+                    # pitch context before. 0.0 isn't a genuine "pays same-day" signal --
+                    # confirmed live 2026-08-08: the DCs showing 0 are exactly the ones
+                    # whose entire outstanding balance is currently overdue (no completed
+                    # repayment cycle to average over), so _tp_outstanding() in pitching.py
+                    # treats <= 0 as "no data" and omits the sentence rather than fabricate
+                    # a false reassurance.
+                    entry["avg_repayment_days"] = (dc_financials.get(dc_id) or {}).get("Weighted_Avg_Repayment_Days")
+                    cats = per_dc_category.get(dc_id, {})
+                    dominant_category = max(cats, key=cats.get) if cats else None
+                    entry["dominant_category"] = dominant_category
+                    entry["dc_category_purchase"] = cats.get(dominant_category) if dominant_category else None
+                    block, node = block_by_dc.get(dc_id), node_by_dc.get(dc_id)
+
+                    def _peer_stats(candidate_ids: List[str], segment: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                        """Category-average purchase + up to RECOMMENDED_PRODUCT_COUNT
+                        (5) top-selling PRODUCTS (not just 1) among candidate_ids, within
+                        dominant_category, ranked by peer-summed value, each with S1b
+                        enrichment (sub-category/brand/business segment) attached --
+                        widened 2026-08-18 from a single top product per direct
+                        instruction. Value summed across peers first (a product 3 peers
+                        each bought a little of should still outrank one only 1 peer
+                        bought a lot of -- "peer trend," not "single biggest peer").
+                        None if candidate_ids is empty; avg is None if none of them have
+                        any purchase in dominant_category at all (vs. a real ₹0 average,
+                        which the Hindi builders already treat the same as None -- see
+                        their own `if not block_avg` gate). top_products is never padded
+                        -- a DC with only 2 real peer products in this category just gets
+                        2, not 5.
+
+                        segment, when given, restricts totals/ranking to only that
+                        business_segment BEFORE ranking (not a post-hoc filter of the
+                        general top-5) -- added 2026-08-18 for dc_card.py's Private Label
+                        section, which must only ever recommend a PRIVATE LABEL product.
+                        Filtering the already-ranked general list instead would routinely
+                        return nothing, since higher-value BRANDED bulk items (fertilizer
+                        etc.) usually crowd PL products out of an unfiltered top 5 even
+                        when real PL peer-purchase data exists further down."""
+                        if not candidate_ids:
+                            return None
+                        amounts = [per_dc_category.get(p, {}).get(dominant_category, 0.0) for p in candidate_ids]
+                        totals: Dict[str, float] = {}
+                        attrs: Dict[str, Dict[str, Any]] = {}
+                        for p in candidate_ids:
+                            for product, info in per_dc_category_product.get(p, {}).get(dominant_category, {}).items():
+                                if segment and info.get("business_segment") != segment:
+                                    continue
+                                totals[product] = totals.get(product, 0.0) + info["value"]
+                                attrs[product] = info
+                        ranked = sorted(totals.items(), key=lambda kv: -kv[1])[:RECOMMENDED_PRODUCT_COUNT]
+                        top_products = [
+                            {
+                                "name": name, "value": value, "category": dominant_category,
+                                "sub_category": attrs[name].get("sub_category"),
+                                "brand": attrs[name].get("brand"),
+                                "business_segment": attrs[name].get("business_segment"),
+                            }
+                            for name, value in ranked
+                        ]
+                        return {
+                            # avg stays the whole-category average regardless of segment
+                            # -- it's never shown for a segment-filtered list (dc_card.py
+                            # only ever reports products_pl's product names/values, not a
+                            # PL-only average that doesn't exist as a real pulled figure).
+                            "avg": (sum(amounts) / len(amounts)) if amounts else None,
+                            "top_products": top_products,
+                        }
+
+                    block_ids = [p for p in peer_dc_ids if block and block_by_dc.get(p) == block]
+                    node_ids = [p for p in node_peer_dc_ids if node and node_by_dc.get(p) == node]
+
+                    if dominant_category:
+                        stats, scope = _peer_stats(block_ids), "block"
+                        # Block yielded nothing usable (no peers, or peers with zero
+                        # purchase in this category) -- widen to node-level peers. Only
+                        # this direction: block is the more locally-relevant comparison
+                        # when it has real data, so it's never overridden by node.
+                        if not stats or not stats["avg"]:
+                            node_stats = _peer_stats(node_ids)
+                            if node_stats and node_stats["avg"]:
+                                stats, scope = node_stats, "node"
+                        if stats and stats["avg"]:
+                            entry["block_category_avg"] = stats["avg"]
+                            entry["peer_comparison_scope"] = scope
+                            if stats["top_products"]:
+                                entry["recommended_products"] = [{**p, "scope": scope} for p in stats["top_products"]]
+                                # S2b Suggested Discount -- for the #1 recommended
+                                # product only (the methodology's own wording is "the
+                                # recommended product + discount combination," singular).
+                                top_product_name = stats["top_products"][0]["name"]
+                                entry["suggested_discount"] = _suggested_discount(
+                                    dc_id, top_product_name, block_ids, node_ids, coupon_discount_by_dc_product,
+                                )
+
+                    # DC Card-only additions -- read by planning/dc_card.py, ignored by
+                    # planning/pitching.py's builders (they only ever ctx.get() the keys
+                    # they know about).
+                    entry["business_area_strength"] = business_area_current_by_dc.get(dc_id)
+                    entry["business_area_strength_prior_year"] = business_area_prior_by_dc.get(dc_id)
+                    entry["club"] = dc_club_by_id.get(dc_id)
+                    # Active Sales/ABS Schemes (added 2026-09-12) -- distinct from
+                    # entry["club"] just above (see _sql_active_schemes_for_nodes' own
+                    # docstring). Node-scoped, not DC-scoped -- every DC in the same Node
+                    # shares the same list, deliberately (that's the real scope these
+                    # schemes are defined at).
+                    entry["active_schemes"] = active_schemes_by_node.get(node_by_dc.get(dc_id), [])
+                    # YoY PL comparison (confirmed 2026-08-18) -- PL-specific, distinct
+                    # from purchase_last_fy/purchase_ytd above (those are overall
+                    # purchase, not PL-tagged). ytd_pl itself is already in DailyTaskRow
+                    # (YTD_Private_Label); last year's figure and the growth % are new.
+                    entry["ytd_pl_last_year"] = ytd_pl_last_year_by_dc.get(dc_id)
+                    _, entry["yoy_pl_growth_pct"] = yoy_pl_growth_fn(dc_id)
+                    extra_data_by_dc[dc_id] = entry
+                    # Own purchases + block peers + node peers all came up empty (no
+                    # recommended_products set -- either no dominant_category at all, or
+                    # peers had a category average but no product-level breakdown) --
+                    # flagged for the geographic fallback below (confirmed 2026-08-18:
+                    # 200km radius first, then nearest Nodes by centroid distance if
+                    # even that finds nothing).
+                    if not entry.get("recommended_products"):
+                        needs_geo_fallback.append(dc_id)
+
+                if needs_geo_fallback:
+                    _attach_nearby_product_recommendations(
+                        client, dc_master, needs_geo_fallback, extra_data_by_dc, plan_date, result_key="recommended_products",
+                    )
+
+                from .pitching import generate_pitches_for_plan_run
+                _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc)
+                run_exceptions.extend({
+                    "record_id": f["dc_id"], "source": "PitchingAgent", "reason_code": "Pitch_Generation_Failed",
+                    "detail": f"DC {f['dc_id']}: {f['detail']}",
+                } for f in pitch_failures)
+
+                # DC Card (Preface) / "Dehaat Center Ko Jaano", wired 2026-08-14 --
+                # separate try/except (own exception source) so a DC Card-specific
+                # failure is never mislabeled as PitchingAgent, and vice versa; reuses
+                # the exact same extra_data_by_dc Pitching just used, no re-fetch.
+                try:
+                    from .dc_card import generate_dc_cards_for_plan_run
+                    _, card_failures = generate_dc_cards_for_plan_run(plan_run, extra_data_by_dc)
+                    run_exceptions.extend({
+                        "record_id": f["dc_id"], "source": "DCCardAgent", "reason_code": "DC_Card_Generation_Failed",
+                        "detail": f"DC {f['dc_id']}: {f['detail']}",
+                    } for f in card_failures)
+                except Exception as e:
+                    run_exceptions.append({"source": "DCCardAgent", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+        except Exception as e:
+            run_exceptions.append({"source": "PitchingAgent", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+    return run_exceptions
+
+
 @transaction.atomic
 def generate_plan_for_scope(
     scope_type: str, scope_value: str, plan_date: Optional[str] = None,
@@ -2618,281 +2931,21 @@ def generate_plan_for_scope(
     plan_run.skipped_ses = skipped_ses
     plan_run.save(update_fields=["task_count", "finished_at", "skipped_ses"])
 
-    # Pitching Agent, wired 2026-08-08 -- activates automatically right after task
-    # assignment, per direct instruction. Needs live data (Block resolution for S1's
-    # peer comparison, plus the new S2/S3/S6/S7 sources) -- skipped honestly when
-    # Metabase isn't configured, same treatment as everything else in this function
-    # that depends on client.configured. Real DCs only (Farmer Meeting tasks have no
-    # dc_id, see pitching.generate_pitches_for_plan_run's own filter).
-    if client.configured and total_tasks > 0:
-        try:
-            task_dc_ids = list(plan_run.tasks.exclude(dc_id__isnull=True).values_list("dc_id", flat=True).distinct())
-            if task_dc_ids:
-                # Block resolution -- unconditional now (previously only pulled for
-                # ABM/BLOCK/DISTRICT scopes). Unfiltered pull, matched to dc_ids in
-                # Python. Routed through geo_mapping_cache -- an ABM/BLOCK/DISTRICT scoped
-                # run already fetched this exact full-table query in resolve_scope_dcs(),
-                # so this reuses it instead of hitting Redshift a second time. Known
-                # limitation carried over from SQL_GEO_MAPPING_1C's own is_dc=true filter
-                # (a previously-identified bug class in a sibling query, _sql_geo()) -- a
-                # DC missing here just means S1 gets skipped for it, same honest-degrade
-                # path as any other missing source.
-                geo_mapping = _resolve_geo_mapping(client, geo_mapping_cache)
-                block_by_dc = {row["dc_id"]: row["block"] for row in geo_mapping if row.get("block")}
-                task_blocks = {block_by_dc[d] for d in task_dc_ids if d in block_by_dc}
-                peer_dc_ids = sorted({row["dc_id"] for row in geo_mapping if row.get("block") in task_blocks}) if task_blocks else []
-                # Node-level peer pool, pulled alongside the block-level one -- fallback
-                # for S1/PL_Recommendation when a DC's own block has too few peers (or
-                # none) with trailing-30d purchase data to rank anything from (a real,
-                # common gap for small/single-DC blocks, not an edge case). See the
-                # per-DC entry-building loop below for where block is tried first and
-                # node is only used if block yields nothing -- never the reverse, since
-                # block is the more locally-relevant comparison when it has data.
-                # dc_id-gated (not just node-gated) -- confirmed live 2026-08-17: unlike
-                # block, some geo_mapping rows carry a real node value with no dc_id at
-                # all (a node-level rollup row, not tied to one DC), which crashed
-                # sorted() below on None-vs-str comparison the first time this ran
-                # against Bihar's full geo_mapping. Filtered out here rather than loosened
-                # into the block line above, which has no such rows in practice.
-                node_by_dc = {row["dc_id"]: row["node"] for row in geo_mapping if row.get("node") and row.get("dc_id")}
-                task_nodes = {node_by_dc[d] for d in task_dc_ids if d in node_by_dc}
-                node_peer_dc_ids = (
-                    sorted({row["dc_id"] for row in geo_mapping if row.get("dc_id") and row.get("node") in task_nodes})
-                    if task_nodes else []
-                )
-                pull_dc_ids = sorted(set(task_dc_ids) | set(peer_dc_ids) | set(node_peer_dc_ids))
-
-                purchase_by_dc: Dict[str, Dict[str, Any]] = {}
-                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_dc_purchase_summary(pull_dc_ids, plan_date)):
-                    dc_id = agent.normalize_id(row.get("dc_id"))
-                    if dc_id:
-                        purchase_by_dc[dc_id] = {
-                            "purchase_30d": agent.parse_number(row.get("purchase_30d")),
-                            "purchase_last_fy": agent.parse_number(row.get("purchase_last_fy")),
-                            "purchase_ytd": agent.parse_number(row.get("purchase_ytd")),
-                        }
-
-                discount_by_dc: Dict[str, float] = {}
-                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_last_discount(task_dc_ids, plan_date)):
-                    dc_id = agent.normalize_id(row.get("dc_id"))
-                    # discount_price_unit is the post-discount unit price (confirmed live
-                    # 2026-08-08: always <= price_unit, typically 85-100% of it -- never
-                    # the discount amount itself, which would make e.g. 65/69 read as a
-                    # 94% discount instead of the real ~6% discount off list price).
-                    discounted_price, list_price = agent.parse_number(row.get("discount_price_unit")), agent.parse_number(row.get("price_unit"))
-                    if dc_id and discounted_price is not None and list_price:
-                        discount_by_dc[dc_id] = ((list_price - discounted_price) / list_price) * 100.0
-
-                # S2b Suggested Discount raw input (see _sql_coupon_discount_history
-                # docstring) -- pulled once for pull_dc_ids (task DCs + block + node
-                # peers), looked up per (dc_id, product_name) below rather than queried
-                # per DC.
-                coupon_discount_by_dc_product: Dict[str, Dict[str, float]] = {}
-                for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_coupon_discount_history(pull_dc_ids, plan_date)):
-                    dc_id, product = agent.normalize_id(row.get("dc_id")), row.get("product_name")
-                    avg_discount = agent.parse_number(row.get("avg_discount_per_unit"))
-                    if dc_id and product and avg_discount is not None:
-                        coupon_discount_by_dc_product.setdefault(dc_id, {})[product] = avg_discount
-
-                per_dc_category: Dict[str, Dict[str, float]] = {}
-                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_category_purchase(pull_dc_ids, plan_date)):
-                    dc_id, cat = agent.normalize_id(row.get("dc_id")), _category_name(row.get("category_id"))
-                    if dc_id and cat:
-                        per_dc_category.setdefault(dc_id, {})[cat] = agent.parse_number(row.get("purchase_30d")) or 0.0
-
-                # DC Card "Recommended Product & Brief" + Pitching Agent S1 -- product-
-                # name granularity (_sql_block_product_purchase), wired 2026-08-14,
-                # S1b enrichment (sub-category/brand/business segment) added 2026-08-15.
-                # dc_id -> category -> product -> {value, sub_category, brand,
-                # business_segment}, so the caller can find the single top-selling
-                # PRODUCT (not just category) among a DC's block peers, with its full
-                # S1b context attached. Attributes are template-level, not per-order, so
-                # last-row-wins on duplicates is fine -- they don't vary within a product.
-                per_dc_category_product: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
-                for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_block_product_purchase(pull_dc_ids, plan_date)):
-                    dc_id, cat, product = agent.normalize_id(row.get("dc_id")), _category_name(row.get("category_id")), row.get("product_name")
-                    if dc_id and cat and product:
-                        per_dc_category_product.setdefault(dc_id, {}).setdefault(cat, {})[product] = {
-                            "value": agent.parse_number(row.get("purchase_30d")) or 0.0,
-                            "sub_category": _subcategory_name(row.get("sub_category_id")),
-                            "brand": _brand_name(row.get("brand_id")),
-                            "business_segment": row.get("business_segment_name") or None,
-                        }
-
-                # DC Card / "Dehaat Center Ko Jaano" Section 1 "कौन" -- Business Area
-                # Strength (Source 3h), wired 2026-08-14 alongside the DC Card feature.
-                # Rebuilt 2026-08-22 (see _sql_business_area_strength_detailed docstring):
-                # ALL sub-categories (not top-5), current-FY YTD window, each split
-                # Branded/Private Label with a share%, product-wise within each segment
-                # -- paired with the same structure over the prior FY's YTD window
-                # ("Historical Performance") for sub-category-level trend. Only
-                # task_dc_ids, not the wider pull_dc_ids -- unlike S1's block comparison,
-                # this is never compared against peers, so there's no reason to pull it
-                # for DCs never actually on a task this run.
-                fy_start = _fiscal_year_start(plan_date)
-                business_area_current_by_dc = _build_business_area_tree(
-                    list(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength_detailed(task_dc_ids, fy_start, plan_date)))
-                )
-                prior_fy_start, prior_plan_date = _prior_fy_window(plan_date)
-                business_area_prior_by_dc = _build_business_area_tree(
-                    list(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength_detailed(task_dc_ids, prior_fy_start, prior_plan_date)))
-                )
-
-                extra_data_by_dc: Dict[str, Dict[str, Any]] = {}
-                needs_geo_fallback: List[str] = []
-                for dc_id in task_dc_ids:
-                    entry = dict(purchase_by_dc.get(dc_id, {}))
-                    entry["last_discount"] = discount_by_dc.get(dc_id)
-                    # dc_datamart's weighted_avg_repayment_days -- already pulled by
-                    # _sql_outstanding() into dc_financials, just wasn't forwarded to the
-                    # pitch context before. 0.0 isn't a genuine "pays same-day" signal --
-                    # confirmed live 2026-08-08: the DCs showing 0 are exactly the ones
-                    # whose entire outstanding balance is currently overdue (no completed
-                    # repayment cycle to average over), so _tp_outstanding() in pitching.py
-                    # treats <= 0 as "no data" and omits the sentence rather than fabricate
-                    # a false reassurance.
-                    entry["avg_repayment_days"] = (dc_financials.get(dc_id) or {}).get("Weighted_Avg_Repayment_Days")
-                    cats = per_dc_category.get(dc_id, {})
-                    dominant_category = max(cats, key=cats.get) if cats else None
-                    entry["dominant_category"] = dominant_category
-                    entry["dc_category_purchase"] = cats.get(dominant_category) if dominant_category else None
-                    block, node = block_by_dc.get(dc_id), node_by_dc.get(dc_id)
-
-                    def _peer_stats(candidate_ids: List[str], segment: Optional[str] = None) -> Optional[Dict[str, Any]]:
-                        """Category-average purchase + up to RECOMMENDED_PRODUCT_COUNT
-                        (5) top-selling PRODUCTS (not just 1) among candidate_ids, within
-                        dominant_category, ranked by peer-summed value, each with S1b
-                        enrichment (sub-category/brand/business segment) attached --
-                        widened 2026-08-18 from a single top product per direct
-                        instruction. Value summed across peers first (a product 3 peers
-                        each bought a little of should still outrank one only 1 peer
-                        bought a lot of -- "peer trend," not "single biggest peer").
-                        None if candidate_ids is empty; avg is None if none of them have
-                        any purchase in dominant_category at all (vs. a real ₹0 average,
-                        which the Hindi builders already treat the same as None -- see
-                        their own `if not block_avg` gate). top_products is never padded
-                        -- a DC with only 2 real peer products in this category just gets
-                        2, not 5.
-
-                        segment, when given, restricts totals/ranking to only that
-                        business_segment BEFORE ranking (not a post-hoc filter of the
-                        general top-5) -- added 2026-08-18 for dc_card.py's Private Label
-                        section, which must only ever recommend a PRIVATE LABEL product.
-                        Filtering the already-ranked general list instead would routinely
-                        return nothing, since higher-value BRANDED bulk items (fertilizer
-                        etc.) usually crowd PL products out of an unfiltered top 5 even
-                        when real PL peer-purchase data exists further down."""
-                        if not candidate_ids:
-                            return None
-                        amounts = [per_dc_category.get(p, {}).get(dominant_category, 0.0) for p in candidate_ids]
-                        totals: Dict[str, float] = {}
-                        attrs: Dict[str, Dict[str, Any]] = {}
-                        for p in candidate_ids:
-                            for product, info in per_dc_category_product.get(p, {}).get(dominant_category, {}).items():
-                                if segment and info.get("business_segment") != segment:
-                                    continue
-                                totals[product] = totals.get(product, 0.0) + info["value"]
-                                attrs[product] = info
-                        ranked = sorted(totals.items(), key=lambda kv: -kv[1])[:RECOMMENDED_PRODUCT_COUNT]
-                        top_products = [
-                            {
-                                "name": name, "value": value, "category": dominant_category,
-                                "sub_category": attrs[name].get("sub_category"),
-                                "brand": attrs[name].get("brand"),
-                                "business_segment": attrs[name].get("business_segment"),
-                            }
-                            for name, value in ranked
-                        ]
-                        return {
-                            # avg stays the whole-category average regardless of segment
-                            # -- it's never shown for a segment-filtered list (dc_card.py
-                            # only ever reports products_pl's product names/values, not a
-                            # PL-only average that doesn't exist as a real pulled figure).
-                            "avg": (sum(amounts) / len(amounts)) if amounts else None,
-                            "top_products": top_products,
-                        }
-
-                    block_ids = [p for p in peer_dc_ids if block and block_by_dc.get(p) == block]
-                    node_ids = [p for p in node_peer_dc_ids if node and node_by_dc.get(p) == node]
-
-                    if dominant_category:
-                        stats, scope = _peer_stats(block_ids), "block"
-                        # Block yielded nothing usable (no peers, or peers with zero
-                        # purchase in this category) -- widen to node-level peers. Only
-                        # this direction: block is the more locally-relevant comparison
-                        # when it has real data, so it's never overridden by node.
-                        if not stats or not stats["avg"]:
-                            node_stats = _peer_stats(node_ids)
-                            if node_stats and node_stats["avg"]:
-                                stats, scope = node_stats, "node"
-                        if stats and stats["avg"]:
-                            entry["block_category_avg"] = stats["avg"]
-                            entry["peer_comparison_scope"] = scope
-                            if stats["top_products"]:
-                                entry["recommended_products"] = [{**p, "scope": scope} for p in stats["top_products"]]
-                                # S2b Suggested Discount -- for the #1 recommended
-                                # product only (the methodology's own wording is "the
-                                # recommended product + discount combination," singular).
-                                top_product_name = stats["top_products"][0]["name"]
-                                entry["suggested_discount"] = _suggested_discount(
-                                    dc_id, top_product_name, block_ids, node_ids, coupon_discount_by_dc_product,
-                                )
-
-                    # DC Card-only additions -- read by planning/dc_card.py, ignored by
-                    # planning/pitching.py's builders (they only ever ctx.get() the keys
-                    # they know about).
-                    entry["business_area_strength"] = business_area_current_by_dc.get(dc_id)
-                    entry["business_area_strength_prior_year"] = business_area_prior_by_dc.get(dc_id)
-                    entry["club"] = dc_club_by_id.get(dc_id)
-                    # Active Sales/ABS Schemes (added 2026-09-12) -- distinct from
-                    # entry["club"] just above (see _sql_active_schemes_for_nodes' own
-                    # docstring). Node-scoped, not DC-scoped -- every DC in the same Node
-                    # shares the same list, deliberately (that's the real scope these
-                    # schemes are defined at).
-                    entry["active_schemes"] = active_schemes_by_node.get(node_by_dc.get(dc_id), [])
-                    # YoY PL comparison (confirmed 2026-08-18) -- PL-specific, distinct
-                    # from purchase_last_fy/purchase_ytd above (those are overall
-                    # purchase, not PL-tagged). ytd_pl itself is already in DailyTaskRow
-                    # (YTD_Private_Label); last year's figure and the growth % are new.
-                    entry["ytd_pl_last_year"] = ytd_pl_last_year_by_dc.get(dc_id)
-                    _, entry["yoy_pl_growth_pct"] = _yoy_pl_growth_multiplier(dc_id)
-                    extra_data_by_dc[dc_id] = entry
-                    # Own purchases + block peers + node peers all came up empty (no
-                    # recommended_products set -- either no dominant_category at all, or
-                    # peers had a category average but no product-level breakdown) --
-                    # flagged for the geographic fallback below (confirmed 2026-08-18:
-                    # 200km radius first, then nearest Nodes by centroid distance if
-                    # even that finds nothing).
-                    if not entry.get("recommended_products"):
-                        needs_geo_fallback.append(dc_id)
-
-                if needs_geo_fallback:
-                    _attach_nearby_product_recommendations(
-                        client, dc_master, needs_geo_fallback, extra_data_by_dc, plan_date, result_key="recommended_products",
-                    )
-
-                from .pitching import generate_pitches_for_plan_run
-                _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc)
-                run_exceptions.extend({
-                    "record_id": f["dc_id"], "source": "PitchingAgent", "reason_code": "Pitch_Generation_Failed",
-                    "detail": f"DC {f['dc_id']}: {f['detail']}",
-                } for f in pitch_failures)
-
-                # DC Card (Preface) / "Dehaat Center Ko Jaano", wired 2026-08-14 --
-                # separate try/except (own exception source) so a DC Card-specific
-                # failure is never mislabeled as PitchingAgent, and vice versa; reuses
-                # the exact same extra_data_by_dc Pitching just used, no re-fetch.
-                try:
-                    from .dc_card import generate_dc_cards_for_plan_run
-                    _, card_failures = generate_dc_cards_for_plan_run(plan_run, extra_data_by_dc)
-                    run_exceptions.extend({
-                        "record_id": f["dc_id"], "source": "DCCardAgent", "reason_code": "DC_Card_Generation_Failed",
-                        "detail": f"DC {f['dc_id']}: {f['detail']}",
-                    } for f in card_failures)
-                except Exception as e:
-                    run_exceptions.append({"source": "DCCardAgent", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
-        except Exception as e:
-            run_exceptions.append({"source": "PitchingAgent", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+    # Pitching Agent + DC Card, wired 2026-08-08/2026-08-14 -- activates automatically
+    # right after task assignment, per direct instruction. Extracted 2026-09-15 into
+    # run_pitching_and_dc_card_agents() (defined above) so planning.routing can call the
+    # same logic again whenever DailyTask rows change after initial generation (route
+    # plan switch, SE add/remove-stop) -- see that function's own docstring for the full
+    # rationale. This call site is unchanged behavior: passes every enrichment dict this
+    # function has already computed above (dc_financials/dc_club_by_id/
+    # active_schemes_by_node/ytd_pl_last_year_by_dc/_yoy_pl_growth_multiplier), so DC
+    # Card's extra sections stay fully populated here exactly as before.
+    run_exceptions.extend(run_pitching_and_dc_card_agents(
+        plan_run, plan_date, client, geo_mapping_cache,
+        dc_financials=dc_financials, dc_club_by_id=dc_club_by_id,
+        active_schemes_by_node=active_schemes_by_node, ytd_pl_last_year_by_dc=ytd_pl_last_year_by_dc,
+        yoy_pl_growth_fn=_yoy_pl_growth_multiplier,
+    ))
 
     if focus_product_material_id:
         node_id = focus_product_node_id or (scope_value if scope_type == PlanRun.ScopeType.NODE else None)

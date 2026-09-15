@@ -30,7 +30,7 @@ sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 from .data_cache import load_output_json  # noqa: E402
-from .models import BeatZoneAssignment, PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
+from .models import BeatZoneAssignment, ExceptionRecord, PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
 
 
 def _parse_plan_date(plan_date) -> _date:
@@ -535,14 +535,28 @@ def generate_route_plans_for_se(
     return {"Tasks": default_tasks, "Sequencing_Basis": default_basis, "Travel_Cap_Exceeded": default_cap_exceeded, "exceptions": exceptions}
 
 
-def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
+def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> Dict[str, Any]:
     """Used by manage.py select_route_plan when an SE (via the ops CLI stand-in, see
     that command's docstring) picks a different one of the >=3 synced plans than the
     default -- and, as of 2026-09-15, by every SE Accept/add-stop/remove-stop call too
     (routing.accept_route_plan/edit_route_stops). Upserts this SE's DailyTask rows from
     the newly-selected RoutePlan's stops by dc_id, so Pitching Agent / reporting / the
-    API don't need to know a selection or edit ever happened. Returns the number of
-    stops on the resulting route (both preserved and newly-created rows).
+    API don't need to know a selection or edit ever happened.
+
+    Returns a status dict -- CHANGED 2026-09-15 from a bare stop-count int, explicit
+    follow-up request ("if route plan a plan b and plan c create than all pitching data
+    should be fetched... if SE add the dc data after accepting the route data should be
+    fetched in all agent saved and go to feedback"). Also now runs Pitching Agent + DC
+    Card (services.run_pitching_and_dc_card_agents) for whatever DCs are on the route
+    after this resync -- previously a genuinely new DC (one not in the run's original
+    DailyTask set) got neither, per this function's own former "Known limitation" below.
+    Stays fully synchronous (no background job/polling -- explicit follow-up choice):
+    the caller's single API response now carries `pitch_card_status` (`"regenerated"` /
+    `"failed"` / `"skipped_no_stops"`), `dcs_refreshed`, and `pitch_failures` so the
+    frontend can show "fetching data / creating pitch" for the call's duration and then
+    confirm the result, without a separate status-polling mechanism. Keys:
+      stop_count: int -- number of stops on the resulting route (unchanged meaning).
+      pitch_card_status / dcs_refreshed / pitch_failures: see above.
 
     CHANGED 2026-09-15, explicit user request ("why dc card and pitch empty") --
     previously deleted EVERY existing DailyTask row for this SE/PlanRun and recreated
@@ -559,19 +573,23 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
     fields blank, per this function's own "Known limitation" below, unchanged for
     those specifically since they really do have no pitch/card yet.
 
-    Known limitation: RouteStop only carries R6.1's confirmed fields (DC_ID, sequence,
-    purposes, timing) -- not the rich per-DC financial/reason context (Present_Outstanding,
-    Reason_Of_Visit, YTD_Private_Label, Finance_Status, etc.) that only exists transiently on the
-    DailyTaskRow objects built during generation. A genuinely NEW DailyTask row created
-    here will have those fields blank until a re-run of activate_tuff/generate_se_plan
-    regenerates the full candidate set fresh. Not silently papered over -- worth
-    knowing before relying on a freshly-added stop for anything beyond confirming which
-    DC/order the SE will visit."""
+    Known limitation (narrowed 2026-09-15 -- Pitching/DC Card are now fresh, this part
+    isn't): RouteStop only carries R6.1's confirmed fields (DC_ID, sequence, purposes,
+    timing) -- not the rich per-DC financial/reason context (Present_Outstanding,
+    Reason_Of_Visit, YTD_Private_Label, Finance_Status, BO_Scores, etc.) that only
+    exists transiently on the DailyTaskRow objects built during generation. A genuinely
+    NEW DailyTask row created here will still have those specific fields blank until a
+    re-run of activate_tuff/generate_se_plan regenerates the full candidate set fresh
+    (that's a whole-SE ranking pass that would reshuffle every other DC's priority too
+    if re-run for one ad-hoc added stop -- deliberately out of scope here). Not silently
+    papered over -- worth knowing before relying on a freshly-added stop's route-ranking
+    fields for anything beyond confirming which DC/order the SE will visit. Its
+    PitchScript/DCCard, however, ARE fresh as of this call -- see pitch_card_status."""
     from .models import DailyTask
 
     selected = plan_run.route_plans.filter(se_id=se_id, is_default_selected=True).first()
     if selected is None:
-        return 0
+        return {"stop_count": 0, "pitch_card_status": "skipped_no_stops", "dcs_refreshed": [], "pitch_failures": []}
 
     stops = list(selected.stops.order_by("sequence_no"))
     stop_dc_ids = {stop.dc_id for stop in stops}
@@ -608,7 +626,31 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
             dc_health_score=None, health_gap=None, health_sub_scores={},
             negative_gm_flag=False, health_focus_track=False, health_focus_purposes="",
         )
-    return len(stops)
+
+    result: Dict[str, Any] = {
+        "stop_count": len(stops), "pitch_card_status": "skipped_no_stops",
+        "dcs_refreshed": [], "pitch_failures": [],
+    }
+    if stops:
+        from .services import run_pitching_and_dc_card_agents
+        client = agent.get_client()
+        try:
+            run_exceptions = run_pitching_and_dc_card_agents(plan_run, str(selected.plan_date), client, {})
+        finally:
+            client.close()
+        result["pitch_card_status"] = "failed" if run_exceptions else "regenerated"
+        result["dcs_refreshed"] = sorted(stop_dc_ids)
+        result["pitch_failures"] = run_exceptions
+        if run_exceptions:
+            run_ts = agent.utc_now_iso()
+            ExceptionRecord.objects.bulk_create([
+                ExceptionRecord(
+                    plan_run=plan_run, record_id=str(e.get("record_id") or e.get("dc_id") or ""),
+                    source=e["source"], reason_code=e["reason_code"], detail=e["detail"], run_timestamp=run_ts,
+                )
+                for e in run_exceptions
+            ])
+    return result
 
 
 class RoutingError(RuntimeError):
@@ -788,8 +830,14 @@ def select_default_route_plan(se: str, plan_date: str, plan_type: str, plan_run_
     routes.update(is_default_selected=False)
     target.is_default_selected = True
     target.save(update_fields=["is_default_selected"])
-    created = resync_daily_tasks_from_selected_plan(plan_run, se_id)
-    return {"plan_run_id": plan_run.id, "se_id": se_id, "selected": plan_type, "daily_tasks_resynced": created}
+    sync_result = resync_daily_tasks_from_selected_plan(plan_run, se_id)
+    return {
+        "plan_run_id": plan_run.id, "se_id": se_id, "selected": plan_type,
+        "daily_tasks_resynced": sync_result["stop_count"],
+        "pitch_card_status": sync_result["pitch_card_status"],
+        "dcs_refreshed": sync_result["dcs_refreshed"],
+        "pitch_failures": sync_result["pitch_failures"],
+    }
 
 
 def accept_route_plan(se: str, plan_date: str, plan_type: str, plan_run_id: Optional[int] = None, actor: str = "") -> Dict[str, Any]:
@@ -1014,12 +1062,16 @@ def edit_route_stops(
         "distance_source", "google_exceeds_cap", "feasible", "manually_edited",
     ])
 
-    resynced = 0
+    sync_result = {"stop_count": 0, "pitch_card_status": "skipped_not_selected", "dcs_refreshed": [], "pitch_failures": []}
     if target.is_default_selected:
-        resynced = resync_daily_tasks_from_selected_plan(plan_run, se_id)
+        sync_result = resync_daily_tasks_from_selected_plan(plan_run, se_id)
 
     return {
         "plan_run_id": plan_run.id, "plan_type": plan_type, "action": action, "dc_id": dc_id,
         "stop_count": len(route_result["stops"]), "total_distance_km": target.total_distance_km,
-        "total_minutes": target.total_minutes, "feasible": target.feasible, "daily_tasks_resynced": resynced,
+        "total_minutes": target.total_minutes, "feasible": target.feasible,
+        "daily_tasks_resynced": sync_result["stop_count"],
+        "pitch_card_status": sync_result["pitch_card_status"],
+        "dcs_refreshed": sync_result["dcs_refreshed"],
+        "pitch_failures": sync_result["pitch_failures"],
     }
