@@ -538,34 +538,62 @@ def generate_route_plans_for_se(
 def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
     """Used by manage.py select_route_plan when an SE (via the ops CLI stand-in, see
     that command's docstring) picks a different one of the >=3 synced plans than the
-    default. Deletes and recreates this SE's DailyTask rows from the newly-selected
-    RoutePlan's stops, so Pitching Agent / reporting / the API don't need to know a
-    selection ever happened. Returns the number of DailyTask rows created.
+    default -- and, as of 2026-09-15, by every SE Accept/add-stop/remove-stop call too
+    (routing.accept_route_plan/edit_route_stops). Upserts this SE's DailyTask rows from
+    the newly-selected RoutePlan's stops by dc_id, so Pitching Agent / reporting / the
+    API don't need to know a selection or edit ever happened. Returns the number of
+    stops on the resulting route (both preserved and newly-created rows).
+
+    CHANGED 2026-09-15, explicit user request ("why dc card and pitch empty") --
+    previously deleted EVERY existing DailyTask row for this SE/PlanRun and recreated
+    all of them from scratch on every call. Since PitchScript/DCCard are each a
+    OneToOneField(DailyTask, on_delete=CASCADE), that silently destroyed already-
+    generated Pitch/DC Card data for EVERY DC still on the route, not just ones
+    genuinely removed -- harmless when this only ran occasionally via the CLI ops
+    override, but a real, constantly-hit problem once SE Accept/add/remove-stop started
+    calling this on every single interaction. Now a DC that stays on the route keeps
+    its existing DailyTask row (and therefore its PitchScript/DCCard) with only its
+    route-position fields (sr_no/distance_km/purpose_of_visit/estimated_duration)
+    updated; only a DC no longer on the route gets its row (and cascaded pitch/card)
+    deleted, and only a genuinely new DC gets a bare new row - still with the rich
+    fields blank, per this function's own "Known limitation" below, unchanged for
+    those specifically since they really do have no pitch/card yet.
 
     Known limitation: RouteStop only carries R6.1's confirmed fields (DC_ID, sequence,
     purposes, timing) -- not the rich per-DC financial/reason context (Present_Outstanding,
     Reason_Of_Visit, YTD_Private_Label, Finance_Status, etc.) that only exists transiently on the
-    DailyTaskRow objects built during generation. Re-synced DailyTask rows after a
-    plan switch will have those fields blank until a re-run of activate_tuff/
-    generate_se_plan regenerates the full candidate set fresh. Not silently
-    papered over -- worth knowing before relying on this for anything beyond
-    confirming which DCs/order the SE will actually visit."""
+    DailyTaskRow objects built during generation. A genuinely NEW DailyTask row created
+    here will have those fields blank until a re-run of activate_tuff/generate_se_plan
+    regenerates the full candidate set fresh. Not silently papered over -- worth
+    knowing before relying on a freshly-added stop for anything beyond confirming which
+    DC/order the SE will visit."""
     from .models import DailyTask
 
     selected = plan_run.route_plans.filter(se_id=se_id, is_default_selected=True).first()
     if selected is None:
         return 0
 
-    DailyTask.objects.filter(plan_run=plan_run, se_id=se_id).delete()
+    stops = list(selected.stops.order_by("sequence_no"))
+    stop_dc_ids = {stop.dc_id for stop in stops}
 
-    dc_by_id = {}
-    for stop in selected.stops.order_by("sequence_no"):
-        dc_by_id.setdefault(stop.dc_id, stop)
+    # Only a DC no longer on the route loses its DailyTask row (and, via cascade, any
+    # pitch/card it had) - everything else is upserted below, never blanket-deleted.
+    DailyTask.objects.filter(plan_run=plan_run, se_id=se_id).exclude(dc_id__in=stop_dc_ids).delete()
+    existing_by_dc = {
+        t.dc_id: t for t in DailyTask.objects.filter(plan_run=plan_run, se_id=se_id, dc_id__in=stop_dc_ids)
+    }
 
-    created = 0
     cumulative_km = 0.0
-    for stop in selected.stops.order_by("sequence_no"):
+    for stop in stops:
         cumulative_km += stop.distance_from_prev_km or 0.0
+        existing = existing_by_dc.get(stop.dc_id)
+        if existing is not None:
+            existing.sr_no = stop.sequence_no
+            existing.distance_km = round(cumulative_km, 2)
+            existing.purpose_of_visit = stop.purposes
+            existing.estimated_duration = int(stop.visit_duration_min)
+            existing.save(update_fields=["sr_no", "distance_km", "purpose_of_visit", "estimated_duration"])
+            continue
         DailyTask.objects.create(
             plan_run=plan_run, se_id=se_id, se_name=selected.se_name, plan_date=selected.plan_date,
             sr_no=stop.sequence_no, dc_name=None, dc_id=stop.dc_id, distance_km=round(cumulative_km, 2),
@@ -580,8 +608,7 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> int:
             dc_health_score=None, health_gap=None, health_sub_scores={},
             negative_gm_flag=False, health_focus_track=False, health_focus_purposes="",
         )
-        created += 1
-    return created
+    return len(stops)
 
 
 class RoutingError(RuntimeError):
