@@ -318,6 +318,21 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "description": "R1.1 (GR-R3) -- the Routing Agent's own total field-time ceiling (travel + visits combined), shared by Plan A's 3 models, Plan B's 3 routes, and Plan C's prompt. Distinct from the Daily Caps group's total_capacity_min, which also includes call time and governs the SE Daily Task Agent's own daily capacity, not routing.",
         "target": "module", "module_attr": "R1_1_FIELD_MINUTES_CAP", "default": 420,
     },
+    # SE view's routing plan (added 2026-09-15, explicit user request -- "in Se view
+    # plan will be created according the admin panel select which plan a,planb,planc, do
+    # selection of plan should be restrict for SE"). Unlike every other field in this
+    # group, this doesn't feed any generation-time math -- it's a pure UI directive the
+    # frontend reads to decide which routing_plan an SE's OWN view requests, and whether
+    # to show them the A/B/C picker at all (it hides it for role==SE, same lock pattern
+    # as the scope-value badge for SE/ABM/RBM). Admin/ZBM/RBM/ABM keep the full picker
+    # for every view, including when drilling into a specific SE's plan.
+    {
+        "group": "Routing", "key": "se_routing_plan", "type": "choice",
+        "label": "SE view's routing plan", "unit": "",
+        "choices": ["A", "B", "C"],
+        "description": "Which Routing Agent plan family (A = Priority-Max/Distance-Min/Balanced, B = Beat Planning/Cluster-Based, C = AI-Reasoned) an SE sees when they open their OWN view. SE accounts cannot switch this themselves - it's fully admin-controlled. Does not affect Admin/ZBM/RBM/ABM's own ability to pick any plan when viewing any scope.",
+        "target": "module", "module_attr": "SE_ROUTING_PLAN", "default": "A",
+    },
     # Plan C decision style (added 2026-09-12, explicit user request -- "provide the
     # functionality in admin panel to decide on which temperament ai decide the best
     # possible route"). The FIRST non-numeric ADMIN_EDITABLE_FIELDS entry -- "type":

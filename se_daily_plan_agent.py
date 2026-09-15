@@ -3553,6 +3553,19 @@ R1_1_FIELD_MINUTES_CAP = 420
 # correction already made in the master BO_Configuration_Sheet_v3.xlsx (8.9). A route is
 # feasible only if SUM(Travel_Time_Leg) <= 180 -- an SE must NOT spend more than 3 hours
 # of the day travelling, not "must spend at least" as this constant previously enforced.
+# Which Routing Agent plan family (A/B/C) an SE's OWN view generates (added 2026-09-15,
+# explicit user request -- "in Se view plan will be created according the admin panel
+# select which plan a,planb,planc, do selection of plan should be restrict for SE").
+# Admin Control Panel-overridable, same module-attr monkey-patch mechanism as the other
+# Routing group fields below (see load_business_constants's own docstring). Enforced
+# ONLY in the frontend (features/scopeSelector's RoutingPlanSelector renders a
+# read-only badge instead of the A/B/C picker for role==SE, same isScopeValueLockedToSelf
+# pattern already used for scope values) -- this app's RBAC has never been enforced
+# server-side (see rbac.ts's own docstring: "the API itself enforces nothing"), so this
+# constant is exposed via GET /admin/config/ for the frontend to read, not consulted by
+# any backend generation code itself. Admin/ZBM/RBM/ABM's own views are unaffected --
+# only an SE viewing their own scope is locked to this.
+SE_ROUTING_PLAN = "A"
 R1_2_MAX_TRAVEL_MINUTES = 180  # Admin Control Panel-overridable (planning.admin_config), see load_business_constants's own docstring.
 # Plan A round-trip distance ceiling (added 2026-09-09, explicit user request "include
 # 100km maximum round trip") -- not part of the original spec (Model 1 was documented
