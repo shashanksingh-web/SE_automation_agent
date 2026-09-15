@@ -1180,7 +1180,30 @@ def _attach_nearby_product_recommendations(
     even though the only current caller uses the plain recommended_products default."""
     dc_by_id = {dc["DC_ID"]: dc for dc in dc_master}
 
+    # Static DC_Master_Normalized.json is missing Latitude/Longitude for ~60% of the
+    # whole network (confirmed live 2026-09-15: 11,532/19,330 rows) -- and a DC that
+    # needs this fallback (no dominant_category, i.e. no purchase in the last 30 days)
+    # is exactly the kind of DC disproportionately likely to also be missing from a
+    # normalization snapshot. Root-caused a real "recommended_products empty" report:
+    # 5 real DCs (same Bettiah node, all with genuine purchase history, just none in
+    # the last 30d) all had Latitude/Longitude = None in dc_master, so _own_coords
+    # returned None for every one of them and the geo-fallback never even ran a
+    # candidate search. Same live-preferred/static-fallback pattern as routing.py's
+    # _live_geo_lookup (added the same day, same root cause) -- overlay live
+    # input_partner_details.lat_2/long_2 for exactly the DCs needing this fallback
+    # before computing their own origin coordinates.
+    live_geo: Dict[str, Tuple[float, float]] = {}
+    try:
+        for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_geo(needs_geo_fallback)):
+            lat, lon = agent.parse_number(row.get("latitude")), agent.parse_number(row.get("longitude"))
+            if lat is not None and lon is not None:
+                live_geo[row["sap_partner_id"]] = (lat, lon)
+    except Exception:
+        pass
+
     def _own_coords(dc_id: str) -> Optional[Tuple[float, float]]:
+        if dc_id in live_geo:
+            return live_geo[dc_id]
         dc = dc_by_id.get(dc_id)
         if not dc or dc.get("Latitude") is None or dc.get("Longitude") is None:
             return None
