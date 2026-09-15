@@ -19,10 +19,12 @@ from __future__ import annotations
 import sys
 from datetime import date as _date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
 from django.db.models import Q
+from django.utils import timezone
 
 sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
@@ -640,7 +642,20 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
     if not routes.exists():
         raise RoutingError(f"PlanRun #{plan_run.id} has no RoutePlans for se={se!r} on {plan_date}.")
 
+    # Live geo (input_partner_details, see _live_geo_lookup's own docstring) overlaid
+    # onto the DC_Master static fallback -- added 2026-09-15, fixing a real accuracy gap
+    # found live while building edit_route_stops: DC_Master_Normalized.json's own
+    # Latitude/Longitude columns are noticeably less complete than this live table for
+    # the exact same DCs, so RouteMap was showing more "no location on file" stops than
+    # necessary. Scoped to only the dc_ids actually on these routes, not the whole
+    # network, to keep the live query cheap.
     dc_geo = _dc_geo_lookup()
+    all_stop_ids = list({s.dc_id for r in routes for s in r.stops.all()})
+    live_coords = _live_geo_lookup(all_stop_ids) if all_stop_ids else {}
+    for dc_id, (lat, lon) in live_coords.items():
+        dc_geo.setdefault(dc_id, {})["latitude"] = lat
+        dc_geo[dc_id]["longitude"] = lon
+
     plans = []
     for r in routes.order_by("plan_type"):
         plans.append({
@@ -674,6 +689,11 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             "expected_value_captured": r.expected_value_captured,
             "value_per_km": r.value_per_km,
             "expected_value_dc_count": r.expected_value_dc_count,
+            # True once an SE has added/removed a stop via edit_route_stops (see
+            # RoutePlan.manually_edited's own docstring) - the frontend should caveat
+            # priority_score_captured/expected_value_captured above as reflecting the
+            # ORIGINAL algorithm stop set, not this route's current (edited) one.
+            "manually_edited": r.manually_edited,
             # Plan C only (planning/models.py RoutePlan.llm_reasoning) -- the model's own
             # explanation for these stops/order, plus any system notes (a hallucinated
             # DC_ID dropped, a cap-breach trim) appended by build_route_llm_reasoned.
@@ -704,7 +724,14 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
             "dropped_dcs": [{"dc_id": d.dc_id, "reason": d.reason} for d in r.dropped_dcs.all()],
         })
     first = routes.first()
-    return {"plan_run_id": plan_run.id, "se_id": first.se_id, "se_name": first.se_name, "plan_date": plan_date, "plans": plans}
+    return {
+        "plan_run_id": plan_run.id, "se_id": first.se_id, "se_name": first.se_name, "plan_date": plan_date,
+        # Whole-day approval state (added 2026-09-15, see accept_route_plan/
+        # reject_route_plan's own docstrings) - a PlanRun-level field, not per-route, so
+        # it's returned once here rather than repeated on every plan dict below.
+        "status": plan_run.status, "reviewed_by": plan_run.reviewed_by or None, "reviewed_at": plan_run.reviewed_at,
+        "plans": plans,
+    }
 
 
 def select_default_route_plan(se: str, plan_date: str, plan_type: str, plan_run_id: Optional[int] = None) -> Dict[str, Any]:
@@ -728,3 +755,229 @@ def select_default_route_plan(se: str, plan_date: str, plan_type: str, plan_run_
     target.save(update_fields=["is_default_selected"])
     created = resync_daily_tasks_from_selected_plan(plan_run, se_id)
     return {"plan_run_id": plan_run.id, "se_id": se_id, "selected": plan_type, "daily_tasks_resynced": created}
+
+
+def accept_route_plan(se: str, plan_date: str, plan_type: str, plan_run_id: Optional[int] = None, actor: str = "") -> Dict[str, Any]:
+    """SE's own "Accept" action (added 2026-09-15, explicit user request -- "In se have
+    the right ... if he wants to accept any route he will have accept and reject cta").
+    Distinct from select_default_route_plan above (which stays as-is, still used
+    standalone by `manage.py select_route_plan`/an admin browsing alternatives for some
+    SE without that implying approval) -- this calls it for the actual pick + DailyTask
+    resync, then ALSO marks the whole day's PlanRun APPROVED with a real reviewer record.
+    PlanRun.status/reviewed_by/reviewed_at existed since this model was first written but
+    nothing ever set them (see PlanRun.status's own "no reviewer workflow exists yet"
+    comment) -- this is the first real writer."""
+    result = select_default_route_plan(se, plan_date, plan_type, plan_run_id)
+    plan_run = PlanRun.objects.get(id=result["plan_run_id"])
+    plan_run.status = PlanRun.Status.APPROVED
+    plan_run.reviewed_by = actor or se
+    plan_run.reviewed_at = timezone.now()
+    plan_run.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+    result["status"] = plan_run.status
+    return result
+
+
+def reject_route_plan(se: str, plan_date: str, plan_run_id: Optional[int] = None, actor: str = "") -> Dict[str, Any]:
+    """SE's own "Reject" action (added 2026-09-15, explicit user request, explicit
+    follow-up choice: "Marks it rejected, keeps existing tasks untouched" -- i.e. purely
+    an audit/flag, DailyTask is deliberately left alone here; an admin has to notice the
+    rejection and act on it separately, same trust posture as this app's other
+    admin-reviews-later fields). Does not touch is_default_selected/RouteStop/DailyTask
+    at all -- if the SE later Accepts a (possibly different) route, accept_route_plan
+    flips status back to APPROVED same as any other call."""
+    plan_run = resolve_route_plan_run(se, plan_date, plan_run_id)
+    plan_run.status = PlanRun.Status.REJECTED
+    plan_run.reviewed_by = actor or se
+    plan_run.reviewed_at = timezone.now()
+    plan_run.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+    return {"plan_run_id": plan_run.id, "se_id": se, "status": plan_run.status}
+
+
+def _live_geo_lookup(dc_ids: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float]]]:
+    """Live per-DC lat/lon from input_partner_details.lat_2/long_2 (Redshift "dev" DB) --
+    the SAME source planning.services._sql_geo/generate_plan_for_scope's own candidate-
+    building step uses to populate the `dc["Latitude"]/["Longitude"]` every real Model
+    1-3/Plan B/C route is actually built from. Added 2026-09-15, fixing a real bug found
+    live: edit_route_stops originally reused _dc_geo_lookup() (DC_Master_Normalized.
+    json's OWN Latitude/Longitude columns, built for the map feature) to reconstruct an
+    existing route's stops before recomputing distances -- but that static, normalized
+    snapshot is a much less complete source than this live table (confirmed live: a
+    route recomputed from DC_Master alone silently produced 0km/0min legs for DCs this
+    live query has real coordinates for, understating a 76km route as 12km). Falls back
+    to DC_Master's own value per-DC (via the `fallback` param) when the live client
+    isn't configured, the query fails, or a specific DC_ID isn't in the live result --
+    fail-open, never raises, same posture as every other live-pull site in this app."""
+    from .services import _sql_geo  # local import - services.py imports this module at
+    # its own top level, so a module-level import here would be circular.
+
+    result: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    try:
+        client = agent.get_client()
+    except Exception:
+        return result
+    try:
+        for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_geo(dc_ids)):
+            lat, lon = agent.parse_number(row.get("latitude")), agent.parse_number(row.get("longitude"))
+            if lat is not None and lon is not None:
+                result[row["sap_partner_id"]] = (lat, lon)
+    except Exception:
+        pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+    return result
+
+
+def _reconstruct_metrics_candidates(
+    stops: List[RouteStop], coords_by_id: Dict[str, Tuple[Optional[float], Optional[float]]],
+) -> List[Dict[str, Any]]:
+    """Turns persisted RouteStop rows back into the candidate-dict shape
+    se_daily_plan_agent._route_metrics expects (dc lat/lon, row.Estimated_Duration,
+    priority_score - the only 3 things that function and _candidate_coords actually
+    read). Used by edit_route_stops to recompute a manually-edited route's real
+    distances/times through the EXACT same shared math Models 1-3/Plan B/C already use,
+    rather than hand-rolling leg arithmetic a second time. priority_score is always 0.0
+    here, never fabricated -- RouteStop persists no per-stop BO Scoring Engine
+    breakdown to recover it from (same gap resync_daily_tasks_from_selected_plan's own
+    docstring already documents), which is exactly why RoutePlan.manually_edited exists:
+    to tell the frontend this route's priority_score_captured/expected_value_captured
+    no longer reflect its current (edited) stop set."""
+    out = []
+    for s in stops:
+        lat, lon = coords_by_id.get(s.dc_id, (None, None))
+        out.append({
+            "dc": {"DC_ID": s.dc_id, "Latitude": lat, "Longitude": lon},
+            "row": SimpleNamespace(DC_ID=s.dc_id, Estimated_Duration=s.visit_duration_min, Purpose_Of_Visit=s.purposes),
+            "priority_score": 0.0,
+            "matched": [],
+        })
+    return out
+
+
+def edit_route_stops(
+    se: str, plan_date: str, plan_type: str, action: str, dc_id: str,
+    plan_run_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """SE's own route-editing right (added 2026-09-15, explicit user request -- "if se
+    wants add the dc in route plan than he will add or wants to delete the route he
+    will", follow-up choices: any DC in the SE's own assigned scope is addable, and
+    edits are allowed up to and including plan_date itself, never for a date that has
+    already passed). action is "add" or "remove".
+
+    "add": dc_id must (a) exist in DC_Master, (b) be assigned to THIS se (Assigned_SE_
+    Email match, case-insensitive) - an SE cannot add a DC outside their own scope even
+    though the API takes a bare dc_id, same never-trust-the-request-alone posture as
+    every other role check in this app (see rbac.ts's own docstring: "the API itself
+    enforces nothing" - this is the one place on the routing surface that DOES enforce
+    server-side, specifically because this is a mutation, not a read/generation
+    request), (c) have real Latitude/Longitude on file (can't route to an unknown
+    location), and (d) not already be on this route. Appended at the end of the visit
+    order with a default 45-minute visit (RouteStop.visit_duration_min's own model
+    default) - the system has no BO-scored duration for a DC that never went through
+    this PlanRun's own generation.
+
+    "remove": dc_id must currently be on this route, and at least one stop must remain
+    (a route can't be edited down to zero stops - reject the whole route instead if
+    none of it is wanted).
+
+    Recomputes total_distance_km/total_travel_minutes/total_visit_minutes/total_minutes/
+    feasible via the exact same _route_metrics + apply_google_route_accuracy real-road
+    overlay every algorithm-built route already uses (see _reconstruct_metrics_
+    candidates), replaces this RoutePlan's RouteStop rows, sets manually_edited=True,
+    and resyncs DailyTask if this route is the SE's currently-selected one (same
+    resync_daily_tasks_from_selected_plan every other mutation already uses) - so an
+    edit to the plan the SE is actually going to work from today takes effect
+    immediately, not just in the RoutePlan row."""
+    if action not in ("add", "remove"):
+        raise RoutingError(f"Unknown action {action!r} - must be 'add' or 'remove'.")
+
+    parsed_date = _parse_plan_date(plan_date)
+    if parsed_date < _date.today():
+        raise RoutingError(f"{plan_date} has already passed - route edits are only allowed for today or a future date.")
+
+    plan_run = resolve_route_plan_run(se, plan_date, plan_run_id)
+    routes = RoutePlan.objects.filter(plan_run=plan_run, plan_date=plan_date).filter(_se_filter(se))
+    if not routes.exists():
+        raise RoutingError(f"PlanRun #{plan_run.id} has no RoutePlans for se={se!r} on {plan_date}.")
+    target = routes.filter(plan_type=plan_type).first()
+    if target is None:
+        raise RoutingError(f"No {plan_type} plan exists for se={se!r} on {plan_date} in PlanRun #{plan_run.id}.")
+
+    se_id = routes.first().se_id
+    existing_stops = list(target.stops.order_by("sequence_no"))
+
+    output_dir = Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output"
+    dc_master = load_output_json(output_dir, "DC_Master_Normalized.json")
+    dc_master_geo = _dc_geo_lookup()  # static fallback only - see _live_geo_lookup's own docstring
+
+    needed_ids = list({s.dc_id for s in existing_stops} | {dc_id})
+    coords_by_id = _live_geo_lookup(needed_ids)
+    for needed_id in needed_ids:
+        if needed_id not in coords_by_id:
+            fallback = dc_master_geo.get(needed_id, {})
+            coords_by_id[needed_id] = (fallback.get("latitude"), fallback.get("longitude"))
+
+    if action == "add":
+        if any(s.dc_id == dc_id for s in existing_stops):
+            raise RoutingError(f"DC {dc_id} is already on this route.")
+        dc_row = next((r for r in dc_master if str(r.get("DC_ID")) == dc_id), None)
+        if dc_row is None:
+            raise RoutingError(f"No DC with id={dc_id} found.")
+        assigned_se = (dc_row.get("Assigned_SE_Email") or "").strip().lower()
+        if assigned_se != se.strip().lower():
+            raise RoutingError(f"DC {dc_id} is not assigned to {se!r} - an SE can only add DCs from their own scope.")
+        new_lat, new_lon = coords_by_id.get(dc_id, (None, None))
+        if new_lat is None or new_lon is None:
+            raise RoutingError(f"DC {dc_id} has no location on file - cannot compute a route to it.")
+        candidates = _reconstruct_metrics_candidates(existing_stops, coords_by_id) + [{
+            "dc": {"DC_ID": dc_id, "Latitude": new_lat, "Longitude": new_lon},
+            "row": SimpleNamespace(DC_ID=dc_id, Estimated_Duration=45.0, Purpose_Of_Visit="Manually Added by SE"),
+            "priority_score": 0.0,
+            "matched": [],
+        }]
+    else:
+        if not any(s.dc_id == dc_id for s in existing_stops):
+            raise RoutingError(f"DC {dc_id} is not on this route.")
+        if len(existing_stops) <= 1:
+            raise RoutingError("Cannot remove the only stop on this route - reject the whole route instead if none of it is wanted.")
+        candidates = _reconstruct_metrics_candidates([s for s in existing_stops if s.dc_id != dc_id], coords_by_id)
+
+    origin = (target.origin_lat, target.origin_lon)
+    route_result = agent._route_metrics(candidates, origin, agent.R3_2_DEFAULT_AVG_SPEED_KMPH)
+    agent.apply_google_route_accuracy(route_result, origin)  # best-effort real-road overlay, fails open
+
+    target.stops.all().delete()
+    RouteStop.objects.bulk_create([
+        RouteStop(
+            route_plan=target, dc_id=stop["row"].DC_ID, sequence_no=i,
+            purposes=stop["row"].Purpose_Of_Visit, eta_minutes_from_origin=stop["eta_minutes"],
+            distance_from_prev_km=stop["distance_from_prev_km"],
+            travel_time_from_prev_min=stop["travel_time_from_prev_min"],
+            visit_duration_min=stop["row"].Estimated_Duration,
+        )
+        for i, stop in enumerate(route_result["stops"], start=1)
+    ])
+    target.total_distance_km = route_result["total_distance_km"]
+    target.total_travel_minutes = route_result["total_travel_min"]
+    target.total_visit_minutes = route_result["total_visit_min"]
+    target.total_minutes = route_result["total_travel_min"] + route_result["total_visit_min"]
+    target.distance_source = route_result.get("distance_source", "haversine_x1.4")
+    target.google_exceeds_cap = route_result.get("google_exceeds_cap", False)
+    target.feasible = agent._within_caps(route_result)
+    target.manually_edited = True
+    target.save(update_fields=[
+        "total_distance_km", "total_travel_minutes", "total_visit_minutes", "total_minutes",
+        "distance_source", "google_exceeds_cap", "feasible", "manually_edited",
+    ])
+
+    resynced = 0
+    if target.is_default_selected:
+        resynced = resync_daily_tasks_from_selected_plan(plan_run, se_id)
+
+    return {
+        "plan_run_id": plan_run.id, "plan_type": plan_type, "action": action, "dc_id": dc_id,
+        "stop_count": len(route_result["stops"]), "total_distance_km": target.total_distance_km,
+        "total_minutes": target.total_minutes, "feasible": target.feasible, "daily_tasks_resynced": resynced,
+    }

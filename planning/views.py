@@ -18,7 +18,10 @@ from .models import (
     ScheduledScope,
 )
 from .product_cohort import ProductCohortError, build_season_weeks, split_csv
-from .routing import RoutingError, list_route_plans, select_default_route_plan
+from .routing import (
+    RoutingError, accept_route_plan, edit_route_stops, list_route_plans,
+    reject_route_plan, select_default_route_plan,
+)
 from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
 from .services import _output_dir as _planning_output_dir
 
@@ -321,6 +324,75 @@ def select_route_plan_view(request, se: str, plan_date: str, plan_type: str):
     plan_run_id = request.GET.get("plan_run")
     try:
         result = select_default_route_plan(se, plan_date, plan_type.upper(), int(plan_run_id) if plan_run_id else None)
+    except RoutingError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    return JsonResponse(result, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def accept_route_plan_view(request, se: str, plan_date: str, plan_type: str):
+    """GET /api/planning/routes/<se>/<plan_date>/accept/<plan_type>/?plan_run=<id>&actor=<name>
+    -- an SE's own "Accept" action (added 2026-09-15, explicit user request). Distinct
+    from select_route_plan_view above (which stays as the plain pick-among-3-alternatives
+    action, no approval implied, still used by admin/CLI browsing) -- this does the same
+    pick + DailyTask resync, then also marks the whole day's PlanRun APPROVED with a real
+    reviewer record (see routing.accept_route_plan's own docstring)."""
+    plan_run_id = request.GET.get("plan_run")
+    actor = request.GET.get("actor", "")
+    try:
+        result = accept_route_plan(se, plan_date, plan_type.upper(), int(plan_run_id) if plan_run_id else None, actor)
+    except RoutingError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    return JsonResponse(result, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def reject_route_plan_view(request, se: str, plan_date: str):
+    """GET /api/planning/routes/<se>/<plan_date>/reject/?plan_run=<id>&actor=<name> --
+    an SE's own "Reject" action (added 2026-09-15, explicit user request, explicit
+    follow-up choice: purely an audit flag, DailyTask is deliberately left untouched --
+    see routing.reject_route_plan's own docstring). Rejects the whole day's PlanRun, not
+    one specific route alternative -- PlanRun.status is a PlanRun-level field."""
+    plan_run_id = request.GET.get("plan_run")
+    actor = request.GET.get("actor", "")
+    try:
+        result = reject_route_plan(se, plan_date, int(plan_run_id) if plan_run_id else None, actor)
+    except RoutingError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    return JsonResponse(result, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def add_route_stop_view(request, se: str, plan_date: str, plan_type: str):
+    """GET /api/planning/routes/<se>/<plan_date>/<plan_type>/stops/add/?dc_id=<id>&plan_run=<id>
+    -- an SE adding a DC to their own route (added 2026-09-15, explicit user request,
+    explicit follow-up choice: any DC in the SE's own assigned scope, not just this
+    route's own dropped candidates). See routing.edit_route_stops' own docstring for the
+    full validation (DC must be assigned to this SE, have real geo, not already on the
+    route) and how distances/times get recomputed for real."""
+    dc_id = request.GET.get("dc_id")
+    plan_run_id = request.GET.get("plan_run")
+    if not dc_id:
+        return JsonResponse({"error": "dc_id is required"}, status=400)
+    try:
+        result = edit_route_stops(se, plan_date, plan_type.upper(), "add", dc_id, int(plan_run_id) if plan_run_id else None)
+    except RoutingError as e:
+        return JsonResponse({"error": str(e)}, status=422)
+    return JsonResponse(result, safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def remove_route_stop_view(request, se: str, plan_date: str, plan_type: str):
+    """GET /api/planning/routes/<se>/<plan_date>/<plan_type>/stops/remove/?dc_id=<id>&plan_run=<id>
+    -- an SE removing a DC from their own route (added 2026-09-15, explicit user
+    request). See routing.edit_route_stops' own docstring - at least one stop must
+    remain (reject the whole route instead if none of it is wanted)."""
+    dc_id = request.GET.get("dc_id")
+    plan_run_id = request.GET.get("plan_run")
+    if not dc_id:
+        return JsonResponse({"error": "dc_id is required"}, status=400)
+    try:
+        result = edit_route_stops(se, plan_date, plan_type.upper(), "remove", dc_id, int(plan_run_id) if plan_run_id else None)
     except RoutingError as e:
         return JsonResponse({"error": str(e)}, status=422)
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})

@@ -579,6 +579,18 @@ class RoutePlan(models.Model):
     # never confused with "Rs.0 from 5 of 5 stops that genuinely have no value at stake."
     expected_value_dc_count = models.IntegerField(default=0)
 
+    # SE self-service route editing (added 2026-09-15, explicit user request -- "if se
+    # wants add the dc in route plan than he will add or wants to delete the route he
+    # will"). True once an SE has added or removed at least one stop via
+    # routing.edit_route_stops - stops/distance/time are recomputed for real when this
+    # happens, but priority_score_captured/expected_value_captured above are NOT
+    # retroactively recalculated (RouteStop persists no per-stop priority/financial
+    # breakdown to recompute from - see resync_daily_tasks_from_selected_plan's own
+    # "Known limitation"), so this flag tells the frontend to caveat those two numbers
+    # as reflecting the algorithm's ORIGINAL stop set, not the SE's edited one, rather
+    # than silently showing a now-inaccurate total as if nothing changed.
+    manually_edited = models.BooleanField(default=False)
+
     # Plan C only (added 2026-09-11) -- the Anthropic model's own natural-language
     # explanation for why it picked these stops in this order, plus any system notes
     # (a hallucinated DC_ID dropped, a cap-breach trim) appended -- see
