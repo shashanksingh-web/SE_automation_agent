@@ -166,21 +166,43 @@ def _sql_outstanding(dc_ids: List[str]) -> str:
 
 
 def _sql_orders(dc_ids: List[str]) -> str:
-    # Latest order (any status) per DC -- covers both Last_Order_* (filtered to
-    # 'processed' inside normalize_sales_transactions) and Credit_On_Hold in one pull.
-    # Uses ROW_NUMBER() rather than Postgres's DISTINCT ON -- confirmed live 2026-08-04
-    # that Redshift (this cluster) does not support DISTINCT ON at all ("FeatureNotSupported").
+    # Latest order per DC, in TWO independent rankings -- covers both Last_Order_*
+    # (filtered to 'processed' inside normalize_sales_transactions) and Credit_On_Hold
+    # (any status) in one pull. Uses ROW_NUMBER() rather than Postgres's DISTINCT ON --
+    # confirmed live 2026-08-04 that Redshift (this cluster) does not support DISTINCT ON
+    # at all ("FeatureNotSupported").
+    #
+    # FIXED 2026-09-15 (found live: a DC showing a real ₹24,800 overdue balance but
+    # Last_Order_Date/Value both blank, which should be structurally impossible if any
+    # order had ever gone through) -- this used to rank ALL statuses together and keep
+    # only the single overall-latest row (rn=1), so a DC whose most recent order attempt
+    # happened to be 'failed' (or any non-'processed' status) never surfaced its real,
+    # older 'processed' order at all: normalize_sales_transactions' Python-side status
+    # filter had nothing to filter FROM, since the SQL itself had already discarded every
+    # row except that one non-processed one. Confirmed live for DC 1000043083: latest
+    # order overall was 'failed' (2026-07-28), masking a real 'processed' order twelve
+    # weeks earlier (2026-05-19, Rs.25,340) that this query never even fetched. Now ranks
+    # "latest of any status" and "latest of status='processed' specifically" independently
+    # -- returns 1 row per DC if they're the same order, 2 if they differ (or the DC has
+    # no processed order at all, in which case only the any-status row's rn_processed
+    # never reaches 1 since CASE...END is NULL for every row - correctly leaves Last_
+    # Order_Date/Value blank for a DC with a real order history but no processed order,
+    # rather than fabricating one).
     return f"""
     SELECT dc_id, amount_total, created_at, status, credit_on_hold, credit_on_hold_reason, partner_finance_status
     FROM (
         SELECT cc.partner_id AS dc_id, o.amount_total, o.created_at, o.status,
                o.credit_on_hold, o.credit_on_hold_reason, o.partner_finance_status,
-               ROW_NUMBER() OVER (PARTITION BY cc.partner_id ORDER BY o.created_at DESC) AS rn
+               ROW_NUMBER() OVER (PARTITION BY cc.partner_id ORDER BY o.created_at DESC) AS rn_any,
+               ROW_NUMBER() OVER (
+                   PARTITION BY cc.partner_id
+                   ORDER BY CASE WHEN o.status = 'processed' THEN o.created_at END DESC NULLS LAST
+               ) AS rn_processed
         FROM sale_orderrequest o
         JOIN customer_management_customer cc ON cc.id = o.partner_id
         WHERE cc.partner_id::text IN ({_sql_list(dc_ids)})
     ) ranked
-    WHERE rn = 1
+    WHERE rn_any = 1 OR (status = 'processed' AND rn_processed = 1)
     """
 
 
