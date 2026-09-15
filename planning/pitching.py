@@ -539,7 +539,7 @@ def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str,
             # around. used/skipped (the S1-S8 audit trail) always reflect this templated
             # pass regardless of which script actually gets saved.
             script, used, skipped = _compose(task, ctx)
-            _, matched_key, _ = _match_script(task.purpose_of_visit or "")
+            purposes, matched_key, _ = _match_script(task.purpose_of_visit or "")
             # Same list already folded into script's own S1 sentence via
             # _format_product_list - captured structured here too. Empty list means
             # neither this DC's own category-scoped peers nor the geographic fallback
@@ -550,9 +550,18 @@ def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str,
             # in its own try/except so a provider outage or malformed response degrades
             # cleanly to the templated script above, never breaks the pitch entirely.
             # Only OVERRIDES script_hindi when it actually produced a non-empty one --
-            # see build_ai_pitch's own docstring for the full caller contract.
+            # see build_ai_pitch's own docstring for the full caller contract. purposes/
+            # dc_name passed through (added 2026-09-15, explicit follow-up request --
+            # "use that pattern in Pitching agent which use ai token") so the AI script
+            # follows the exact same Ask/Tell/Wish structure the template uses: Ask and
+            # Wish/Close are the SAME fixed _ASK_HINDI/_WISH_HINDI lines either way (never
+            # left to the model to invent), only the middle [बताना]/Tell content is the
+            # model's own persuasive text -- see build_ai_pitch's own docstring.
             try:
-                ai_pitch = build_ai_pitch(task.dc_id, matched_key or task.purpose_of_visit or "", ctx)
+                ai_pitch = build_ai_pitch(
+                    task.dc_id, matched_key or task.purpose_of_visit or "", ctx,
+                    purposes=purposes, dc_name=task.dc_name,
+                )
             except Exception as e:
                 logger.warning("AI-Generated Pitch failed for DC %s (task %s): %s: %s", task.dc_id, task.id, type(e).__name__, e)
                 ai_pitch = {}

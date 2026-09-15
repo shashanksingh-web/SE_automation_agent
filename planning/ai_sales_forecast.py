@@ -106,7 +106,12 @@ def _cache_key(
         "anthropic": agent.ANTHROPIC_ROUTING_MODEL, "openrouter": agent.OPENROUTER_ROUTING_MODEL, "gemini": agent.GEMINI_ROUTING_MODEL,
     }
     parts = [
-        f"{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
+        # v2: prefix bumped 2026-09-15 when script_hindi's meaning changed from a full
+        # free-form script to just the [बताना]/Tell sentences (assembled into the full
+        # Ask/Tell/Wish script by the caller) -- without this, a pre-existing cache entry
+        # would resolve to the OLD full-script value under a v1 key, silently skipping the
+        # new Ask/Tell/Wish assembly for every DC/purpose already cached.
+        f"v2:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
         f"{window_days}:{club_context or ''}:{ctx.get('present_outstanding')}:{ctx.get('present_overdue')}:"
         f"{ctx.get('last_discount')}:{ctx.get('suggested_discount')}"
     ]
@@ -225,7 +230,10 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
     ]
 
 
-def build_ai_pitch(dc_id: str, purpose_label: str, ctx: Dict[str, Any], window_days: Optional[int] = None) -> Dict[str, Any]:
+def build_ai_pitch(
+    dc_id: str, purpose_label: str, ctx: Dict[str, Any], window_days: Optional[int] = None,
+    purposes: Optional[List[str]] = None, dc_name: Optional[str] = None,
+) -> Dict[str, Any]:
     """Returns {} (never raises) when: no LLM provider is configured, this DC has
     nothing real to build a pitch from at all (no candidate products AND no outstanding/
     overdue AND no club data AND no active schemes -- the same "nothing to say" case the
@@ -240,10 +248,31 @@ def build_ai_pitch(dc_id: str, purpose_label: str, ctx: Dict[str, Any], window_d
     templated script first (cheap, deterministic, already-tested) and only swaps in
     this result's script_hindi when it's non-empty, falling back to the template
     otherwise. products/reasoning/club_context/scheme_context/notes are stored
-    separately (PitchScript.ai_sales_forecast) regardless of which script won."""
+    separately (PitchScript.ai_sales_forecast) regardless of which script won.
+
+    Ask/Tell/Wish structure (added 2026-09-15, explicit follow-up request -- "use that
+    pattern in Pitching agent which use ai token"): script_hindi returned here is the
+    SAME 3-part bracketed structure planning.pitching._compose() builds for the
+    templated script -- a fixed greeting, then [पूछना] (Ask), [बताना] (Tell), [विश/क्लोज़]
+    (Wish/Close). Ask and Wish/Close reuse the EXACT SAME fixed _ASK_HINDI/_WISH_HINDI
+    lines the template uses (imported locally below to avoid a circular import --
+    planning.pitching already imports build_ai_pitch at module level) -- the model is
+    never asked to write those, so there's zero hallucination risk in the two sections
+    that matter most for a consistent, on-brand ask/close. The model's ONLY job is the
+    middle [बताना]/Tell content: the persuasive, data-grounded prose this function's
+    whole prompt below is built to produce (candidate products, scheme/club benefit,
+    outstanding-clearance benefit). purposes/dc_name are optional purely for backward
+    compatibility with any other caller -- planning.pitching always passes both; a
+    caller that omits them gets purpose_label treated as a single purpose and "जी" as
+    the greeting name, same fallback _compose() itself uses for a missing dc_name."""
     window_days = window_days if window_days is not None else agent.PITCH_AI_FORECAST_WINDOW_DAYS
     if not agent.LLM_ROUTING_ENABLED:
         return {}
+
+    from .pitching import _ASK_HINDI, _WISH_HINDI  # local import -- avoids a circular
+    # import, since planning.pitching already imports build_ai_pitch at module level.
+    ask_texts = [_ASK_HINDI[p] for p in (purposes or [purpose_label]) if p in _ASK_HINDI]
+    wish_texts = [_WISH_HINDI[p] for p in (purposes or [purpose_label]) if p in _WISH_HINDI]
 
     candidates = [c for c in (ctx.get("recommended_products") or []) if c.get("name")]
     club_context = _club_summary(ctx)
@@ -308,15 +337,20 @@ def build_ai_pitch(dc_id: str, purpose_label: str, ctx: Dict[str, Any], window_d
         lines.append("")
 
     lines += [
-        f"Write a short Hindi pitch script (3-6 sentences) the SE can read out loud during "
-        f"the visit, for the next {window_days} days' worth of business. Depending on which "
-        "real facts exist above, weave in: the benefit of clearing outstanding/overdue now "
-        "(e.g. club tier eligibility, avoiding further aging), up to 3 of the candidate "
-        "products worth pitching and why, the benefit of any active Scheme (tied to a real "
-        "product where possible), and this DC's Club standing and what acting today could "
-        "earn it. Also separately list which of the candidate products (if any) you featured.",
+        "This pitch script always follows a fixed 3-part structure: [पूछना] (Ask) opens "
+        "the conversation, [बताना] (Tell) is the persuasive data-driven pitch, [विश/क्लोज़] "
+        "(Wish/Close) asks for the commitment. The Ask and Wish/Close lines are ALREADY "
+        "fixed -- do not write them, they are added separately after your response. Your "
+        "ONLY job is the [बताना]/Tell section: write 2-4 persuasive Hindi sentences for the "
+        f"next {window_days} days' worth of business. Depending on which real facts exist "
+        "above, weave in: the benefit of clearing outstanding/overdue now (e.g. club tier "
+        "eligibility, avoiding further aging), up to 3 of the candidate products worth "
+        "pitching and why, the benefit of any active Scheme (tied to a real product where "
+        "possible), and this DC's Club standing and what acting today could earn it. Also "
+        "separately list which of the candidate products (if any) you featured.",
         "",
-        'Respond with ONLY this JSON, no other text: {"script_hindi": "...", "products": '
+        'Respond with ONLY this JSON, no other text: {"script_hindi": "<just the [बताना]/Tell '
+        'sentences, no greeting, no [पूछना]/[विश] labels>", "products": '
         '[{"name": "...", "reason": "..."}, ...], "reasoning": "1 sentence in English summarizing your approach"}.',
     ]
     prompt = "\n".join(lines)
@@ -340,8 +374,23 @@ def build_ai_pitch(dc_id: str, purpose_label: str, ctx: Dict[str, Any], window_d
     if not parsed["script_hindi"]:
         return {}
 
+    # Assemble the full Ask/Tell/Wish script -- same structure/spacing
+    # planning.pitching._compose() builds, greeting + fixed [पूछना] + the model's own
+    # [बताना] content (parsed["script_hindi"], which at this point is ONLY the Tell
+    # sentences per the prompt above) + fixed [विश/क्लोज़].
+    greeting = f"नमस्ते {(dc_name or '').strip() or 'जी'}! कैसे हैं आप, दुकान का हाल-चाल बताइए?"
+    script_lines = [greeting, ""]
+    if ask_texts:
+        script_lines.append("[पूछना] " + " ".join(ask_texts))
+        script_lines.append("")
+    script_lines.append(f"[बताना] {parsed['script_hindi']}")
+    script_lines.append("")
+    if wish_texts:
+        script_lines.append("[विश/क्लोज़] " + " ".join(wish_texts))
+    assembled_script = "\n".join(script_lines)
+
     result = {
-        "script_hindi": parsed["script_hindi"], "window_days": window_days, "products": parsed["products"],
+        "script_hindi": assembled_script, "window_days": window_days, "products": parsed["products"],
         "reasoning": parsed["reasoning"], "club_context": club_context, "scheme_context": schemes, "notes": notes,
     }
     cache[key] = result
