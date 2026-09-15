@@ -365,6 +365,44 @@ def _tell_lines(sentences: List[str]) -> List[str]:
     return ["[बताना]"] + [p if p.startswith("- ") else f"- {p}" for p in points]
 
 
+def ptp_sale_combo_fixed_lines(dc_name: str, overdue: float, outstanding: Optional[float], aging: Optional[str]) -> Dict[str, str]:
+    """The Sale + Promise To Pay / Collection combo's fixed (never-model-written)
+    greeting/Ask/Wish/header lines, per the DC Visit Pitch (Multi-Purpose) sheet's own
+    worked example (see module docstring for the sheet's stated sequencing rationale).
+    Named/shared here (added 2026-09-15, explicit user request -- "bifurcate the sales
+    and promise to pay ... all pointers in batana part") so _compose_sale_ptp_combo
+    below (the deterministic template) and ai_sales_forecast.build_ai_pitch's own combo
+    branch (added the same day, for exactly the same reason -- the AI-Generated Pitch
+    was silently discarding this bifurcation, collapsing collection and sales pointers
+    into one undifferentiated [बताना] block) can never drift apart on the parts that are
+    NEVER supposed to vary between the two paths -- only the persuasive [बताना]/Tell
+    CONTENT inside each section differs; every greeting/Ask/Wish/header word is
+    identical either way, exactly like _ASK_HINDI/_WISH_HINDI already are for the
+    Ask/Wish sections of every other Purpose."""
+    aging_note = f" ({aging})" if aging else ""
+    return {
+        "greeting_collection_led": f"नमस्ते {dc_name}! कैसे हैं आप?",
+        "greeting_sales_led": f"नमस्ते {dc_name}! कैसे हैं आप, बिज़नेस का क्या हाल है?",
+        "collection_header": "— कलेक्शन हिस्सा —",
+        "ask_collection": f"[पूछना] {dc_name}, ₹{overdue:,.0f}{aging_note} का पेमेंट पेंडिंग है — कोई दिक्कत आ रही है क्या फंड की तरफ से?",
+        "wish_collection": "[विश] बताइए, इस हफ्ते के अंदर कब तक क्लियर कर पाएंगे?",
+        "sales_header_after_collection": "— सेल्स हिस्सा (पेमेंट कमिट होने के बाद) —",
+        "ask_sales_after_collection": "[पूछना] वैसे इस सीजन में क्या चल रहा है, किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?",
+        "wish_sales_after_collection": "[विश/क्लोज़] तो चलिए, पुराना पेमेंट क्लियर होते ही एक ऑर्डर भी साथ में डाल देते हैं ताकि स्टॉक टाइम पर आ जाए।",
+        "sales_header_led": "— सेल्स हिस्सा —",
+        "ask_sales_led": "[पूछना] इस सीजन में किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?",
+        "wish_sales_led": "[विश] चलिए आज एक ऑर्डर बुक कर लेते हैं।",
+        "billing_header": "— बिलिंग हिस्सा (सेल के बाद) —",
+        "ask_billing": (
+            f"[पूछना] वैसे अभी का जो ₹{outstanding:,.0f} है, उसकी बिलिंग किस टाइम तक हो जाएगी?" if outstanding else ""
+        ),
+        "wish_billing": (
+            f"[विश/क्लोज़] तो आज के नए ऑर्डर के साथ-साथ, पुराना ₹{outstanding:,.0f} भी इसी हफ्ते क्लियर कर दीजिएगा — दोनों साथ में सेटल हो जाएंगे।"
+            if outstanding else ""
+        ),
+    }
+
+
 def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
     """DC Visit Pitch (Multi-Purpose) sheet's own "Promise To Pay / Collection + Sale"
     worked example, structurally: two section-labeled segments, sequenced by whether a
@@ -374,6 +412,7 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
     overdue = ctx.get("present_overdue") or 0
     outstanding = ctx.get("present_outstanding")
     aging = ctx.get("overdue_aging_bucket")
+    fixed = ptp_sale_combo_fixed_lines(dc_name, overdue, outstanding, aging)
 
     used: List[str] = []
     skipped: List[str] = []
@@ -404,37 +443,36 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
         # Collection-led -- sheet's Sequence Rationale: acknowledge + get a commitment
         # on the overdue first, then fold the sales ask into the same conversation so
         # it doesn't read as payment-only.
-        lines.append(f"नमस्ते {dc_name}! कैसे हैं आप?")
+        lines.append(fixed["greeting_collection_led"])
         lines.append("")
         collection_sentence = sentence_for("S5")
-        lines.append("— कलेक्शन हिस्सा —")
-        aging_note = f" ({aging})" if aging else ""
-        lines.append(f"[पूछना] {dc_name}, ₹{overdue:,.0f}{aging_note} का पेमेंट पेंडिंग है — कोई दिक्कत आ रही है क्या फंड की तरफ से?")
+        lines.append(fixed["collection_header"])
+        lines.append(fixed["ask_collection"])
         if collection_sentence:
             lines.append(f"[बताना] {collection_sentence}")
-        lines.append("[विश] बताइए, इस हफ्ते के अंदर कब तक क्लियर कर पाएंगे?")
+        lines.append(fixed["wish_collection"])
         lines.append("")
-        lines.append("— सेल्स हिस्सा (पेमेंट कमिट होने के बाद) —")
-        lines.append("[पूछना] वैसे इस सीजन में क्या चल रहा है, किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?")
+        lines.append(fixed["sales_header_after_collection"])
+        lines.append(fixed["ask_sales_after_collection"])
         lines.extend(_tell_lines(sales_sentences))
-        lines.append("[विश/क्लोज़] तो चलिए, पुराना पेमेंट क्लियर होते ही एक ऑर्डर भी साथ में डाल देते हैं ताकि स्टॉक टाइम पर आ जाए।")
+        lines.append(fixed["wish_sales_after_collection"])
     else:
         # Sales-led, no urgency to open with -- same structural idea as the sheet's
         # "Sale + Promise To Bill (P2B)" row: value first, billing folded in after.
-        lines.append(f"नमस्ते {dc_name}! कैसे हैं आप, बिज़नेस का क्या हाल है?")
+        lines.append(fixed["greeting_sales_led"])
         lines.append("")
-        lines.append("— सेल्स हिस्सा —")
-        lines.append("[पूछना] इस सीजन में किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?")
+        lines.append(fixed["sales_header_led"])
+        lines.append(fixed["ask_sales_led"])
         lines.extend(_tell_lines(sales_sentences))
-        lines.append("[विश] चलिए आज एक ऑर्डर बुक कर लेते हैं।")
+        lines.append(fixed["wish_sales_led"])
         if outstanding:
             billing_sentence = sentence_for("S5")
             lines.append("")
-            lines.append("— बिलिंग हिस्सा (सेल के बाद) —")
-            lines.append(f"[पूछना] वैसे अभी का जो ₹{outstanding:,.0f} है, उसकी बिलिंग किस टाइम तक हो जाएगी?")
+            lines.append(fixed["billing_header"])
+            lines.append(fixed["ask_billing"])
             if billing_sentence:
                 lines.append(f"[बताना] {billing_sentence}")
-            lines.append(f"[विश/क्लोज़] तो आज के नए ऑर्डर के साथ-साथ, पुराना ₹{outstanding:,.0f} भी इसी हफ्ते क्लियर कर दीजिएगा — दोनों साथ में सेटल हो जाएंगे।")
+            lines.append(fixed["wish_billing"])
         else:
             skipped.append("S5 Outstanding (no outstanding balance to raise this run)")
 

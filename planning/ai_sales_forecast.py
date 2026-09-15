@@ -61,7 +61,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import se_daily_plan_agent as agent
 
@@ -122,12 +122,12 @@ def _cache_key(
     return "|".join(parts)
 
 
-def _parse_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
-    """Never raises -- malformed/unparseable JSON returns an empty result with a note,
-    same tolerant-of-nonsense posture as se_daily_plan_agent._parse_llm_route_response.
-    script_hindi is taken as free text (can't be mechanically validated word-for-word
-    the way a product NAME can); products go through the same hallucination check Plan
-    C uses for DC_IDs."""
+def _parse_json_object(text: str) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """Shared JSON-extraction step for both _parse_pitch_response and
+    _parse_combo_pitch_response below - strips a markdown code fence if the model
+    wrapped its response in one, then json.loads. Returns (None, [note]) on any
+    failure, never raises, same tolerant-of-nonsense posture as se_daily_plan_agent.
+    _parse_llm_route_response."""
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("```")[1] if len(cleaned.split("```")) > 1 else cleaned
@@ -135,22 +135,19 @@ def _parse_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
     try:
         parsed = json.loads(cleaned)
     except json.JSONDecodeError:
-        return {"script_hindi": "", "products": [], "reasoning": "", "notes": ["Could not parse a JSON object out of the model's response"]}
-
+        return None, ["Could not parse a JSON object out of the model's response"]
     if not isinstance(parsed, dict):
-        return {"script_hindi": "", "products": [], "reasoning": "", "notes": ["Response was not a JSON object"]}
+        return None, ["Response was not a JSON object"]
+    return parsed, []
 
-    script_hindi = parsed.get("script_hindi")
-    script_hindi = script_hindi.strip() if isinstance(script_hindi, str) else ""
-    reasoning = (parsed.get("reasoning") if isinstance(parsed.get("reasoning"), str) else "") or ""
 
-    raw_products = parsed.get("products")
+def _validate_products(raw_products: Any, valid_names: set) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Shared product-hallucination check for both _parse_pitch_response and
+    _parse_combo_pitch_response below - same check Plan C uses for DC_IDs, applied to
+    product names instead."""
     notes: List[str] = []
-    if not script_hindi:
-        notes.append("Response had no non-empty 'script_hindi'")
     if not isinstance(raw_products, list):
         raw_products = []
-
     seen: set = set()
     validated: List[Dict[str, str]] = []
     for raw in raw_products:
@@ -173,7 +170,49 @@ def _parse_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
             continue
         validated.append({"name": name, "reason": str(raw.get("reason") or "")[:300]})
         seen.add(key)
+    return validated, notes
+
+
+def _parse_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
+    """Never raises -- malformed/unparseable JSON returns an empty result with a note.
+    script_hindi is taken as free text (can't be mechanically validated word-for-word
+    the way a product NAME can); products go through _validate_products."""
+    parsed, parse_notes = _parse_json_object(text)
+    if parsed is None:
+        return {"script_hindi": "", "products": [], "reasoning": "", "notes": parse_notes}
+
+    script_hindi = parsed.get("script_hindi")
+    script_hindi = script_hindi.strip() if isinstance(script_hindi, str) else ""
+    reasoning = (parsed.get("reasoning") if isinstance(parsed.get("reasoning"), str) else "") or ""
+
+    notes: List[str] = []
+    if not script_hindi:
+        notes.append("Response had no non-empty 'script_hindi'")
+    validated, product_notes = _validate_products(parsed.get("products"), valid_names)
+    notes.extend(product_notes)
     return {"script_hindi": script_hindi, "products": validated, "reasoning": reasoning, "notes": notes}
+
+
+def _parse_combo_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
+    """Sale + Promise To Pay / Collection combo variant of _parse_pitch_response (added
+    2026-09-15, explicit user request - "bifurcate the sales and promise to pay ... all
+    pointers in batana part") - expects collection_tell/sales_tell as two SEPARATE Tell
+    contents instead of one script_hindi, matching build_ai_pitch's own combo prompt.
+    Either piece can legitimately be empty (a DC with no real outstanding has nothing
+    genuine for collection_tell; the caller decides which piece(s) it actually needs
+    based on ctx, same as the deterministic template's own overdue>0 branch)."""
+    parsed, parse_notes = _parse_json_object(text)
+    if parsed is None:
+        return {"collection_tell": "", "sales_tell": "", "products": [], "reasoning": "", "notes": parse_notes}
+
+    collection_tell = parsed.get("collection_tell")
+    collection_tell = collection_tell.strip() if isinstance(collection_tell, str) else ""
+    sales_tell = parsed.get("sales_tell")
+    sales_tell = sales_tell.strip() if isinstance(sales_tell, str) else ""
+    reasoning = (parsed.get("reasoning") if isinstance(parsed.get("reasoning"), str) else "") or ""
+
+    validated, notes = _validate_products(parsed.get("products"), valid_names)
+    return {"collection_tell": collection_tell, "sales_tell": sales_tell, "products": validated, "reasoning": reasoning, "notes": notes}
 
 
 def _club_summary(ctx: Dict[str, Any]) -> Optional[str]:
@@ -230,6 +269,154 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
     ]
 
 
+def _build_ai_pitch_combo(
+    dc_id: str, ctx: Dict[str, Any], window_days: int, dc_name: Optional[str],
+    candidates: List[Dict[str, Any]], club_context: Optional[str], schemes: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Sale + Promise To Pay / Collection combo branch of build_ai_pitch (added
+    2026-09-15, explicit user request -- "bifurcate the sales and promise to pay ...
+    all pointers in batana part"). Without this branch, build_ai_pitch's normal single
+    free-form [बताना] block was silently collapsing planning.pitching._compose_sale_
+    ptp_combo's carefully-sequenced two-section structure (found live: a real pitch
+    mixed a ₹1,94,068 overdue figure and a ₹12,69,300 YTD sales figure into one
+    undifferentiated paragraph) -- a structural rule the DC Visit Pitch (Multi-Purpose)
+    sheet itself specifies (see planning.pitching's own module docstring), not
+    optional flavor text. Asks the model for TWO separate Tell contents instead of one,
+    then assembles them into the EXACT same greeting/header/Ask/Wish skeleton
+    ptp_sale_combo_fixed_lines gives the deterministic template, so an SE sees the
+    identical structure regardless of which path produced the pitch -- only the
+    persuasive sentences inside each section differ."""
+    from .pitching import ptp_sale_combo_fixed_lines
+
+    overdue = ctx.get("present_overdue") or 0
+    outstanding = ctx.get("present_outstanding")
+    aging = ctx.get("overdue_aging_bucket")
+    name = (dc_name or "").strip() or "जी"
+    fixed = ptp_sale_combo_fixed_lines(name, overdue, outstanding, aging)
+
+    lines = [
+        "You are writing a short, persuasive Hindi pitch script for a Sales Executive (SE) "
+        "visiting this Dehaat Center (DC) today. Visit purpose: Sale + Promise To Pay / Collection.",
+        "",
+        "Use ONLY the real facts given below -- never invent a number, product, scheme, or "
+        "benefit that isn't explicitly stated here. Skip any topic below that has no real data "
+        "-- never fabricate to fill a gap.",
+        "",
+        "This visit covers TWO distinct topics that must stay in TWO SEPARATE pieces of text, "
+        "never merged into one paragraph: collecting an overdue/outstanding payment, and "
+        "pitching new sales. Return them as two separate JSON fields (see the exact shape "
+        "below) so the app can keep them in their own labeled sections of the script.",
+        "",
+    ]
+    if overdue > 0:
+        lines += [
+            "Collection topic - DC's overdue payment status:",
+            f"- Present outstanding: ₹{outstanding}",
+            f"- Present overdue: ₹{overdue} ({aging or 'no aging bucket'})",
+            f"- Typical repayment time: {ctx.get('avg_repayment_days')} days",
+            "",
+        ]
+    elif outstanding:
+        lines += ["Billing topic - DC's current outstanding (not yet overdue):", f"- Present outstanding: ₹{outstanding}", ""]
+    lines.append(f"DC Club (loyalty-tier) standing: {club_context or 'no club data available'}")
+    lines.append("")
+    if schemes:
+        lines.append("Currently-active Sales/ABS Schemes available to this DC (a separate system from DC Club above):")
+        for s in schemes:
+            lines.append(f"- {s['name']} | category={s.get('category')} | brand={s.get('brand')} | valid until {s.get('valid_until')}")
+        lines.append("")
+    lines += [
+        "This DC's own purchase profile (aggregate figures only -- no per-product breakdown "
+        "exists for this DC's own purchases):",
+        f"- Dominant purchase category: {ctx.get('dominant_category') or 'unknown'}",
+        f"- This DC's own purchase value in that category (last 30 days): {ctx.get('dc_category_purchase')}",
+        f"- Total purchase last fiscal year: {ctx.get('purchase_last_fy')}",
+        f"- Total purchase year-to-date: {ctx.get('purchase_ytd')}",
+        "",
+    ]
+    if ctx.get("last_discount") is not None:
+        lines.append(f"Last discount given to this DC: {ctx['last_discount']:.0f}%")
+    if candidates:
+        lines.append(
+            "Candidate products (recently purchased by geographically/categorically similar "
+            "DCs -- you may ONLY recommend products from this exact list, never invent one):"
+        )
+        for c in candidates:
+            lines.append(
+                f"- {c.get('name')} | value=₹{c.get('value')} | category={c.get('category')} | "
+                f"brand={c.get('brand')} | segment={c.get('business_segment')} | scope={c.get('scope')}"
+            )
+        if ctx.get("suggested_discount") is not None:
+            lines.append(f"Suggested discount on the top candidate: ₹{ctx['suggested_discount']:.0f}/unit")
+        lines.append("")
+
+    lines += [
+        "Write TWO SEPARATE Tell contents:",
+        '- collection_tell: 1-2 persuasive Hindi sentences ONLY about the overdue/outstanding '
+        'payment and the benefit of clearing it now (e.g. club tier eligibility, avoiding '
+        'further aging). Leave this as an empty string if there is no real overdue/outstanding '
+        'figure above -- never invent one.',
+        f"- sales_tell: 2-3 persuasive Hindi sentences ONLY about products/scheme/Club benefit for "
+        f"the next {window_days} days' worth of business -- up to 3 of the candidate products worth "
+        "pitching and why, the benefit of any active Scheme (tied to a real product where "
+        "possible), and this DC's Club standing and what acting today could earn it. Never mention "
+        "the overdue/outstanding payment in this field -- that belongs only in collection_tell.",
+        "Also separately list which of the candidate products (if any) you featured in sales_tell.",
+        "",
+        'Respond with ONLY this JSON, no other text: {"collection_tell": "...", "sales_tell": "...", '
+        '"products": [{"name": "...", "reason": "..."}, ...], "reasoning": "1 sentence in English summarizing your approach"}.',
+    ]
+    prompt = "\n".join(lines)
+
+    raw_text, attempted_providers = agent._call_llm_for_routing(prompt)
+    if raw_text is None:
+        logger.warning("AI Pitch (combo): every configured LLM provider failed for DC %s (%s)", dc_id, attempted_providers)
+        return {}
+
+    valid_names = {c.get("name", "").strip().lower() for c in candidates}
+    parsed = _parse_combo_pitch_response(raw_text, valid_names)
+    notes = parsed["notes"]
+    if len(attempted_providers) > 1:
+        notes = [f"Routed via {attempted_providers[-1]} after {', '.join(attempted_providers[:-1])} failed"] + notes
+
+    # Same required-piece rule the deterministic template enforces: a genuine overdue
+    # needs a real collection_tell (empty would silently drop the whole collection ask
+    # this combo exists to raise, leaving a header with nothing under it); missing
+    # either required piece falls back to the template entirely rather than shipping a
+    # visibly broken half-script.
+    if overdue > 0 and not parsed["collection_tell"]:
+        return {}
+    if not parsed["sales_tell"]:
+        return {}
+
+    lines_out: List[str] = []
+    if overdue > 0:
+        lines_out += [
+            fixed["greeting_collection_led"], "",
+            fixed["collection_header"], fixed["ask_collection"], f"[बताना] {parsed['collection_tell']}", fixed["wish_collection"],
+            "",
+            fixed["sales_header_after_collection"], fixed["ask_sales_after_collection"], f"[बताना] {parsed['sales_tell']}",
+            fixed["wish_sales_after_collection"],
+        ]
+    else:
+        lines_out += [
+            fixed["greeting_sales_led"], "",
+            fixed["sales_header_led"], fixed["ask_sales_led"], f"[बताना] {parsed['sales_tell']}", fixed["wish_sales_led"],
+        ]
+        if outstanding:
+            lines_out.append("")
+            lines_out.append(fixed["billing_header"])
+            lines_out.append(fixed["ask_billing"])
+            if parsed["collection_tell"]:
+                lines_out.append(f"[बताना] {parsed['collection_tell']}")
+            lines_out.append(fixed["wish_billing"])
+
+    return {
+        "script_hindi": "\n".join(lines_out).strip(), "window_days": window_days, "products": parsed["products"],
+        "reasoning": parsed["reasoning"], "club_context": club_context, "scheme_context": schemes, "notes": notes,
+    }
+
+
 def build_ai_pitch(
     dc_id: str, purpose_label: str, ctx: Dict[str, Any], window_days: Optional[int] = None,
     purposes: Optional[List[str]] = None, dc_name: Optional[str] = None,
@@ -249,6 +436,14 @@ def build_ai_pitch(
     this result's script_hindi when it's non-empty, falling back to the template
     otherwise. products/reasoning/club_context/scheme_context/notes are stored
     separately (PitchScript.ai_sales_forecast) regardless of which script won.
+
+    Sale + Promise To Pay / Collection combo (added 2026-09-15, explicit user request --
+    "bifurcate the sales and promise to pay ... all pointers in batana part") delegates
+    entirely to _build_ai_pitch_combo, which asks for TWO separate Tell contents
+    (collection_tell/sales_tell) instead of one and assembles them into the same
+    two-section skeleton planning.pitching._compose_sale_ptp_combo uses -- see that
+    function's own docstring for why this exists (this branch previously mixed
+    collection and sales pointers into one undifferentiated paragraph).
 
     Ask/Tell/Wish structure (added 2026-09-15, explicit follow-up request -- "use that
     pattern in Pitching agent which use ai token"): script_hindi returned here is the
@@ -283,9 +478,24 @@ def build_ai_pitch(
 
     cache = _load_pitch_cache()
     key = _cache_key(dc_id, purpose_label, window_days, candidates, club_context, schemes, ctx)
+    # Sale + Promise To Pay / Collection combo (added 2026-09-15, see
+    # _build_ai_pitch_combo's own docstring) needs its own cache namespace -- its
+    # response shape (collection_tell/sales_tell) is different from every other
+    # purpose's single script_hindi, so it must never collide with (or be collided
+    # into by) a plain single-purpose cache entry for the same dc_id/window/figures.
+    is_ptp_sale_combo = set(purposes or [purpose_label]) == {"Sale", "Promise To Pay / Collection"}
+    if is_ptp_sale_combo:
+        key += ":ptp_sale_combo"
     cached = cache.get(key)
     if cached is not None:
         return cached
+
+    if is_ptp_sale_combo:
+        result = _build_ai_pitch_combo(dc_id, ctx, window_days, dc_name, candidates, club_context, schemes)
+        if result:
+            cache[key] = result
+            _save_pitch_cache()
+        return result
 
     lines = [
         f"You are writing a short, persuasive Hindi pitch script for a Sales Executive (SE) "
