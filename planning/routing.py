@@ -721,7 +721,15 @@ def list_route_plans(se: str, plan_date: str, plan_run_id: Optional[int] = None)
                 }
                 for s in r.stops.order_by("sequence_no")
             ],
-            "dropped_dcs": [{"dc_id": d.dc_id, "reason": d.reason} for d in r.dropped_dcs.all()],
+            # dc_name added 2026-09-15 (explicit user request - "list of dc when we
+            # select only those which are eligible pool") - the frontend's add-a-DC
+            # picker now sources its options from THIS list (RouteStop already has a
+            # dc_name; dropped_dcs previously didn't, so a dropped candidate had no
+            # readable label to show).
+            "dropped_dcs": [
+                {"dc_id": d.dc_id, "reason": d.reason, "dc_name": dc_geo.get(d.dc_id, {}).get("dc_name")}
+                for d in r.dropped_dcs.all()
+            ],
         })
     first = routes.first()
     return {
@@ -862,21 +870,27 @@ def edit_route_stops(
 ) -> Dict[str, Any]:
     """SE's own route-editing right (added 2026-09-15, explicit user request -- "if se
     wants add the dc in route plan than he will add or wants to delete the route he
-    will", follow-up choices: any DC in the SE's own assigned scope is addable, and
-    edits are allowed up to and including plan_date itself, never for a date that has
-    already passed). action is "add" or "remove".
+    will"; NARROWED same day, explicit follow-up -- "list of dc when we select only
+    those which are eligible pool" -- from "any DC in the SE's own assigned scope" to
+    just this route's own eligible pool, see below). Edits are allowed up to and
+    including plan_date itself, never for a date that has already passed. action is
+    "add" or "remove".
 
-    "add": dc_id must (a) exist in DC_Master, (b) be assigned to THIS se (Assigned_SE_
-    Email match, case-insensitive) - an SE cannot add a DC outside their own scope even
-    though the API takes a bare dc_id, same never-trust-the-request-alone posture as
-    every other role check in this app (see rbac.ts's own docstring: "the API itself
-    enforces nothing" - this is the one place on the routing surface that DOES enforce
-    server-side, specifically because this is a mutation, not a read/generation
-    request), (c) have real Latitude/Longitude on file (can't route to an unknown
-    location), and (d) not already be on this route. Appended at the end of the visit
-    order with a default 45-minute visit (RouteStop.visit_duration_min's own model
-    default) - the system has no BO-scored duration for a DC that never went through
-    this PlanRun's own generation.
+    "add": dc_id must be a DC THIS route's own generation already scored and considered
+    -- i.e. it must appear in target.dropped_dcs (RouteDroppedDC, "every candidate the
+    Ranked_Pool offered either appears in RouteStop or here, with why" - see that
+    model's own docstring). This is stricter than "assigned to this SE" (a DC excluded
+    by Program DC Selection, an inactive-status gate, or any other eligibility rule
+    never reaches dropped_dcs at all, so it can never be added this way either) AND
+    stricter than "considered somewhere in this PlanRun" (each of the 3 sibling
+    RoutePlans in a PlanRun can score/drop the same DC differently, e.g. via
+    exclude_stop_sets-forced distinctness - only THIS plan_type's own dropped_dcs
+    counts). A dropped_dcs entry reasoned "Geo_Incomplete" is rejected same as a DC
+    with no coordinates - the routing agent already knows it can't be routed to; not
+    already being on this route is still checked separately. Appended at the end of
+    the visit order with a default 45-minute visit (RouteStop.visit_duration_min's own
+    model default) - the system has no BO-scored duration for a DC that wasn't
+    actually selected by this route's own generation.
 
     "remove": dc_id must currently be on this route, and at least one stop must remain
     (a route can't be edited down to zero stops - reject the whole route instead if
@@ -908,8 +922,6 @@ def edit_route_stops(
     se_id = routes.first().se_id
     existing_stops = list(target.stops.order_by("sequence_no"))
 
-    output_dir = Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output"
-    dc_master = load_output_json(output_dir, "DC_Master_Normalized.json")
     dc_master_geo = _dc_geo_lookup()  # static fallback only - see _live_geo_lookup's own docstring
 
     needed_ids = list({s.dc_id for s in existing_stops} | {dc_id})
@@ -922,12 +934,15 @@ def edit_route_stops(
     if action == "add":
         if any(s.dc_id == dc_id for s in existing_stops):
             raise RoutingError(f"DC {dc_id} is already on this route.")
-        dc_row = next((r for r in dc_master if str(r.get("DC_ID")) == dc_id), None)
-        if dc_row is None:
-            raise RoutingError(f"No DC with id={dc_id} found.")
-        assigned_se = (dc_row.get("Assigned_SE_Email") or "").strip().lower()
-        if assigned_se != se.strip().lower():
-            raise RoutingError(f"DC {dc_id} is not assigned to {se!r} - an SE can only add DCs from their own scope.")
+        dropped_entry = target.dropped_dcs.filter(dc_id=dc_id).first()
+        if dropped_entry is None:
+            raise RoutingError(
+                f"DC {dc_id} is not in this route's eligible pool - only a DC the Routing Agent already "
+                "scored and considered for this exact route (and dropped, e.g. for a capacity/distance "
+                "ceiling) can be manually added."
+            )
+        if dropped_entry.reason == "Geo_Incomplete":
+            raise RoutingError(f"DC {dc_id} has no location on file - cannot compute a route to it.")
         new_lat, new_lon = coords_by_id.get(dc_id, (None, None))
         if new_lat is None or new_lon is None:
             raise RoutingError(f"DC {dc_id} has no location on file - cannot compute a route to it.")
