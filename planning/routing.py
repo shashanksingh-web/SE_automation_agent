@@ -30,7 +30,7 @@ sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 from .data_cache import load_output_json  # noqa: E402
-from .models import BeatZoneAssignment, ExceptionRecord, PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
+from .models import BeatZoneAssignment, PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
 
 
 def _parse_plan_date(plan_date) -> _date:
@@ -632,7 +632,7 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> Dict
         "dcs_refreshed": [], "pitch_failures": [],
     }
     if stops:
-        from .services import run_pitching_and_dc_card_agents
+        from .services import persist_exceptions, run_pitching_and_dc_card_agents
         client = agent.get_client()
         try:
             run_exceptions = run_pitching_and_dc_card_agents(plan_run, str(selected.plan_date), client, {})
@@ -641,15 +641,7 @@ def resync_daily_tasks_from_selected_plan(plan_run: PlanRun, se_id: str) -> Dict
         result["pitch_card_status"] = "failed" if run_exceptions else "regenerated"
         result["dcs_refreshed"] = sorted(stop_dc_ids)
         result["pitch_failures"] = run_exceptions
-        if run_exceptions:
-            run_ts = agent.utc_now_iso()
-            ExceptionRecord.objects.bulk_create([
-                ExceptionRecord(
-                    plan_run=plan_run, record_id=str(e.get("record_id") or e.get("dc_id") or ""),
-                    source=e["source"], reason_code=e["reason_code"], detail=e["detail"], run_timestamp=run_ts,
-                )
-                for e in run_exceptions
-            ])
+        persist_exceptions(plan_run, run_exceptions)
     return result
 
 

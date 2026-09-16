@@ -28,7 +28,20 @@ normalize_dc_club() row, for Scheme Standing).
 Crop Type/Style (Section 2's DC-first "what crop does this DC serve" question) has NO
 source anywhere in this pipeline -- confirmed exhaustively (a "Product Cohort" API was
 investigated and runs the opposite direction, product-first). Always skipped, never
-guessed -- see _where_dc_stands_section()."""
+guessed -- see _where_dc_stands_section().
+
+Config-vs-hardcoded split (architecture-audit note, 2026-09-16): unlike planning/
+pitching.py, this module never imports pitch_config_loader -- every section here is
+hand-written Python, even though this module's own CSV ("DC Card (Preface)") is the
+same kind of spec pitch_config_loader drives Pitching's Ask/Tell/Wish phrasing from.
+Not verified as the original, deliberate reasoning (no decision record exists to
+confirm it), but the likely justification: Pitching genuinely needs config-driven
+flexibility because it composes 12 different Purpose/combo cases (5 single + 7 combo)
+from the same phrasing tables; this card's 3 sections are structurally fixed regardless
+of Purpose -- always Who / Where DC Stands / Health Score, just populated with
+different data -- so there's no combinatorial case pitch_config_loader would actually
+be saving work on here. Flagged so this split reads as a considered trade-off, not an
+unverified parity gap with Pitching."""
 
 from __future__ import annotations
 
@@ -38,6 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 from .models import DailyTask, DCCard, PlanRun
+from .pitch_context import ExtraDcContext
 
 logger = logging.getLogger(__name__)
 
@@ -405,7 +419,7 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def generate_dc_cards_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, Dict[str, Any]]) -> Tuple[int, List[Dict[str, str]]]:
+def generate_dc_cards_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, ExtraDcContext]) -> Tuple[int, List[Dict[str, str]]]:
     """Called automatically from generate_plan_for_scope() right after
     generate_pitches_for_plan_run() -- same context dict, same DC-tied-tasks-only filter
     (Farmer Meeting tasks have no DC, no card to show). Returns (created_count, failures)

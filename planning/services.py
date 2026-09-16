@@ -42,6 +42,7 @@ import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, impor
 from . import data_cache, dc_selection, product_cohort, routing
 from .admin_config import load_business_constants
 from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, PlanRun, RoutingScopeOverride
+from .pitch_context import ExtraDcContext
 from .notify import send_alert
 
 
@@ -1158,7 +1159,7 @@ def _node_centroids(dc_master: "agent.Table") -> Dict[str, Tuple[float, float]]:
 
 def _attach_nearby_product_recommendations(
     client: "agent.MetabaseClient", dc_master: "agent.Table", needs_geo_fallback: List[str],
-    extra_data_by_dc: Dict[str, Dict[str, Any]], plan_date: str,
+    extra_data_by_dc: Dict[str, ExtraDcContext], plan_date: str,
     result_key: str = "recommended_products", segment: Optional[str] = None,
 ) -> None:
     """Mutates extra_data_by_dc in place, adding to result_key (a list of up to
@@ -1330,7 +1331,7 @@ def _sql_product_descriptions(product_names: List[str]) -> str:
     """
 
 
-def _attach_product_descriptions(client: "agent.MetabaseClient", extra_data_by_dc: Dict[str, Dict[str, Any]]) -> Optional[str]:
+def _attach_product_descriptions(client: "agent.MetabaseClient", extra_data_by_dc: Dict[str, ExtraDcContext]) -> Optional[str]:
     """Mutates every recommended_products entry in place, adding "description" (Hindi
     preferred since the pitch is Hindi, else English, else the untagged column; None
     when the template has none -- the AI prompt then says so explicitly rather than
@@ -1524,6 +1525,38 @@ def make_routing_plan_asker(stdout, style) -> Optional[Callable[[], str]]:
     return ask
 
 
+def _exc(source: str, reason_code: str, detail: str, record_id: Optional[str] = None) -> Dict[str, str]:
+    """Builds one run_exceptions entry -- the {"source", "reason_code", "detail",
+    "record_id"} dict shape every live-pull/validation failure in this file (and
+    planning.routing) appends to run_exceptions, eventually persisted via
+    persist_exceptions() below. Extracted 2026-09-16 (architecture audit finding): this
+    exact dict was previously hand-built at 47+ call sites with no shared constructor --
+    a typo'd or missing key at any one of them was a silent data-quality gap, not a
+    caught bug. New call sites should prefer this over a bare dict literal; existing
+    ones are being migrated incrementally, not all at once in one large diff."""
+    return {"source": source, "reason_code": reason_code, "detail": detail, "record_id": record_id or ""}
+
+
+def persist_exceptions(plan_run: PlanRun, run_exceptions: List[Dict[str, str]]) -> None:
+    """Bulk-persists run_exceptions (see _exc() above) as ExceptionRecord rows tied to
+    plan_run -- the single shared "go to feedback" step both generate_plan_for_scope
+    (below) and planning.routing.resync_daily_tasks_from_selected_plan call, instead of
+    each independently hand-writing the same ExceptionRecord.objects.bulk_create(...)
+    (architecture audit finding, 2026-09-16 -- routing.py's resync function had grown
+    its own byte-for-byte copy of this exact block). No-ops on an empty list rather than
+    issuing a pointless empty bulk_create."""
+    if not run_exceptions:
+        return
+    run_ts = agent.utc_now_iso()
+    ExceptionRecord.objects.bulk_create([
+        ExceptionRecord(
+            plan_run=plan_run, record_id=str(e.get("record_id") or e.get("dc_id") or ""),
+            source=e["source"], reason_code=e["reason_code"], detail=e["detail"], run_timestamp=run_ts,
+        )
+        for e in run_exceptions
+    ])
+
+
 def run_pitching_and_dc_card_agents(
     plan_run: PlanRun, plan_date: str, client, geo_mapping_cache: Optional[dict] = None,
     dc_financials: Optional[Dict[str, Any]] = None, dc_club_by_id: Optional[Dict[str, Any]] = None,
@@ -1679,10 +1712,10 @@ def run_pitching_and_dc_card_agents(
                     list(client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_business_area_strength_detailed(task_dc_ids, prior_fy_start, prior_plan_date)))
                 )
 
-                extra_data_by_dc: Dict[str, Dict[str, Any]] = {}
+                extra_data_by_dc: Dict[str, ExtraDcContext] = {}
                 needs_geo_fallback: List[str] = []
                 for dc_id in task_dc_ids:
-                    entry = dict(purchase_by_dc.get(dc_id, {}))
+                    entry: ExtraDcContext = dict(purchase_by_dc.get(dc_id, {}))  # type: ignore[assignment]
                     entry["last_discount"] = discount_by_dc.get(dc_id)
                     # dc_datamart's weighted_avg_repayment_days -- already pulled by
                     # _sql_outstanding() into dc_financials, just wasn't forwarded to the
@@ -3090,14 +3123,7 @@ def generate_plan_for_scope(
             )
             run_exceptions.extend(fp_result["exceptions"])
 
-    run_ts = agent.utc_now_iso()
-    ExceptionRecord.objects.bulk_create([
-        ExceptionRecord(
-            plan_run=plan_run, record_id=str(e.get("record_id") or e.get("dc_id") or ""),
-            source=e["source"], reason_code=e["reason_code"], detail=e["detail"], run_timestamp=run_ts,
-        )
-        for e in run_exceptions
-    ])
+    persist_exceptions(plan_run, run_exceptions)
 
     # GR-17-style escalation alert -- more than 10% of in-scope DCs producing an
     # exception (live-pull failures, referential-integrity issues, etc.) is a signal the

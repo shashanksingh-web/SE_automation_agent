@@ -75,25 +75,31 @@ AI_PITCH_CACHE_PATH = Path(
     )
 )
 
-_pitch_cache: Optional[Dict[str, Dict[str, Any]]] = None
+# Bump whenever build_ai_pitch's response shape or script_hindi's meaning changes -- a
+# stale-shape cache entry (from before the bump) would otherwise resolve as if valid,
+# silently returning a wrong-looking pitch with no error. Pulled out into one named,
+# visible constant (architecture-audit fix, 2026-09-16) instead of a literal buried
+# inside _cache_key's own f-string -- the obligation to bump it now sits at the point
+# someone is most likely to be editing when it applies.
+#   v2 (2026-09-15): script_hindi's meaning changed from a full free-form script to
+#     just the [बताना]/Tell sentences (assembled into the full Ask/Tell/Wish script by
+#     the caller).
+#   v3 (2026-09-16): the Tell became a list of pointers rendered as bullets
+#     (_tell_pointers/_tell_lines) instead of one paragraph.
+#   v4 (2026-09-16): product pointers started carrying the product's benefit text.
+#   v5 (2026-09-16): the peer-summed rupee value left the prompt and the pointers
+#     (see _candidate_lines) -- a v4 script quotes "₹3.52 लाख की मांग" per product.
+CACHE_SCHEMA_VERSION = "v5"
+
+_pitch_cache_store = agent.JsonFileCache(AI_PITCH_CACHE_PATH)
 
 
 def _load_pitch_cache() -> Dict[str, Dict[str, Any]]:
-    global _pitch_cache
-    if _pitch_cache is None:
-        try:
-            _pitch_cache = json.loads(AI_PITCH_CACHE_PATH.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            _pitch_cache = {}
-    return _pitch_cache
+    return _pitch_cache_store.load()
 
 
 def _save_pitch_cache() -> None:
-    try:
-        AI_PITCH_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        AI_PITCH_CACHE_PATH.write_text(json.dumps(_pitch_cache), encoding="utf-8")
-    except OSError:
-        pass  # best-effort cache, same convention as se_daily_plan_agent's own LLM caches
+    _pitch_cache_store.save()  # JsonFileCache.save() is already best-effort (swallows OSError)
 
 
 def _cache_key(
@@ -108,19 +114,9 @@ def _cache_key(
         "anthropic": agent.ANTHROPIC_ROUTING_MODEL, "openrouter": agent.OPENROUTER_ROUTING_MODEL, "gemini": agent.GEMINI_ROUTING_MODEL,
     }
     parts = [
-        # v2: prefix bumped 2026-09-15 when script_hindi's meaning changed from a full
-        # free-form script to just the [बताना]/Tell sentences (assembled into the full
-        # Ask/Tell/Wish script by the caller) -- without this, a pre-existing cache entry
-        # would resolve to the OLD full-script value under a v1 key, silently skipping the
-        # new Ask/Tell/Wish assembly for every DC/purpose already cached.
-        # v3: bumped 2026-09-16 when the Tell became a list of pointers rendered as
-        # bullets (_tell_pointers/_tell_lines) -- the cached value is the fully
-        # assembled script, so every v2 entry still carries the one-paragraph [बताना].
-        # v4: bumped later the same day when product pointers started carrying the
-        # product's benefits (_PRODUCT_BENEFIT_RULE) -- a v3 script is demand-only.
-        # v5: bumped again the same day when the peer-summed rupee value left the prompt
-        # and the pointers (see _candidate_lines) -- a v4 script quotes it per product.
-        f"v5:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
+        # See CACHE_SCHEMA_VERSION's own docstring/history above -- bump that constant,
+        # not this literal, whenever this function's output shape changes meaning.
+        f"{CACHE_SCHEMA_VERSION}:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
         f"{window_days}:{club_context or ''}:{ctx.get('present_outstanding')}:{ctx.get('present_overdue')}:"
         f"{ctx.get('last_discount')}:{ctx.get('suggested_discount')}"
     ]

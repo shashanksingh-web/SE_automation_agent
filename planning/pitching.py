@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .ai_sales_forecast import build_ai_pitch
 from .models import DailyTask, PitchScript, PlanRun
 from .pitch_config_loader import get_pitch_config
+from .pitch_context import ExtraDcContext
 
 logger = logging.getLogger(__name__)
 
@@ -484,9 +485,23 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
     return "\n".join(lines).strip(), used, skipped
 
 
+def is_sale_ptp_combo(purposes: List[str]) -> bool:
+    """True iff `purposes` is exactly the Sale + Promise To Pay / Collection combo --
+    the one combo the task engine actually produces live (see this module's own
+    docstring) and the only one with a hand-special-cased composer
+    (_compose_sale_ptp_combo below). Extracted 2026-09-16 (architecture audit finding):
+    this exact `set(...) == {"Sale", "Promise To Pay / Collection"}` check used to be
+    duplicated -- once here, once independently in planning.ai_sales_forecast -- so a
+    future 3rd combo meant remembering to update both with no signal linking them.
+    ai_sales_forecast.py imports this (deferred import, same pattern already used there
+    for _ASK_HINDI/_WISH_HINDI, since planning.pitching imports build_ai_pitch at module
+    level -- see that module's own docstring)."""
+    return set(purposes) == {"Sale", "Promise To Pay / Collection"}
+
+
 def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
     purposes, matched_key, win_condition_or_rationale = _match_script(task.purpose_of_visit or "")
-    if set(purposes) == {"Sale", "Promise To Pay / Collection"}:
+    if is_sale_ptp_combo(purposes):
         script, used, skipped = _compose_sale_ptp_combo(task, ctx)
         return script, used, skipped
     applicable = _applicable_sources(purposes)
@@ -558,7 +573,7 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     return "\n".join(lines).strip(), used, skipped
 
 
-def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, Dict[str, Any]]) -> Tuple[int, List[Dict[str, str]]]:
+def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, ExtraDcContext]) -> Tuple[int, List[Dict[str, str]]]:
     """Called automatically from generate_plan_for_scope() right after DailyTask rows
     exist for this run. extra_data_by_dc carries the newly-wired sources (S1/S2/S3/S6/S7)
     keyed by dc_id -- S5 (Outstanding) and S8 (YTD PL) are read directly off DailyTask's
