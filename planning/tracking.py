@@ -278,6 +278,10 @@ def _data_health(runs) -> Dict[str, Any]:
         for row in exc.filter(reason_code="Live_Pull_Failed").values("source").annotate(n=Count("id")).order_by("-n")
     }
     runs_with_failure = exc.filter(reason_code__in=list(failures)).values("plan_run_id").distinct().count()
+    # When the newest failure happened -- the difference between "an incident in the
+    # window" and "still broken right now" (the 14-15 Sep permission outage looked
+    # identical to a live problem on the tile until this was shown).
+    last_failure_at = exc.filter(reason_code__in=list(failures)).aggregate(m=Max("run_timestamp"))["m"] if failures else None
 
     output_dir = Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output"
     normalization_at = None
@@ -304,6 +308,7 @@ def _data_health(runs) -> Dict[str, Any]:
         "Live_Pull_Failures_By_Source": pull_failures,
         "Runs_With_A_Failure": runs_with_failure,
         "Runs_With_A_Failure_Pct": _pct(runs_with_failure, runs.count()),
+        "Last_Failure_At": last_failure_at,
         "Normalization_Last_Run_At": normalization_at,
         "DC_Master_Rows": geo_rows,
         "DC_Master_Geo_Coverage_Pct": _pct(geo_with_coords or 0, geo_rows or 0),
