@@ -1304,6 +1304,63 @@ def _attach_nearby_product_recommendations(
             entry[result_key] = [{**p, "scope": scope} for p in products]
 
 
+# Product benefit text fed to the AI pitch (added 2026-09-16, explicit user request:
+# "in sales - batana part product benifits will be described by SE to DC for maximise
+# trust and sales by using llm"). products_template carries real per-product
+# description/description_en/description_hi columns (confirmed live: 1,727 of 9,376
+# templates have an English one, 1,343 a Hindi one -- composition, use stage, target
+# crops, dosage, e.g. "18% Nitrogen and 46% Phosphorous", "8-12 लीटर दूध देने वाली
+# गायों के लिए"), so the model can ground a benefit claim in the product's OWN text
+# rather than improvise one. Looked up once per run for just the names that actually
+# ended up recommended (a handful), not joined into the heavy trailing-30d GROUP BY
+# queries above -- keeps those unchanged and avoids grouping on long text columns.
+PRODUCT_DESCRIPTION_MAX_CHARS = 500
+
+
+def _sql_product_descriptions(product_names: List[str]) -> str:
+    # MAX() over NULLIF-trimmed text: a name can map to several templates (variants),
+    # and an empty string must lose to a real description rather than win the group.
+    return f"""
+    SELECT name, MAX(NULLIF(TRIM(description_hi), '')) AS description_hi,
+           MAX(NULLIF(TRIM(description_en), '')) AS description_en,
+           MAX(NULLIF(TRIM(description), '')) AS description
+    FROM products_template
+    WHERE name IN ({_sql_list(product_names)})
+    GROUP BY name
+    """
+
+
+def _attach_product_descriptions(client: "agent.MetabaseClient", extra_data_by_dc: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    """Mutates every recommended_products entry in place, adding "description" (Hindi
+    preferred since the pitch is Hindi, else English, else the untagged column; None
+    when the template has none -- the AI prompt then says so explicitly rather than
+    passing an empty string the model might read as "describe it yourself").
+    Whitespace-collapsed and capped at PRODUCT_DESCRIPTION_MAX_CHARS so a long
+    marketing blurb can't crowd the rest of the prompt. Fail-open: a failed lookup
+    leaves every product without a description and returns the failure detail for
+    the caller's Exceptions_Report (Live_Pull_Failed, same as every other live pull
+    here) -- never blocks the pitch. Returns None on success."""
+    names = sorted({
+        p["name"] for entry in extra_data_by_dc.values()
+        for p in (entry.get("recommended_products") or []) if p.get("name")
+    })
+    if not names:
+        return None
+    by_name: Dict[str, str] = {}
+    try:
+        for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_product_descriptions(names)):
+            text = row.get("description_hi") or row.get("description_en") or row.get("description")
+            if row.get("name") and text:
+                collapsed = " ".join(str(text).split())
+                by_name[row["name"]] = collapsed[:PRODUCT_DESCRIPTION_MAX_CHARS]
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    for entry in extra_data_by_dc.values():
+        for p in entry.get("recommended_products") or []:
+            p["description"] = by_name.get(p.get("name"))
+    return None
+
+
 def _sql_punch_in(se_user_ids: List[int], plan_date: str) -> str:
     # Earliest check-in of the plan date per SE, from attendance_attendance
     # (input-backend) -- the actual punch-in point sequence_with_distance() needs to
@@ -1754,6 +1811,14 @@ def run_pitching_and_dc_card_agents(
                     _attach_nearby_product_recommendations(
                         client, dc_master, needs_geo_fallback, extra_data_by_dc, plan_date, result_key="recommended_products",
                     )
+                # Benefit text for whatever ended up recommended (both tiers above),
+                # for the AI pitch's per-product pointers -- see _attach_product_descriptions.
+                description_failure = _attach_product_descriptions(client, extra_data_by_dc)
+                if description_failure:
+                    run_exceptions.append({
+                        "source": "products_template", "reason_code": "Live_Pull_Failed",
+                        "detail": f"Product description lookup failed, pitching without benefit text: {description_failure}",
+                    })
 
                 from .pitching import generate_pitches_for_plan_run
                 _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc)

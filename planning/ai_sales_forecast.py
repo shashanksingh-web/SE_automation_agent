@@ -58,6 +58,7 @@ Data/integrations deliberately NOT used:
     flagged as genuine gaps, not silently worked around."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -115,12 +116,18 @@ def _cache_key(
         # v3: bumped 2026-09-16 when the Tell became a list of pointers rendered as
         # bullets (_tell_pointers/_tell_lines) -- the cached value is the fully
         # assembled script, so every v2 entry still carries the one-paragraph [बताना].
-        f"v3:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
+        # v4: bumped later the same day when product pointers started carrying the
+        # product's benefits (_PRODUCT_BENEFIT_RULE) -- a v3 script is demand-only.
+        f"v4:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
         f"{window_days}:{club_context or ''}:{ctx.get('present_outstanding')}:{ctx.get('present_overdue')}:"
         f"{ctx.get('last_discount')}:{ctx.get('suggested_discount')}"
     ]
     for c in sorted(candidates, key=lambda c: str(c.get("name"))):
-        parts.append(f"{c.get('name')}:{round(float(c.get('value') or 0.0), 2)}")
+        # The description is prompt content too: a template gaining/changing its text
+        # must re-prompt, not replay a script written without it. Length + a short
+        # digest rather than the text itself keeps the key readable.
+        desc = c.get("description") or ""
+        parts.append(f"{c.get('name')}:{round(float(c.get('value') or 0.0), 2)}:d{len(desc)}:{hashlib.sha1(desc.encode('utf-8')).hexdigest()[:8]}")
     for s in sorted(schemes, key=lambda s: str(s.get("name"))):
         parts.append(f"scheme:{s.get('name')}:{s.get('valid_until')}")
     return "|".join(parts)
@@ -301,6 +308,54 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
     ]
 
 
+# How the sales pointers must talk about a product (added 2026-09-16, explicit user
+# request: "in sales - batana part product benifits will be described by SE to DC for
+# maximise trust and sales by using llm"). Until now a product pointer only carried the
+# demand signal ("nearby centres are buying IFFCO UREA -- stock it"), which gives the
+# SE nothing to say about WHY the DC's farmers would want it. The benefit claim is
+# grounded in the product's own products_template description (planning.services.
+# _attach_product_descriptions -- composition, use stage, target crops, dosage) where
+# one exists; where none exists the model is held to general, widely-known benefits of
+# that product TYPE and told so, rather than left to improvise specifics. Same
+# never-invent-a-figure posture as the rest of this module, extended to compositions
+# and dosages, which are exactly the "facts" a made-up benefit would fabricate.
+_PRODUCT_BENEFIT_RULE = (
+    "For every product pointer, describe the product's BENEFIT the way the SE should "
+    "explain it to the DC so the DC can convince farmers and trust the recommendation: "
+    "what it does for the crop or animal (nutrient/composition, growth stage or season it "
+    "is used in, target crops, dosage when given) and then the business case (nearby-centre "
+    "demand, season fit) -- benefit first, demand second. Take every specific benefit claim "
+    "(composition, percentage, dosage, target crop) ONLY from that product's 'benefits' text "
+    "above. If a product's benefits say '(none on file)', state only the general, widely-known "
+    "benefit of that type of product (e.g. a cattle feed supports milk yield) in one clause "
+    "and never a specific composition, percentage or dosage for it."
+)
+
+
+def _candidate_lines(candidates: List[Dict[str, Any]], ctx: Dict[str, Any]) -> List[str]:
+    """The prompt's candidate-product block, shared by both AI paths. One line per
+    product with its real figures and, since 2026-09-16, its benefits text (see
+    _PRODUCT_BENEFIT_RULE) -- '(none on file)' spelled out when the template has no
+    description, so the model is told the gap rather than reading an empty field as
+    licence to fill it in."""
+    if not candidates:
+        return []
+    lines = [
+        "Candidate products (recently purchased by geographically/categorically similar "
+        "DCs -- you may ONLY recommend products from this exact list, never invent one):"
+    ]
+    for c in candidates:
+        lines.append(
+            f"- {c.get('name')} | value=₹{c.get('value')} | category={c.get('category')} | "
+            f"brand={c.get('brand')} | segment={c.get('business_segment')} | scope={c.get('scope')} | "
+            f"benefits={c.get('description') or '(none on file)'}"
+        )
+    if ctx.get("suggested_discount") is not None:
+        lines.append(f"Suggested discount on the top candidate: ₹{ctx['suggested_discount']:.0f}/unit")
+    lines.append("")
+    return lines
+
+
 def _build_ai_pitch_combo(
     dc_id: str, ctx: Dict[str, Any], window_days: int, dc_name: Optional[str],
     candidates: List[Dict[str, Any]], club_context: Optional[str], schemes: List[Dict[str, Any]],
@@ -368,19 +423,7 @@ def _build_ai_pitch_combo(
     ]
     if ctx.get("last_discount") is not None:
         lines.append(f"Last discount given to this DC: {ctx['last_discount']:.0f}%")
-    if candidates:
-        lines.append(
-            "Candidate products (recently purchased by geographically/categorically similar "
-            "DCs -- you may ONLY recommend products from this exact list, never invent one):"
-        )
-        for c in candidates:
-            lines.append(
-                f"- {c.get('name')} | value=₹{c.get('value')} | category={c.get('category')} | "
-                f"brand={c.get('brand')} | segment={c.get('business_segment')} | scope={c.get('scope')}"
-            )
-        if ctx.get("suggested_discount") is not None:
-            lines.append(f"Suggested discount on the top candidate: ₹{ctx['suggested_discount']:.0f}/unit")
-        lines.append("")
+    lines += _candidate_lines(candidates, ctx)
 
     lines += [
         "Write TWO SEPARATE Tell contents, each as a JSON array of short pointers -- every "
@@ -390,11 +433,12 @@ def _build_ai_pitch_combo(
         'benefit of clearing it now (e.g. club tier eligibility, avoiding further aging). Leave '
         'this as an empty array if there is no real overdue/outstanding figure above -- never '
         'invent one.',
-        f"- sales_tell: 2-4 pointers ONLY about products/scheme/Club benefit for the next "
-        f"{window_days} days' worth of business -- up to 3 of the candidate products worth "
-        "pitching and why, the benefit of any active Scheme (tied to a real product where "
-        "possible), and this DC's Club standing and what acting today could earn it. Never mention "
-        "the overdue/outstanding payment in this field -- that belongs only in collection_tell.",
+        f"- sales_tell: 2-5 pointers ONLY about products/scheme/Club benefit for the next "
+        f"{window_days} days' worth of business: one pointer per featured candidate product (up "
+        "to 3), then the benefit of any active Scheme (tied to a real product where possible), "
+        "and this DC's Club standing and what acting today could earn it. Never mention the "
+        "overdue/outstanding payment in this field -- that belongs only in collection_tell.",
+        _PRODUCT_BENEFIT_RULE,
         "Also separately list which of the candidate products (if any) you featured in sales_tell.",
         "",
         'Respond with ONLY this JSON, no other text: {"collection_tell": ["...", ...], '
@@ -498,8 +542,9 @@ def build_ai_pitch(
     if not agent.LLM_ROUTING_ENABLED:
         return {}
 
-    from .pitching import _ASK_HINDI, _WISH_HINDI, _tell_lines  # local import -- avoids a
-    # circular import, since planning.pitching already imports build_ai_pitch at module level.
+    from .pitching import _ASK_HINDI, _WISH_HINDI, _tell_lines, is_sale_ptp_combo  # local
+    # import -- avoids a circular import, since planning.pitching already imports
+    # build_ai_pitch at module level.
     ask_texts = [_ASK_HINDI[p] for p in (purposes or [purpose_label]) if p in _ASK_HINDI]
     wish_texts = [_WISH_HINDI[p] for p in (purposes or [purpose_label]) if p in _WISH_HINDI]
 
@@ -517,7 +562,11 @@ def build_ai_pitch(
     # response shape (collection_tell/sales_tell) is different from every other
     # purpose's single script_hindi, so it must never collide with (or be collided
     # into by) a plain single-purpose cache entry for the same dc_id/window/figures.
-    is_ptp_sale_combo = set(purposes or [purpose_label]) == {"Sale", "Promise To Pay / Collection"}
+    # is_sale_ptp_combo (architecture audit fix, 2026-09-16) -- this used to
+    # independently re-derive the same combo check pitching.py's own _compose() uses,
+    # with no signal linking the two. Already imported above, alongside _ASK_HINDI/
+    # _WISH_HINDI -- same deferred-import (avoids a circular import).
+    is_ptp_sale_combo = is_sale_ptp_combo(purposes or [purpose_label])
     if is_ptp_sale_combo:
         key += ":ptp_sale_combo"
     cached = cache.get(key)
@@ -566,34 +615,24 @@ def build_ai_pitch(
     ]
     if ctx.get("last_discount") is not None:
         lines.append(f"Last discount given to this DC: {ctx['last_discount']:.0f}%")
-    if candidates:
-        lines.append(
-            "Candidate products (recently purchased by geographically/categorically similar "
-            "DCs -- you may ONLY recommend products from this exact list, never invent one):"
-        )
-        for c in candidates:
-            lines.append(
-                f"- {c.get('name')} | value=₹{c.get('value')} | category={c.get('category')} | "
-                f"brand={c.get('brand')} | segment={c.get('business_segment')} | scope={c.get('scope')}"
-            )
-        if ctx.get("suggested_discount") is not None:
-            lines.append(f"Suggested discount on the top candidate: ₹{ctx['suggested_discount']:.0f}/unit")
-        lines.append("")
+    lines += _candidate_lines(candidates, ctx)
 
     lines += [
         "This pitch script always follows a fixed 3-part structure: [पूछना] (Ask) opens "
         "the conversation, [बताना] (Tell) is the persuasive data-driven pitch, [विश/क्लोज़] "
         "(Wish/Close) asks for the commitment. The Ask and Wish/Close lines are ALREADY "
         "fixed -- do not write them, they are added separately after your response. Your "
-        "ONLY job is the [बताना]/Tell section: write 2-4 short pointers for the next "
+        "ONLY job is the [बताना]/Tell section: write 2-5 short pointers for the next "
         f"{window_days} days' worth of business, as a JSON array -- every pointer is ONE "
         "complete persuasive Hindi sentence about ONE thing (one product, one scheme, one "
         "benefit), written to be read aloud as a bullet, never a paragraph. Depending on "
         "which real facts exist above, cover: the benefit of clearing outstanding/overdue now "
-        "(e.g. club tier eligibility, avoiding further aging), up to 3 of the candidate "
-        "products worth pitching and why, the benefit of any active Scheme (tied to a real "
+        "(e.g. club tier eligibility, avoiding further aging), one pointer per featured "
+        "candidate product (up to 3), the benefit of any active Scheme (tied to a real "
         "product where possible), and this DC's Club standing and what acting today could "
-        "earn it. Also separately list which of the candidate products (if any) you featured.",
+        "earn it.",
+        _PRODUCT_BENEFIT_RULE,
+        "Also separately list which of the candidate products (if any) you featured.",
         "",
         'Respond with ONLY this JSON, no other text: {"tell": ["<one [बताना]/Tell pointer>", '
         '...], "products": [{"name": "...", "reason": "..."}, ...], "reasoning": "1 sentence '
