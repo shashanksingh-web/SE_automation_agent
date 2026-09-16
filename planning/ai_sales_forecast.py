@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -111,7 +112,10 @@ def _cache_key(
         # Ask/Tell/Wish script by the caller) -- without this, a pre-existing cache entry
         # would resolve to the OLD full-script value under a v1 key, silently skipping the
         # new Ask/Tell/Wish assembly for every DC/purpose already cached.
-        f"v2:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
+        # v3: bumped 2026-09-16 when the Tell became a list of pointers rendered as
+        # bullets (_tell_pointers/_tell_lines) -- the cached value is the fully
+        # assembled script, so every v2 entry still carries the one-paragraph [बताना].
+        f"v3:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
         f"{window_days}:{club_context or ''}:{ctx.get('present_outstanding')}:{ctx.get('present_overdue')}:"
         f"{ctx.get('last_discount')}:{ctx.get('suggested_discount')}"
     ]
@@ -173,24 +177,54 @@ def _validate_products(raw_products: Any, valid_names: set) -> Tuple[List[Dict[s
     return validated, notes
 
 
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[।?!.])\s+")
+_LIST_MARKER_RE = re.compile(r"^(?:[-•*]|\d+[.)])\s+")
+
+
+def _tell_pointers(value: Any) -> List[str]:
+    """Normalizes a model-written [बताना]/Tell content into a list of talking points,
+    one per bullet (added 2026-09-16, explicit user request on a live pitch whose Tell
+    came back as one dense paragraph: "provider in pointers"). The prompts ask for a
+    JSON array of pointers; a model that answers with a single string anyway gets it
+    split on sentence boundaries (Hindi danda "।", plus ?/!/. followed by whitespace --
+    a "." glued to the next character, as in 12.5%, is never a boundary) so the result
+    still renders as bullets rather than silently falling back to the paragraph. Any
+    list marker the model prefixed itself ("- ", "• ", "1. ") is stripped so
+    planning.pitching._tell_lines can apply the one convention PitchPanel.tsx parses."""
+    if isinstance(value, list):
+        raw_points = [v for v in value if isinstance(v, str)]
+    elif isinstance(value, str):
+        raw_points = _SENTENCE_BOUNDARY_RE.split(value)
+    else:
+        return []
+    points: List[str] = []
+    for p in raw_points:
+        cleaned = _LIST_MARKER_RE.sub("", p.strip()).strip()
+        if cleaned:
+            points.append(cleaned)
+    return points
+
+
 def _parse_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
     """Never raises -- malformed/unparseable JSON returns an empty result with a note.
-    script_hindi is taken as free text (can't be mechanically validated word-for-word
-    the way a product NAME can); products go through _validate_products."""
+    tell is taken as free text (can't be mechanically validated word-for-word the way a
+    product NAME can), normalized into pointers by _tell_pointers; products go through
+    _validate_products. "script_hindi" is still accepted as the Tell key -- the field's
+    name in this prompt until 2026-09-16 -- so a model echoing the old contract isn't
+    treated as an empty response."""
     parsed, parse_notes = _parse_json_object(text)
     if parsed is None:
-        return {"script_hindi": "", "products": [], "reasoning": "", "notes": parse_notes}
+        return {"tell": [], "products": [], "reasoning": "", "notes": parse_notes}
 
-    script_hindi = parsed.get("script_hindi")
-    script_hindi = script_hindi.strip() if isinstance(script_hindi, str) else ""
+    tell = _tell_pointers(parsed.get("tell", parsed.get("script_hindi")))
     reasoning = (parsed.get("reasoning") if isinstance(parsed.get("reasoning"), str) else "") or ""
 
     notes: List[str] = []
-    if not script_hindi:
-        notes.append("Response had no non-empty 'script_hindi'")
+    if not tell:
+        notes.append("Response had no non-empty 'tell'")
     validated, product_notes = _validate_products(parsed.get("products"), valid_names)
     notes.extend(product_notes)
-    return {"script_hindi": script_hindi, "products": validated, "reasoning": reasoning, "notes": notes}
+    return {"tell": tell, "products": validated, "reasoning": reasoning, "notes": notes}
 
 
 def _parse_combo_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
@@ -203,12 +237,10 @@ def _parse_combo_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
     based on ctx, same as the deterministic template's own overdue>0 branch)."""
     parsed, parse_notes = _parse_json_object(text)
     if parsed is None:
-        return {"collection_tell": "", "sales_tell": "", "products": [], "reasoning": "", "notes": parse_notes}
+        return {"collection_tell": [], "sales_tell": [], "products": [], "reasoning": "", "notes": parse_notes}
 
-    collection_tell = parsed.get("collection_tell")
-    collection_tell = collection_tell.strip() if isinstance(collection_tell, str) else ""
-    sales_tell = parsed.get("sales_tell")
-    sales_tell = sales_tell.strip() if isinstance(sales_tell, str) else ""
+    collection_tell = _tell_pointers(parsed.get("collection_tell"))
+    sales_tell = _tell_pointers(parsed.get("sales_tell"))
     reasoning = (parsed.get("reasoning") if isinstance(parsed.get("reasoning"), str) else "") or ""
 
     validated, notes = _validate_products(parsed.get("products"), valid_names)
@@ -286,7 +318,7 @@ def _build_ai_pitch_combo(
     ptp_sale_combo_fixed_lines gives the deterministic template, so an SE sees the
     identical structure regardless of which path produced the pitch -- only the
     persuasive sentences inside each section differ."""
-    from .pitching import ptp_sale_combo_fixed_lines
+    from .pitching import _tell_lines, ptp_sale_combo_fixed_lines
 
     overdue = ctx.get("present_overdue") or 0
     outstanding = ctx.get("present_outstanding")
@@ -351,20 +383,23 @@ def _build_ai_pitch_combo(
         lines.append("")
 
     lines += [
-        "Write TWO SEPARATE Tell contents:",
-        '- collection_tell: 1-2 persuasive Hindi sentences ONLY about the overdue/outstanding '
-        'payment and the benefit of clearing it now (e.g. club tier eligibility, avoiding '
-        'further aging). Leave this as an empty string if there is no real overdue/outstanding '
-        'figure above -- never invent one.',
-        f"- sales_tell: 2-3 persuasive Hindi sentences ONLY about products/scheme/Club benefit for "
-        f"the next {window_days} days' worth of business -- up to 3 of the candidate products worth "
+        "Write TWO SEPARATE Tell contents, each as a JSON array of short pointers -- every "
+        "pointer is ONE complete persuasive Hindi sentence about ONE thing (one product, one "
+        "scheme, one benefit), written to be read aloud as a bullet, never a paragraph:",
+        '- collection_tell: 1-2 pointers ONLY about the overdue/outstanding payment and the '
+        'benefit of clearing it now (e.g. club tier eligibility, avoiding further aging). Leave '
+        'this as an empty array if there is no real overdue/outstanding figure above -- never '
+        'invent one.',
+        f"- sales_tell: 2-4 pointers ONLY about products/scheme/Club benefit for the next "
+        f"{window_days} days' worth of business -- up to 3 of the candidate products worth "
         "pitching and why, the benefit of any active Scheme (tied to a real product where "
         "possible), and this DC's Club standing and what acting today could earn it. Never mention "
         "the overdue/outstanding payment in this field -- that belongs only in collection_tell.",
         "Also separately list which of the candidate products (if any) you featured in sales_tell.",
         "",
-        'Respond with ONLY this JSON, no other text: {"collection_tell": "...", "sales_tell": "...", '
-        '"products": [{"name": "...", "reason": "..."}, ...], "reasoning": "1 sentence in English summarizing your approach"}.',
+        'Respond with ONLY this JSON, no other text: {"collection_tell": ["...", ...], '
+        '"sales_tell": ["...", ...], "products": [{"name": "...", "reason": "..."}, ...], '
+        '"reasoning": "1 sentence in English summarizing your approach"}.',
     ]
     prompt = "\n".join(lines)
 
@@ -389,26 +424,25 @@ def _build_ai_pitch_combo(
     if not parsed["sales_tell"]:
         return {}
 
+    # Tell pointers go through the same _tell_lines the templated script uses -- one
+    # inline sentence stays on the [बताना] line, 2+ become "- " bullets under it, which
+    # is the one shape PitchPanel.tsx's parseScript renders as a list.
     lines_out: List[str] = []
     if overdue > 0:
-        lines_out += [
-            fixed["greeting_collection_led"], "",
-            fixed["collection_header"], fixed["ask_collection"], f"[बताना] {parsed['collection_tell']}", fixed["wish_collection"],
-            "",
-            fixed["sales_header_after_collection"], fixed["ask_sales_after_collection"], f"[बताना] {parsed['sales_tell']}",
-            fixed["wish_sales_after_collection"],
-        ]
+        lines_out += [fixed["greeting_collection_led"], "", fixed["collection_header"], fixed["ask_collection"]]
+        lines_out += _tell_lines(parsed["collection_tell"])
+        lines_out += [fixed["wish_collection"], "", fixed["sales_header_after_collection"], fixed["ask_sales_after_collection"]]
+        lines_out += _tell_lines(parsed["sales_tell"])
+        lines_out.append(fixed["wish_sales_after_collection"])
     else:
-        lines_out += [
-            fixed["greeting_sales_led"], "",
-            fixed["sales_header_led"], fixed["ask_sales_led"], f"[बताना] {parsed['sales_tell']}", fixed["wish_sales_led"],
-        ]
+        lines_out += [fixed["greeting_sales_led"], "", fixed["sales_header_led"], fixed["ask_sales_led"]]
+        lines_out += _tell_lines(parsed["sales_tell"])
+        lines_out.append(fixed["wish_sales_led"])
         if outstanding:
             lines_out.append("")
             lines_out.append(fixed["billing_header"])
             lines_out.append(fixed["ask_billing"])
-            if parsed["collection_tell"]:
-                lines_out.append(f"[बताना] {parsed['collection_tell']}")
+            lines_out += _tell_lines(parsed["collection_tell"])
             lines_out.append(fixed["wish_billing"])
 
     return {
@@ -464,8 +498,8 @@ def build_ai_pitch(
     if not agent.LLM_ROUTING_ENABLED:
         return {}
 
-    from .pitching import _ASK_HINDI, _WISH_HINDI  # local import -- avoids a circular
-    # import, since planning.pitching already imports build_ai_pitch at module level.
+    from .pitching import _ASK_HINDI, _WISH_HINDI, _tell_lines  # local import -- avoids a
+    # circular import, since planning.pitching already imports build_ai_pitch at module level.
     ask_texts = [_ASK_HINDI[p] for p in (purposes or [purpose_label]) if p in _ASK_HINDI]
     wish_texts = [_WISH_HINDI[p] for p in (purposes or [purpose_label]) if p in _WISH_HINDI]
 
@@ -551,17 +585,20 @@ def build_ai_pitch(
         "the conversation, [बताना] (Tell) is the persuasive data-driven pitch, [विश/क्लोज़] "
         "(Wish/Close) asks for the commitment. The Ask and Wish/Close lines are ALREADY "
         "fixed -- do not write them, they are added separately after your response. Your "
-        "ONLY job is the [बताना]/Tell section: write 2-4 persuasive Hindi sentences for the "
-        f"next {window_days} days' worth of business. Depending on which real facts exist "
-        "above, weave in: the benefit of clearing outstanding/overdue now (e.g. club tier "
-        "eligibility, avoiding further aging), up to 3 of the candidate products worth "
-        "pitching and why, the benefit of any active Scheme (tied to a real product where "
-        "possible), and this DC's Club standing and what acting today could earn it. Also "
-        "separately list which of the candidate products (if any) you featured.",
+        "ONLY job is the [बताना]/Tell section: write 2-4 short pointers for the next "
+        f"{window_days} days' worth of business, as a JSON array -- every pointer is ONE "
+        "complete persuasive Hindi sentence about ONE thing (one product, one scheme, one "
+        "benefit), written to be read aloud as a bullet, never a paragraph. Depending on "
+        "which real facts exist above, cover: the benefit of clearing outstanding/overdue now "
+        "(e.g. club tier eligibility, avoiding further aging), up to 3 of the candidate "
+        "products worth pitching and why, the benefit of any active Scheme (tied to a real "
+        "product where possible), and this DC's Club standing and what acting today could "
+        "earn it. Also separately list which of the candidate products (if any) you featured.",
         "",
-        'Respond with ONLY this JSON, no other text: {"script_hindi": "<just the [बताना]/Tell '
-        'sentences, no greeting, no [पूछना]/[विश] labels>", "products": '
-        '[{"name": "...", "reason": "..."}, ...], "reasoning": "1 sentence in English summarizing your approach"}.',
+        'Respond with ONLY this JSON, no other text: {"tell": ["<one [बताना]/Tell pointer>", '
+        '...], "products": [{"name": "...", "reason": "..."}, ...], "reasoning": "1 sentence '
+        'in English summarizing your approach"}. No greeting and no [पूछना]/[विश] labels '
+        "anywhere in the pointers.",
     ]
     prompt = "\n".join(lines)
 
@@ -581,19 +618,20 @@ def build_ai_pitch(
     notes = parsed["notes"]
     if len(attempted_providers) > 1:
         notes = [f"Routed via {attempted_providers[-1]} after {', '.join(attempted_providers[:-1])} failed"] + notes
-    if not parsed["script_hindi"]:
+    if not parsed["tell"]:
         return {}
 
     # Assemble the full Ask/Tell/Wish script -- same structure/spacing
     # planning.pitching._compose() builds, greeting + fixed [पूछना] + the model's own
-    # [बताना] content (parsed["script_hindi"], which at this point is ONLY the Tell
-    # sentences per the prompt above) + fixed [विश/क्लोज़].
+    # [बताना] pointers (parsed["tell"], ONLY the Tell content per the prompt above,
+    # laid out by the same _tell_lines the template uses: one inline, 2+ as bullets)
+    # + fixed [विश/क्लोज़].
     greeting = f"नमस्ते {(dc_name or '').strip() or 'जी'}! कैसे हैं आप, दुकान का हाल-चाल बताइए?"
     script_lines = [greeting, ""]
     if ask_texts:
         script_lines.append("[पूछना] " + " ".join(ask_texts))
         script_lines.append("")
-    script_lines.append(f"[बताना] {parsed['script_hindi']}")
+    script_lines.extend(_tell_lines(parsed["tell"]))
     script_lines.append("")
     if wish_texts:
         script_lines.append("[विश/क्लोज़] " + " ".join(wish_texts))
