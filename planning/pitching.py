@@ -201,7 +201,13 @@ def _format_product_list(products: List[Dict[str, Any]]) -> str:
     talking-point [बताना] join fixed earlier the same day (see _tell_lines). Callers
     (_tp_block_comparison) embed this multi-line result inside their own sentence text;
     _tell_lines splits on "\\n" before deciding how to bullet the overall Tell block, so
-    each product surfaces as its own bullet rather than one clause of a longer one."""
+    each product surfaces as its own bullet rather than one clause of a longer one.
+
+    The per-product "(₹V)" -- the peer-summed purchase value the ranking runs on -- was
+    dropped 2026-09-16 (explicit user request, on the AI pitch's equivalent "₹3.52 लाख
+    की भारी मांग": "value should be removed its no sense"): it's an aggregate of OTHER
+    centres' buying, meaningless read aloud to this DC. The order (highest first) still
+    carries the ranking."""
     parts = []
     for p in products:
         bits = []
@@ -212,8 +218,7 @@ def _format_product_list(products: List[Dict[str, Any]]) -> str:
         if p.get("business_segment"):
             bits.append(f"Segment: {p['business_segment']}")
         enrichment = f" ({', '.join(bits)})" if bits else ""
-        value_note = f" (₹{p['value']:,.0f})" if p.get("value") else ""
-        parts.append(f"- {p['name']}{enrichment}{value_note}")
+        parts.append(f"- {p['name']}{enrichment}")
     return "\n".join(parts)
 
 

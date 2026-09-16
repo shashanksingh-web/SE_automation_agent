@@ -118,7 +118,9 @@ def _cache_key(
         # assembled script, so every v2 entry still carries the one-paragraph [बताना].
         # v4: bumped later the same day when product pointers started carrying the
         # product's benefits (_PRODUCT_BENEFIT_RULE) -- a v3 script is demand-only.
-        f"v4:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
+        # v5: bumped again the same day when the peer-summed rupee value left the prompt
+        # and the pointers (see _candidate_lines) -- a v4 script quotes it per product.
+        f"v5:{dc_id}:{purpose_label}:{agent.LLM_ROUTING_PROVIDER}:{_model_by_provider.get(agent.LLM_ROUTING_PROVIDER, '')}:"
         f"{window_days}:{club_context or ''}:{ctx.get('present_outstanding')}:{ctx.get('present_overdue')}:"
         f"{ctx.get('last_discount')}:{ctx.get('suggested_discount')}"
     ]
@@ -324,30 +326,40 @@ _PRODUCT_BENEFIT_RULE = (
     "explain it to the DC so the DC can convince farmers and trust the recommendation: "
     "what it does for the crop or animal (nutrient/composition, growth stage or season it "
     "is used in, target crops, dosage when given) and then the business case (nearby-centre "
-    "demand, season fit) -- benefit first, demand second. Take every specific benefit claim "
-    "(composition, percentage, dosage, target crop) ONLY from that product's 'benefits' text "
-    "above. If a product's benefits say '(none on file)', state only the general, widely-known "
-    "benefit of that type of product (e.g. a cattle feed supports milk yield) in one clause "
-    "and never a specific composition, percentage or dosage for it."
+    "demand, season fit) -- benefit first, demand second. State demand only qualitatively "
+    "('nearby centres are selling this well') -- NEVER a rupee sales or demand figure for a "
+    "product; there is none above and the DC has no use for one. Take every specific benefit "
+    "claim (composition, percentage, dosage, target crop) ONLY from that product's 'benefits' "
+    "text above. If a product's benefits say '(none on file)', state only the general, "
+    "widely-known benefit of that type of product (e.g. a cattle feed supports milk yield) "
+    "in one clause and never a specific composition, percentage or dosage for it."
 )
 
 
 def _candidate_lines(candidates: List[Dict[str, Any]], ctx: Dict[str, Any]) -> List[str]:
     """The prompt's candidate-product block, shared by both AI paths. One line per
-    product with its real figures and, since 2026-09-16, its benefits text (see
+    product with its attributes and, since 2026-09-16, its benefits text (see
     _PRODUCT_BENEFIT_RULE) -- '(none on file)' spelled out when the template has no
     description, so the model is told the gap rather than reading an empty field as
-    licence to fill it in."""
+    licence to fill it in.
+
+    The peer-summed purchase value each candidate carries is deliberately NOT in the
+    line (removed 2026-09-16, explicit user request on a live pitch quoting "₹3.52 लाख
+    की भारी मांग": "value should be removed its no sense") -- it's the pipeline's
+    internal ranking signal, meaningless to a DC, and while it was in the prompt the
+    model quoted it in nearly every product pointer. The list is already highest-demand
+    first, which is all the model needs to pick which products to feature."""
     if not candidates:
         return []
     lines = [
         "Candidate products (recently purchased by geographically/categorically similar "
-        "DCs -- you may ONLY recommend products from this exact list, never invent one):"
+        "DCs, listed highest nearby demand first -- you may ONLY recommend products from "
+        "this exact list, never invent one):"
     ]
     for c in candidates:
         lines.append(
-            f"- {c.get('name')} | value=₹{c.get('value')} | category={c.get('category')} | "
-            f"brand={c.get('brand')} | segment={c.get('business_segment')} | scope={c.get('scope')} | "
+            f"- {c.get('name')} | category={c.get('category')} | brand={c.get('brand')} | "
+            f"segment={c.get('business_segment')} | scope={c.get('scope')} | "
             f"benefits={c.get('description') or '(none on file)'}"
         )
     if ctx.get("suggested_discount") is not None:
