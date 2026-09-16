@@ -311,6 +311,469 @@ def _sql_active_schemes_for_nodes(nodes: List[str], plan_date: str) -> str:
     """
 
 
+def _sql_scheme_description_cards(plan_date: str) -> str:
+    """One row per currently-live DC scheme, with a ready-made factual English
+    description (generated_description) -- added 2026-09-16, explicit user request, to
+    enrich (not replace) the node-scoped abs_scheme/scheme_details pull above with a
+    genuinely richer source: coupon_service.public.scheme + discounting_scheme_slab +
+    scheme_rules + scheme_translations + discounting_scheme_user_status, covering ABS/
+    CDS/CVR scheme types the abs_scheme join above never captured. User-provided and
+    already validated live (16 Sep 2026, all 675 DC schemes, no errors). Runs on the
+    same REDSHIFT_DB_ID=41 ("dev") connection as every other query in this module --
+    the coupon_service.public.*/input_backend_db.public.*/dev.s3_tables.* prefixes are
+    Redshift cross-database references, already proven to work on this cluster (see
+    _sql_punch_in's own input_backend_db usage elsewhere), not a second connection.
+
+    Adapted from the user's original Metabase question (its own {{scheme_id}}/
+    {{scheme_name}}/{{live_on}} optional-filter blocks replaced below with a plain
+    is_active + live_on=plan_date filter -- this call site always wants every
+    currently-live scheme, never a single one) plus two new CTEs
+    (node_ids_txt/state_ids_txt) not in the original: scheme_rules stores node/state as
+    numeric ids (common_salesoffice.id/common_state.id), and the original query only
+    ever surfaced those resolved into human-formatted display text (node_names,
+    states -- with COALESCE fallbacks and count suffixes baked in), not something a
+    caller can reliably split back apart. These two CTEs reuse the same
+    common_salesoffice/common_state joins the query already performs (via node_geo/
+    state_txt) to also emit a plain comma-joined list of resolved NAMES (not raw ids --
+    DC_Master_Normalized only carries Node/State as names, never
+    common_salesoffice.id/common_state.id, so returning ids would just push a second
+    id->name lookup onto every caller for no benefit) so run_pitching_and_dc_card_agents
+    can check per-node eligibility in Python instead of trusting name-string matching
+    alone."""
+    return f"""
+    WITH s AS (
+        SELECT
+            sc.id, sc.name, sc.scheme_code, sc.description, sc.is_active,
+            sc.scheme_type, sc.discounting_scheme_type, sc.slab_min_max_type,
+            sc.discount_type, sc.booking_type, sc.benefit_channel, sc.max_discount_per_user,
+            sc.scheme_start_date::date   AS booking_start,
+            sc.scheme_end_date::date     AS booking_end,
+            sc.discount_start_date::date AS discount_start,
+            sc.discount_end_date::date   AS discount_end,
+            sc.benefit_pass_date::date   AS benefit_pass_date,
+            sc.created_at, sc.updated_at,
+            CASE sc.unit_of_measure
+                WHEN 'KILOGRAM' THEN 'kg' WHEN 'PACKET' THEN 'packet' WHEN 'LITRE' THEN 'litre' ELSE 'unit'
+            END AS unit,
+            CASE
+                WHEN COALESCE(TRIM(sc.description), '') = '' THEN 'No - empty'
+                WHEN LOWER(TRIM(sc.description)) = LOWER(TRIM(sc.name)) THEN 'No - repeats the name'
+                ELSE 'Yes'
+            END AS has_real_description
+        FROM coupon_service.public.scheme sc
+        WHERE sc.user_type = 'DC'
+          AND sc.is_active = 'true'
+          AND COALESCE(sc.discount_end_date, sc.scheme_end_date)::date >= '{plan_date}'
+    ),
+
+    today AS (
+        SELECT CONVERT_TIMEZONE('Asia/Kolkata', GETDATE())::date AS d
+    ),
+
+    /* ---------- Slabs ---------- */
+    slab_base AS (
+        SELECT
+            sl.scheme_id,
+            sl.id AS slab_id,
+            sl.expiry_date,
+            s.slab_min_max_type AS basis,
+            s.discount_type,
+            s.unit,
+            CASE WHEN TRIM(sl.slab_max) ~ '^[0-9]{{2}}-[0-9]{{2}}-[0-9]{{4}}$'
+                 THEN TO_DATE(TRIM(sl.slab_max), 'DD-MM-YYYY') END AS max_date,
+            CASE
+                WHEN TRIM(sl.slab_min) ~ '^[0-9]{{2}}-[0-9]{{2}}-[0-9]{{4}}$'
+                    THEN TO_CHAR(TO_DATE(TRIM(sl.slab_min), 'DD-MM-YYYY'), 'DD Mon YYYY')
+                WHEN TRIM(sl.slab_min) ~ '^[0-9]+$'
+                    THEN TO_CHAR(TRIM(sl.slab_min)::bigint, 'FM99,99,99,99,999')
+                ELSE TRIM(sl.slab_min)
+            END AS min_txt,
+            CASE
+                WHEN COALESCE(TRIM(sl.slab_max), '') = '' THEN NULL
+                WHEN TRIM(sl.slab_max) ~ '^[0-9]{{2}}-[0-9]{{2}}-[0-9]{{4}}$'
+                    THEN TO_CHAR(TO_DATE(TRIM(sl.slab_max), 'DD-MM-YYYY'), 'DD Mon YYYY')
+                WHEN TRIM(sl.slab_max) ~ '^[0-9]+$'
+                    THEN TO_CHAR(TRIM(sl.slab_max)::bigint, 'FM99,99,99,99,999')
+                ELSE TRIM(sl.slab_max)
+            END AS max_txt,
+            CASE WHEN sl.discount_rate = ROUND(sl.discount_rate, 0)
+                 THEN ROUND(sl.discount_rate, 0)::bigint::varchar
+                 ELSE sl.discount_rate::varchar
+            END AS rate_num,
+            CASE WHEN sl.booking_amount_rate IS NULL THEN NULL
+                 WHEN sl.booking_amount_rate = ROUND(sl.booking_amount_rate, 0)
+                 THEN ROUND(sl.booking_amount_rate, 0)::bigint::varchar
+                 ELSE sl.booking_amount_rate::varchar
+            END AS adv_num,
+            CASE
+                WHEN TRIM(sl.slab_min) ~ '^[0-9]{{2}}-[0-9]{{2}}-[0-9]{{4}}$'
+                    THEN DATEDIFF(day, '2000-01-01'::date, TO_DATE(TRIM(sl.slab_min), 'DD-MM-YYYY'))::numeric(18,4)
+                WHEN TRIM(sl.slab_min) ~ '^[0-9]+([.][0-9]+)?$'
+                    THEN TRIM(sl.slab_min)::numeric(18,4)
+            END AS min_num,
+            CASE
+                WHEN TRIM(sl.slab_max) ~ '^[0-9]{{2}}-[0-9]{{2}}-[0-9]{{4}}$'
+                    THEN DATEDIFF(day, '2000-01-01'::date, TO_DATE(TRIM(sl.slab_max), 'DD-MM-YYYY'))::numeric(18,4)
+                WHEN TRIM(sl.slab_max) ~ '^[0-9]+([.][0-9]+)?$'
+                    THEN TRIM(sl.slab_max)::numeric(18,4)
+            END AS max_num,
+            sl.discount_rate::varchar || '|' || COALESCE(sl.booking_amount_rate::varchar, '-')
+                || '|' || COALESCE(TO_CHAR(sl.expiry_date, 'YYYY-MM-DD'), '-') AS rate_key
+        FROM coupon_service.public.discounting_scheme_slab sl
+        JOIN s ON s.id = sl.scheme_id
+    ),
+
+    slab_seq AS (
+        SELECT b.*,
+               COALESCE(b.min_num, b.slab_id) AS sort_key,
+               LAG(b.rate_key) OVER (PARTITION BY b.scheme_id ORDER BY COALESCE(b.min_num, b.slab_id), b.slab_id) AS prev_rate_key,
+               LAG(b.max_num)  OVER (PARTITION BY b.scheme_id ORDER BY COALESCE(b.min_num, b.slab_id), b.slab_id) AS prev_max_num
+        FROM slab_base b
+    ),
+
+    slab_islands AS (
+        SELECT q.*,
+               SUM(CASE WHEN q.prev_rate_key = q.rate_key
+                             AND q.min_num IS NOT NULL AND q.prev_max_num IS NOT NULL
+                             AND q.min_num - q.prev_max_num BETWEEN 0 AND 1
+                        THEN 0 ELSE 1 END)
+                   OVER (PARTITION BY q.scheme_id ORDER BY q.sort_key, q.slab_id ROWS UNBOUNDED PRECEDING) AS island
+        FROM slab_seq q
+    ),
+
+    slab_ranked AS (
+        SELECT i.*,
+               COUNT(*) OVER (PARTITION BY i.scheme_id, i.island) AS slabs_in_group,
+               ROW_NUMBER() OVER (PARTITION BY i.scheme_id, i.island ORDER BY i.sort_key, i.slab_id) AS rn_first,
+               ROW_NUMBER() OVER (PARTITION BY i.scheme_id, i.island ORDER BY i.sort_key DESC, i.slab_id DESC) AS rn_last
+        FROM slab_islands i
+    ),
+
+    slab_merged AS (
+        SELECT f.scheme_id, f.slab_id, f.sort_key, f.slabs_in_group, f.expiry_date,
+               f.basis, f.discount_type, f.unit, f.rate_num, f.adv_num,
+               f.min_txt, l.max_txt
+        FROM slab_ranked f
+        JOIN slab_ranked l
+          ON l.scheme_id = f.scheme_id AND l.island = f.island AND l.rn_last = 1
+        WHERE f.rn_first = 1
+    ),
+
+    slab_fmt AS (
+        SELECT
+            scheme_id, slab_id, sort_key, slabs_in_group, expiry_date,
+            CASE basis
+                WHEN 'DATE'  THEN CASE WHEN max_txt IS NULL THEN 'from ' || min_txt
+                                       ELSE min_txt || ' to ' || max_txt END
+                WHEN 'DAYS'  THEN CASE WHEN max_txt IS NULL THEN min_txt || '+ days'
+                                       ELSE min_txt || '-' || max_txt || ' days' END
+                WHEN 'VALUE' THEN CASE WHEN max_txt IS NULL THEN '₹' || min_txt || '+'
+                                       ELSE '₹' || min_txt || ' - ₹' || max_txt END
+                ELSE              CASE WHEN max_txt IS NULL THEN min_txt || '+ ' || unit
+                                       ELSE min_txt || '-' || max_txt || ' ' || unit END
+            END AS range_txt,
+            CASE WHEN discount_type = 'PERCENT' THEN rate_num || '%'
+                 ELSE '₹' || rate_num || '/' || unit
+            END AS rate_txt,
+            CASE WHEN adv_num IS NULL THEN NULL
+                 WHEN discount_type = 'PER_UNIT' THEN '₹' || adv_num || '/' || unit
+                 ELSE adv_num || ' (unit not defined)'
+            END AS adv_txt
+        FROM slab_merged
+    ),
+
+    slab_txt AS (
+        SELECT
+            scheme_id,
+            SUM(slabs_in_group) AS slab_count,
+            COUNT(*)            AS slab_rows,
+            LISTAGG(range_txt || ' -> ' || rate_txt, ' | ')
+                WITHIN GROUP (ORDER BY sort_key, slab_id) AS slabs_short,
+            MIN(adv_txt)   AS adv_min,
+            MAX(adv_txt)   AS adv_max,
+            COUNT(adv_txt) AS adv_slabs
+        FROM slab_fmt
+        GROUP BY scheme_id
+    ),
+
+    date_slab_check AS (
+        SELECT b.scheme_id,
+               SUM(CASE WHEN b.max_date IS NULL OR b.max_date >= td.d THEN 1 ELSE 0 END) AS date_slabs_still_open
+        FROM slab_base b
+        CROSS JOIN today td
+        WHERE b.basis = 'DATE'
+        GROUP BY b.scheme_id
+    ),
+
+    /* ---------- Rules: who and what the scheme covers ---------- */
+    rules AS (
+        SELECT r.scheme_id, r.node_ids, r.state_ids, r.district_ids, r.block_ids, r.village_ids,
+               r.partner_ids, r.dc_type, r.product_template_ids, r.sku,
+               r.brand_ids, r.category_ids, r.sub_category_ids
+        FROM coupon_service.public.scheme_rules r
+        JOIN s ON s.id = r.scheme_id
+        WHERE r.is_active = 'true'
+    ),
+
+    rule_count AS (
+        SELECT scheme_id, COUNT(*) AS active_rules FROM rules GROUP BY scheme_id
+    ),
+
+    rule_dims AS (
+                  SELECT scheme_id, 'node' AS dim, node_ids AS id_list FROM rules
+        UNION ALL SELECT scheme_id, 'state',        state_ids            FROM rules
+        UNION ALL SELECT scheme_id, 'district',     district_ids         FROM rules
+        UNION ALL SELECT scheme_id, 'block',        block_ids            FROM rules
+        UNION ALL SELECT scheme_id, 'village',      village_ids          FROM rules
+        UNION ALL SELECT scheme_id, 'dc_list',      partner_ids          FROM rules
+        UNION ALL SELECT scheme_id, 'dc_type',      dc_type              FROM rules
+        UNION ALL SELECT scheme_id, 'template',     product_template_ids FROM rules
+        UNION ALL SELECT scheme_id, 'sku',          sku                  FROM rules
+        UNION ALL SELECT scheme_id, 'brand',        brand_ids            FROM rules
+        UNION ALL SELECT scheme_id, 'category',     category_ids         FROM rules
+        UNION ALL SELECT scheme_id, 'sub_category', sub_category_ids     FROM rules
+    ),
+
+    rule_arr AS (
+        SELECT scheme_id, dim, SPLIT_TO_ARRAY(id_list, ',') AS arr
+        FROM rule_dims
+        WHERE COALESCE(TRIM(id_list), '') <> ''
+    ),
+
+    rule_vals AS (
+        SELECT DISTINCT scheme_id, dim, val
+        FROM (SELECT ra.scheme_id, ra.dim, TRIM(v::varchar) AS val
+              FROM rule_arr ra, ra.arr AS v) x
+        WHERE val <> ''
+    ),
+
+    node_geo AS (
+        SELECT rv.scheme_id, rv.val AS node_id, so.name AS node_name, cst.name AS state_name
+        FROM rule_vals rv
+        LEFT JOIN input_backend_db.public.common_salesoffice so ON so.id::varchar = rv.val
+        LEFT JOIN input_backend_db.public.common_state cst     ON cst.id = so.state_id
+        WHERE rv.dim = 'node'
+    ),
+
+    node_txt AS (
+        SELECT scheme_id,
+               COUNT(*) AS node_count,
+               LISTAGG(COALESCE(node_name, 'node ' || node_id), ', ')
+                   WITHIN GROUP (ORDER BY COALESCE(node_name, node_id)) AS node_names
+        FROM node_geo
+        GROUP BY scheme_id
+    ),
+
+    node_state_txt AS (
+        SELECT scheme_id, LISTAGG(state_name, ', ') WITHIN GROUP (ORDER BY state_name) AS node_states
+        FROM (SELECT DISTINCT scheme_id, state_name FROM node_geo WHERE state_name IS NOT NULL) x
+        GROUP BY scheme_id
+    ),
+
+    state_txt AS (
+        SELECT rv.scheme_id,
+               COUNT(*) AS state_count,
+               LISTAGG(COALESCE(cst.name, 'state ' || rv.val), ', ')
+                   WITHIN GROUP (ORDER BY COALESCE(cst.name, rv.val)) AS state_names
+        FROM rule_vals rv
+        LEFT JOIN input_backend_db.public.common_state cst ON cst.id::varchar = rv.val
+        WHERE rv.dim = 'state'
+        GROUP BY rv.scheme_id
+    ),
+
+    dc_type_txt AS (
+        SELECT scheme_id, LISTAGG(val, ', ') WITHIN GROUP (ORDER BY val) AS dc_types
+        FROM rule_vals
+        WHERE dim = 'dc_type'
+        GROUP BY scheme_id
+    ),
+
+    other_limits_txt AS (
+        SELECT scheme_id,
+               LISTAGG(dim || ' (' || n::varchar || ')', ', ') WITHIN GROUP (ORDER BY dim) AS other_limits,
+               MAX(CASE WHEN dim IN ('brand', 'category', 'sub_category') THEN 1 ELSE 0 END) AS has_product_group_limit
+        FROM (SELECT scheme_id, dim, COUNT(*) AS n
+              FROM rule_vals
+              WHERE dim IN ('district', 'block', 'village', 'dc_list', 'brand', 'category', 'sub_category')
+              GROUP BY scheme_id, dim) x
+        GROUP BY scheme_id
+    ),
+
+    /* Machine-parseable node/state eligibility (added 2026-09-16, not in the original
+    Metabase question) -- reuses node_geo/common_state above, but as a plain
+    comma-joined list of resolved names with no display formatting, so
+    run_pitching_and_dc_card_agents can split() it and check membership per DC's own
+    Node/State (which DC_Master_Normalized carries as names, never
+    common_salesoffice.id/common_state.id). Falls back to the raw id text when a name
+    can't be resolved, same as node_txt above, rather than silently dropping it. */
+    node_ids_txt AS (
+        SELECT scheme_id, LISTAGG(val, ',') WITHIN GROUP (ORDER BY val) AS node_names_raw
+        FROM (SELECT scheme_id, COALESCE(node_name, node_id) AS val FROM node_geo) x
+        GROUP BY scheme_id
+    ),
+
+    state_ids_txt AS (
+        SELECT rv.scheme_id, LISTAGG(COALESCE(cst.name, rv.val), ',') WITHIN GROUP (ORDER BY COALESCE(cst.name, rv.val)) AS state_names_raw
+        FROM rule_vals rv
+        LEFT JOIN input_backend_db.public.common_state cst ON cst.id::varchar = rv.val
+        WHERE rv.dim = 'state'
+        GROUP BY rv.scheme_id
+    ),
+
+    /* ---------- Products (product templates + SAP SKUs) ---------- */
+    products AS (
+        SELECT rv.scheme_id, 'template' AS kind, rv.val AS product_id,
+               pt.name AS product_name, pb.name AS brand, pt.business_segment_name AS segment
+        FROM rule_vals rv
+        LEFT JOIN input_backend_db.public.products_template pt ON pt.id::varchar = rv.val
+        LEFT JOIN input_backend_db.public.products_brand pb    ON pb.id::varchar = pt.brand_id::varchar
+        WHERE rv.dim = 'template'
+        UNION ALL
+        SELECT rv.scheme_id, 'sku', rv.val, mm.material_name, mm.brand_name, mm.business_segment
+        FROM rule_vals rv
+        LEFT JOIN (
+            SELECT LTRIM(material_id::varchar, '0') AS material_id,
+                   material_name, brand_name, business_segment,
+                   ROW_NUMBER() OVER (PARTITION BY LTRIM(material_id::varchar, '0') ORDER BY material_name) AS rn
+            FROM dev.s3_tables.material_master
+            WHERE SPLIT_PART(domain_id, '.', 1) = '10'
+        ) mm ON mm.material_id = rv.val AND mm.rn = 1
+        WHERE rv.dim = 'sku'
+    ),
+
+    product_summary AS (
+        SELECT scheme_id,
+               COUNT(*) AS products,
+               SUM(CASE WHEN product_name IS NULL THEN 1 ELSE 0 END) AS products_not_found,
+               COUNT(DISTINCT brand) AS brands
+        FROM products
+        GROUP BY scheme_id
+    ),
+
+    segment_txt AS (
+        SELECT scheme_id, LISTAGG(segment, ', ') WITHIN GROUP (ORDER BY segment) AS segments
+        FROM (SELECT DISTINCT scheme_id, segment FROM products WHERE segment IS NOT NULL) x
+        GROUP BY scheme_id
+    ),
+
+    /* ---------- Bookings (advance booking schemes) ---------- */
+    booking_lines AS (
+        SELECT bo.id, bo.scheme_id, bo.status, bo.booking_amount
+        FROM input_backend_db.public.discount_schemes_bookingorder bo
+        JOIN s ON s.id = bo.scheme_id
+    ),
+
+    booking_summary AS (
+        SELECT scheme_id,
+               SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END)                       AS active_bookings,
+               SUM(CASE WHEN status = 'done' THEN booking_amount ELSE 0 END)          AS advance_collected
+        FROM booking_lines
+        GROUP BY scheme_id
+    ),
+
+    /* ---------- Translations / T&C ---------- */
+    translation_txt AS (
+        SELECT t.scheme_id,
+               LISTAGG(CASE WHEN COALESCE(TRIM(t.terms_and_conditions), '') <> ''
+                            THEN t.language_code || ': ' || t.terms_and_conditions END, ' | ')
+                   WITHIN GROUP (ORDER BY t.language_code) AS terms_and_conditions
+        FROM coupon_service.public.scheme_translations t
+        JOIN s ON s.id = t.scheme_id
+        GROUP BY t.scheme_id
+    )
+
+    SELECT
+        s.id                                               AS scheme_id,
+        s.name                                              AS scheme_name,
+        CASE s.discounting_scheme_type
+            WHEN 'ABS' THEN 'Advance booking scheme'
+            WHEN 'CVR' THEN 'Cumulative volume rebate'
+            WHEN 'CDS' THEN 'Cash discount scheme'
+            ELSE COALESCE(s.discounting_scheme_type, s.scheme_type)
+        END                                                 AS scheme_type,
+
+        CASE s.discounting_scheme_type
+            WHEN 'ABS' THEN 'Advance booking scheme'
+            WHEN 'CVR' THEN 'Cumulative volume rebate'
+            WHEN 'CDS' THEN 'Cash discount scheme'
+            ELSE COALESCE(s.discounting_scheme_type, s.scheme_type)
+        END
+        || ' for DCs'
+        || CASE
+               WHEN rc.scheme_id IS NULL THEN ' (no active eligibility rule set up)'
+               WHEN nt.node_count > 0
+                   THEN ' in ' || nt.node_count::varchar
+                        || CASE WHEN nt.node_count = 1 THEN ' node' ELSE ' nodes' END
+                        || COALESCE(' (' || nst.node_states || ')', '')
+               WHEN stt.state_count > 0 THEN ' in ' || stt.state_names
+               ELSE ' (no location limit)'
+           END
+        || COALESCE(', ' || dtt.dc_types || ' DCs only', '')
+        || CASE
+               WHEN rc.scheme_id IS NULL THEN ''
+               WHEN COALESCE(ps.products, 0) = 0
+                   THEN CASE WHEN olt.has_product_group_limit = 1 THEN ', on selected brands/categories'
+                             ELSE ', no product list in rules' END
+               ELSE ', on ' || ps.products::varchar || ' '
+                    || COALESCE(LOWER(sgt.segments) || ' ', '')
+                    || CASE WHEN ps.products = 1 THEN 'product' ELSE 'products' END
+                    || CASE WHEN ps.brands = 1 THEN ' (1 brand)'
+                            WHEN ps.brands > 1 THEN ' (' || ps.brands::varchar || ' brands)'
+                            ELSE '' END
+           END
+        || '. '
+        || CASE WHEN s.discounting_scheme_type = 'ABS'
+                THEN 'Booking window ' || COALESCE(TO_CHAR(s.booking_start, 'DD Mon YYYY'), '?')
+                     || ' - ' || COALESCE(TO_CHAR(s.booking_end, 'DD Mon YYYY'), '?')
+                     || CASE WHEN st.adv_slabs = st.slab_rows AND st.adv_min = st.adv_max THEN ', advance ' || st.adv_min
+                             WHEN st.adv_slabs > 0 THEN ', advance varies by slab'
+                             ELSE '' END
+                     || '. '
+                ELSE ''
+           END
+        || 'Discount by '
+        || CASE s.slab_min_max_type
+               WHEN 'DATE'  THEN CASE WHEN s.discounting_scheme_type = 'ABS' THEN 'booking date' ELSE 'date' END
+               WHEN 'DAYS'  THEN 'payment days'
+               WHEN 'VALUE' THEN 'value'
+               ELSE CASE WHEN s.discounting_scheme_type = 'CVR' THEN 'total quantity bought' ELSE 'quantity' END
+           END
+        || ': ' || COALESCE(st.slabs_short, 'no slabs set')
+        || COALESCE('; on purchases ' || TO_CHAR(s.discount_start, 'DD Mon YYYY')
+                    || ' - ' || TO_CHAR(s.discount_end, 'DD Mon YYYY'), '')
+        || COALESCE('. Paid as ' || LOWER(REPLACE(s.benefit_channel, '_', ' ')), '')
+        || COALESCE(' by ' || TO_CHAR(s.benefit_pass_date, 'DD Mon YYYY'), '')
+        || COALESCE('. Max ₹' || TO_CHAR(s.max_discount_per_user, 'FM99,99,99,99,999') || ' per DC', '')
+        || '.'                                              AS generated_description,
+
+        COALESCE(tr.terms_and_conditions, 'None')          AS terms_and_conditions,
+        st.slabs_short,
+        s.max_discount_per_user                             AS max_discount_per_dc,
+        COALESCE(rc.active_rules, 0)                        AS active_rules,
+        nit.node_names_raw,
+        sit.state_names_raw,
+        COALESCE(ps.products, 0)                            AS products,
+        COALESCE(bs.active_bookings, 0)                     AS active_bookings,
+        COALESCE(bs.advance_collected, 0)                   AS advance_collected
+
+    FROM s
+    LEFT JOIN slab_txt st          ON st.scheme_id  = s.id
+    LEFT JOIN rule_count rc        ON rc.scheme_id  = s.id
+    LEFT JOIN node_txt nt          ON nt.scheme_id  = s.id
+    LEFT JOIN node_state_txt nst   ON nst.scheme_id = s.id
+    LEFT JOIN state_txt stt        ON stt.scheme_id = s.id
+    LEFT JOIN dc_type_txt dtt      ON dtt.scheme_id = s.id
+    LEFT JOIN other_limits_txt olt ON olt.scheme_id = s.id
+    LEFT JOIN product_summary ps   ON ps.scheme_id  = s.id
+    LEFT JOIN segment_txt sgt      ON sgt.scheme_id = s.id
+    LEFT JOIN booking_summary bs   ON bs.scheme_id  = s.id
+    LEFT JOIN translation_txt tr   ON tr.scheme_id  = s.id
+    LEFT JOIN node_ids_txt nit     ON nit.scheme_id = s.id
+    LEFT JOIN state_ids_txt sit    ON sit.scheme_id = s.id
+    ORDER BY s.id DESC
+    """
+
+
 def _sql_club_qualifying_turnover(dc_ids: List[str]) -> str:
     """Scoped counterpart of se_daily_plan_agent.SQL_DC_CLUB_QUALIFYING_TURNOVER_3G --
     same confirmed filter (status='confirmed', 2026 calendar-year window, the 3
@@ -2787,6 +3250,39 @@ def generate_plan_for_scope(
                     })
         except Exception as e:
             run_exceptions.append({"source": "abs_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+
+        # Scheme Description Cards (added 2026-09-16, explicit user request) -- enriches
+        # (does not replace) the node-scoped abs_scheme/scheme_details pull just above
+        # with a genuinely richer source, coupon_service.public.scheme +
+        # discounting_scheme_slab/scheme_rules/scheme_translations, see
+        # _sql_scheme_description_cards' own docstring. Fetched once for the whole run
+        # (not per-node -- it's already a full live-scheme scan), then attached by
+        # scheme-name match ONLY to nodes this scheme's own rules actually cover:
+        # scheme_rules stores node/state as ids, not names, so node_names_raw/
+        # state_names_raw (also not in the user's original query -- see that function's
+        # own docstring for why they were added) are what make this checkable here,
+        # rather than trusting a name-string match alone regardless of location.
+        try:
+            state_by_node: Dict[str, Optional[str]] = {}
+            for d in scoped_dcs:
+                if d.get("Node") and d["Node"] not in state_by_node:
+                    state_by_node[d["Node"]] = d.get("State")
+            for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_scheme_description_cards(plan_date)):
+                scheme_name = row.get("scheme_name")
+                if not scheme_name or not row.get("active_rules"):
+                    continue  # no active eligibility rule set up -- don't attribute this description anywhere
+                node_names = {n.strip() for n in (row.get("node_names_raw") or "").split(",") if n.strip()}
+                state_names = {n.strip() for n in (row.get("state_names_raw") or "").split(",") if n.strip()}
+                no_location_limit = not node_names and not state_names
+                for node, schemes in active_schemes_by_node.items():
+                    state = state_by_node.get(node)
+                    if not (no_location_limit or node in node_names or (state and state in state_names)):
+                        continue
+                    for entry in schemes:
+                        if entry.get("name") == scheme_name:
+                            entry["generated_description"] = row.get("generated_description")
+        except Exception as e:
+            run_exceptions.append({"source": "coupon_service.scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
         try:
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_punch_in(uids, plan_date)):

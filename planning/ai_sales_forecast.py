@@ -127,7 +127,12 @@ def _cache_key(
         desc = c.get("description") or ""
         parts.append(f"{c.get('name')}:{round(float(c.get('value') or 0.0), 2)}:d{len(desc)}:{hashlib.sha1(desc.encode('utf-8')).hexdigest()[:8]}")
     for s in sorted(schemes, key=lambda s: str(s.get("name"))):
-        parts.append(f"scheme:{s.get('name')}:{s.get('valid_until')}")
+        # description now carries generated_description (planning.services.
+        # _sql_scheme_description_cards, 2026-09-16) when present -- same digest
+        # treatment as a candidate's description just above, since it's prompt content
+        # too and must bust the cache if it changes without valid_until also changing.
+        desc = s.get("description") or ""
+        parts.append(f"scheme:{s.get('name')}:{s.get('valid_until')}:d{len(desc)}:{hashlib.sha1(desc.encode('utf-8')).hexdigest()[:8]}")
     return "|".join(parts)
 
 
@@ -298,12 +303,44 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
     a live join of scheme_details + abs_scheme scoped to this DC's own Node -- confirmed
     live before building, see that query's own docstring). Bounded to 10 -- an
     audit/context list for the prompt, not itself the candidate product pool (the AI
-    still only ever recommends products from recommended_products)."""
+    still only ever recommends products from recommended_products).
+
+    "description" prefers generated_description (planning.services.
+    _sql_scheme_description_cards, added 2026-09-16) when present -- a ready-made,
+    fact-grounded English sentence per scheme (booking window, slabs, discount), so the
+    model has real material to describe the scheme with instead of only a bare name/
+    category/brand triple. Falls back to the older per-material "description" field
+    (scheme_details.description) when a scheme has no generated_description -- e.g. one
+    this run's node/state eligibility check didn't confirm covers this DC's node (see
+    _sql_scheme_description_cards' call site in services.py)."""
     schemes = ctx.get("active_schemes") or []
     return [
-        {"name": s.get("name"), "category": s.get("category"), "brand": s.get("brand"), "valid_until": s.get("valid_until")}
+        {
+            "name": s.get("name"), "category": s.get("category"), "brand": s.get("brand"),
+            "valid_until": s.get("valid_until"),
+            "description": s.get("generated_description") or s.get("description"),
+        }
         for s in schemes[:10] if s.get("name")
     ]
+
+
+def _scheme_lines(schemes: List[Dict[str, Any]]) -> List[str]:
+    """Shared "Currently-active Sales/ABS Schemes" prompt block, used by both the
+    single-purpose and Sale+PTP-combo prompt builders below (added 2026-09-16 alongside
+    the generated_description field above, replacing the identical inline loop that used
+    to live in each builder separately). Appends the fact-grounded description when one
+    is available, rather than leaving the model to infer what the scheme actually offers
+    from just its name/category/brand."""
+    if not schemes:
+        return []
+    lines = ["Currently-active Sales/ABS Schemes available to this DC (a separate system from DC Club above):"]
+    for s in schemes:
+        line = f"- {s['name']} | category={s.get('category')} | brand={s.get('brand')} | valid until {s.get('valid_until')}"
+        if s.get("description"):
+            line += f" | {s['description']}"
+        lines.append(line)
+    lines.append("")
+    return lines
 
 
 # How the sales pointers must talk about a product (added 2026-09-16, explicit user
@@ -415,11 +452,7 @@ def _build_ai_pitch_combo(
         lines += ["Billing topic - DC's current outstanding (not yet overdue):", f"- Present outstanding: ₹{outstanding}", ""]
     lines.append(f"DC Club (loyalty-tier) standing: {club_context or 'no club data available'}")
     lines.append("")
-    if schemes:
-        lines.append("Currently-active Sales/ABS Schemes available to this DC (a separate system from DC Club above):")
-        for s in schemes:
-            lines.append(f"- {s['name']} | category={s.get('category')} | brand={s.get('brand')} | valid until {s.get('valid_until')}")
-        lines.append("")
+    lines += _scheme_lines(schemes)
     lines += [
         "This DC's own purchase profile (aggregate figures only -- no per-product breakdown "
         "exists for this DC's own purchases):",
@@ -607,11 +640,7 @@ def build_ai_pitch(
         ]
     lines.append(f"DC Club (loyalty-tier) standing: {club_context or 'no club data available'}")
     lines.append("")
-    if schemes:
-        lines.append("Currently-active Sales/ABS Schemes available to this DC (a separate system from DC Club above):")
-        for s in schemes:
-            lines.append(f"- {s['name']} | category={s.get('category')} | brand={s.get('brand')} | valid until {s.get('valid_until')}")
-        lines.append("")
+    lines += _scheme_lines(schemes)
     lines += [
         "This DC's own purchase profile (aggregate figures only -- no per-product breakdown "
         "exists for this DC's own purchases):",
