@@ -94,6 +94,19 @@ LOCUS_DB_ID = int(os.environ.get("SE_AGENT_LOCUS_DB_ID", "27"))                #
 # no separate feature flag). See apply_google_route_accuracy()'s own docstring.
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED = bool(GOOGLE_MAPS_API_KEY) and requests is not None
+
+
+def _redact_google_key(text: str) -> str:
+    """Strips a live GOOGLE_MAPS_API_KEY out of a string before it reaches any logger
+    (2026-09-16, after a leaked key was found in a committed log file). The leak came
+    from requests.exceptions.HTTPError's own str() -- it embeds the full failed
+    request URL, query string (key= param included) and all, whenever
+    resp.raise_for_status() fires. Call this on any exception string derived from a
+    Google Maps request before logging it, since logs/*.log are committed as
+    pipeline-run snapshots in this repo."""
+    if GOOGLE_MAPS_API_KEY and GOOGLE_MAPS_API_KEY in text:
+        return text.replace(GOOGLE_MAPS_API_KEY, "***REDACTED***")
+    return text
 # Persistent (SE, ordered-stop-sequence) -> per-leg [distance_km, duration_min] cache --
 # road distances don't change day to day, and this session's own verification workflow
 # re-runs the same states/dates repeatedly, so an uncached version would re-bill the API
@@ -3865,7 +3878,7 @@ def _fetch_distance_matrix_chunk(
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        logger.warning("Google Distance Matrix API call failed (%s: %s) -- falling back to Haversine x 1.4 for this chunk.", type(e).__name__, e)
+        logger.warning("Google Distance Matrix API call failed (%s: %s) -- falling back to Haversine x 1.4 for this chunk.", type(e).__name__, _redact_google_key(str(e)))
         return None
     if data.get("status") != "OK":
         logger.warning("Google Distance Matrix API returned status=%s -- falling back to Haversine x 1.4 for this chunk.", data.get("status"))
@@ -4105,7 +4118,7 @@ def google_directions_route_legs(
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        logger.warning("Google Directions API call failed (%s: %s) -- falling back to Haversine x 1.4 for this route.", type(e).__name__, e)
+        logger.warning("Google Directions API call failed (%s: %s) -- falling back to Haversine x 1.4 for this route.", type(e).__name__, _redact_google_key(str(e)))
         return None
 
     if data.get("status") != "OK" or not data.get("routes"):
