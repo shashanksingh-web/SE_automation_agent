@@ -119,8 +119,16 @@ DATABASES = {
         #     request cleanly queues behind the first (honoring 'timeout') instead of
         #     deadlocking. Django >=5.1 native OPTIONS key. WAL is kept too -- it's still
         #     the right on-disk mode for concurrent readers once writers stop deadlocking.
+        #  4. 'timeout' raised 30 -> 300 (2026-09-16): queueing only helps if the wait is
+        #     long enough. generate_plan_for_scope is ONE atomic block around the whole
+        #     generation -- Redshift pulls, routing, LLM calls, pitching -- so a Plan C
+        #     run holds the write lock for 2+ minutes (confirmed live: 2m13s), and a
+        #     request queued behind it (an SE switching Today -> Tomorrow while today's
+        #     plan was still generating) gave up at 30s with "database is locked"
+        #     every time. 300s covers two Plan C generations back to back. The real
+        #     fix is narrowing that atomic block to the write phase; until then, wait.
         'OPTIONS': {
-            'timeout': 30,
+            'timeout': 300,
             'init_command': 'PRAGMA journal_mode=WAL;',
             'transaction_mode': 'IMMEDIATE',
         },
