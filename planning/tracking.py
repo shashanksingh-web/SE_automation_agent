@@ -58,30 +58,68 @@ def _window(days: int) -> datetime:
     return timezone.now() - timedelta(days=days)
 
 
+_OUTCOME_RANK = {"UNKNOWN": -1, "MISSED": 0, "PARTIAL": 1, "COMPLETED": 2}
+
+
 def _outcomes(runs, tasks) -> Dict[str, Any]:
-    total = tasks.count()
-    reconciled = tasks.filter(reconciled_at__isnull=False)
-    n_rec = reconciled.count()
-    breakdown = {row["outcome_status"]: row["n"] for row in reconciled.values("outcome_status").annotate(n=Count("id"))}
-    completed = breakdown.get(DailyTask.OutcomeStatus.COMPLETED, 0) + breakdown.get(DailyTask.OutcomeStatus.PARTIAL, 0)
-    money = reconciled.aggregate(payment=Sum("actual_payment_amount"), order=Sum("actual_order_value"))
-    overdue_pitched = tasks.filter(present_overdue__gt=0).aggregate(s=Sum("present_overdue"))["s"]
-    ptp = tasks.exclude(promise_to_pay_date__isnull=True)
+    # Counted per PLANNED VISIT -- a distinct (SE, DC, plan_date) -- not per DailyTask
+    # row. This app regenerates a scope's plan on every view load, so one SE-day
+    # routinely carries 10-20 duplicate rows per DC (2,826 rows for 762 visits on
+    # 2026-09-05); per-row counting would let a much-regenerated day dominate every
+    # rate, and would sum the same DC's payment once per duplicate. A visit's outcome
+    # is the best of its rows (COMPLETED > PARTIAL > MISSED); money is taken once per
+    # (DC, day). Same dedup rule planning.reconciliation applies to streaks.
+    visits: Dict[tuple, str] = {}
+    money_by_dc_day: Dict[tuple, tuple] = {}
+    overdue_by_dc_day: Dict[tuple, float] = {}
+    ptp_by_dc_day: Dict[tuple, float] = {}
+    for se_id, dc_id, d, status, paid, ordered, overdue, ptp_date, ptp_amount in tasks.exclude(dc_id="").values_list(
+        "se_id", "dc_id", "plan_date", "outcome_status", "actual_payment_amount", "actual_order_value",
+        "present_overdue", "promise_to_pay_date", "promise_to_pay_amount",
+    ):
+        key = (se_id, dc_id, str(d))
+        if _OUTCOME_RANK.get(status, -1) > _OUTCOME_RANK.get(visits.get(key), -2):
+            visits[key] = status
+        dc_day = (dc_id, str(d))
+        prev_paid, prev_ordered = money_by_dc_day.get(dc_day, (None, None))
+        money_by_dc_day[dc_day] = (
+            paid if paid is not None else prev_paid,
+            max(ordered, prev_ordered or 0) if ordered else prev_ordered,
+        )
+        if overdue:
+            overdue_by_dc_day[dc_day] = max(overdue, overdue_by_dc_day.get(dc_day, 0))
+        if ptp_date:
+            ptp_by_dc_day[dc_day] = max(ptp_amount or 0, ptp_by_dc_day.get(dc_day, 0))
+
+    total = len(visits)
+    reconciled = {k: s for k, s in visits.items() if s != "UNKNOWN"}
+    n_rec = len(reconciled)
+    breakdown: Dict[str, int] = {}
+    for s in reconciled.values():
+        breakdown[s] = breakdown.get(s, 0) + 1
+    completed = breakdown.get("COMPLETED", 0) + breakdown.get("PARTIAL", 0)
+    paid_total = sum(p for p, _ in money_by_dc_day.values() if p)
+    ordered_total = sum(o for _, o in money_by_dc_day.values() if o)
     return {
         "Tasks_Planned": total,
+        "Task_Rows": tasks.count(),
         "Tasks_Reconciled": n_rec,
         "Reconciliation_Rate_Pct": _pct(n_rec, total),
         # Across ALL time, not just the window -- "has this ever run" is the question.
         "Reconciliation_Last_Run_At": DailyTask.objects.aggregate(m=Max("reconciled_at"))["m"],
         "Visit_Execution_Rate_Pct": _pct(completed, n_rec),
         "Outcome_Status_Breakdown": breakdown,
-        "Overdue_Pitched": overdue_pitched,
-        "Collection_Realised": money["payment"],
-        "Sales_After_Visit": money["order"],
-        "PTP_Promises": ptp.count(),
-        "PTP_Promised_Amount": ptp.aggregate(s=Sum("promise_to_pay_amount"))["s"],
+        "Overdue_Pitched": sum(overdue_by_dc_day.values()) or None,
+        "Collection_Realised": paid_total if n_rec else None,
+        "Sales_After_Visit": ordered_total if n_rec else None,
+        "PTP_Promises": len(ptp_by_dc_day),
+        "PTP_Promised_Amount": sum(ptp_by_dc_day.values()) or None,
         "Chronic_Non_Execution_Pairs": DCVisitStreak.objects.filter(consecutive_misses__gte=DCVisitStreak.ESCALATION_THRESHOLD).count(),
         "Escalation_Threshold_Misses": DCVisitStreak.ESCALATION_THRESHOLD,
+        # All-time: past DC-visit tasks still UNKNOWN -- what "Reconcile now" would act on.
+        "Reconcilable_Now": DailyTask.objects.filter(
+            plan_date__lt=timezone.now().date().isoformat(), outcome_status=DailyTask.OutcomeStatus.UNKNOWN,
+        ).exclude(dc_id="").count(),
     }
 
 

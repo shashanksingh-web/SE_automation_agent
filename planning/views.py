@@ -24,6 +24,7 @@ from .routing import (
 )
 from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
 from .services import _output_dir as _planning_output_dir
+from .services import agent  # se_daily_plan_agent, imported once there as a library
 from .tracking import compute_tracking_metrics
 
 
@@ -956,6 +957,35 @@ def admin_tracking(request):
     except ValueError:
         return JsonResponse({"error": "days must be an integer"}, status=400)
     return JsonResponse(compute_tracking_metrics(days), json_dumps_params={"default": str})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def admin_reconcile(request):
+    """POST /api/planning/admin/reconcile/ -- the Tracking dashboard's "Reconcile now":
+    reconciles every past plan_date that still has UNKNOWN DC-visit tasks, network-
+    wide, one live pull set per date (planning.reconciliation.reconcile_past_tasks).
+    Idempotent; a second click finds nothing to do. Returns the per-date summaries.
+    Same @csrf_exempt + POST convention as the rest of the admin/ family."""
+    from .reconciliation import ReconciliationError, format_summary, reconcile_past_tasks
+    client = agent.get_client()
+    try:
+        summaries = reconcile_past_tasks(client=client)
+    except ReconciliationError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    finally:
+        client.close()
+    return JsonResponse({
+        "Dates": len(summaries),
+        "Tasks": sum(s["tasks"] for s in summaries),
+        "Completed": sum(s["completed"] for s in summaries),
+        "Partial": sum(s["partial"] for s in summaries),
+        "Missed": sum(s["missed"] for s in summaries),
+        "Escalated": sum(s["escalated"] for s in summaries),
+        "Payment_Amount": sum(s["payment_amount"] for s in summaries),
+        "Pull_Failures": [f for s in summaries for f in s["pull_failures"]],
+        "Lines": [format_summary(s) for s in summaries if s["tasks"]],
+    }, json_dumps_params={"default": str})
 
 
 @require_GET

@@ -1901,6 +1901,28 @@ def _sql_order_outcomes(dc_ids: List[str], plan_date: str) -> str:
     """
 
 
+def _sql_payment_outcomes(dc_ids: List[str], plan_date: str) -> str:
+    # Collection realised in the same [plan_date, plan_date+2] window the visit/order
+    # outcome pulls use (added 2026-09-16 -- reconcile_outcomes recorded visits and
+    # orders but never what a DC actually PAID, so actual_payment_amount stayed NULL and
+    # the collection half of every Promise-To-Pay task was unmeasurable).
+    # payments_paymenttransaction has no amount of its own; it lives on
+    # payments_paymentreferencemap, joined via payment_reference_id = map.id -- confirmed
+    # live 2026-09-16 (3,746 of 4,666 SUCCESS transactions since 2026-09-01 carry an
+    # amount that way; the two other plausible keys, reference_number/
+    # reference_system_identifier, match zero rows). A SUCCESS transaction with no map
+    # row simply contributes nothing -- never estimated.
+    return f"""
+    SELECT cc.partner_id AS dc_id, SUM(m.amount) AS amount_paid, COUNT(*) AS payments
+    FROM payments_paymenttransaction p
+    JOIN payments_paymentreferencemap m ON m.id = p.payment_reference_id
+    JOIN customer_management_customer cc ON cc.id = p.customer_id
+    WHERE cc.partner_id::text IN ({_sql_list(dc_ids)}) AND p.status = 'SUCCESS'
+      AND p.created_at >= DATE '{plan_date}' AND p.created_at <= DATE '{plan_date}' + INTERVAL '2 days'
+    GROUP BY cc.partner_id
+    """
+
+
 def _resolve_geo_mapping(client: "agent.MetabaseClient", geo_mapping_cache: Optional[Dict[str, agent.Table]] = None) -> agent.Table:
     """geo_mapping_cache, when passed, is a single-request cache shared with callers
     later in the same generate_plan_for_scope() run (e.g. the Pitching Agent's block
@@ -2508,6 +2530,31 @@ def generate_plan_for_scope(
             if email not in se_user_ids:
                 run_exceptions.append({"source": "users_user", "reason_code": "SE_User_ID_Unresolved", "detail": f"Could not resolve user_id for {email} -- excluded from this run"})
         se_emails = [e for e in se_emails if e in se_user_ids]
+
+    # Outcome reconciliation for these SEs' past plans, before their new one is built
+    # (added 2026-09-16, see planning.reconciliation's docstring for why it lives here
+    # and not on a scheduler). Runs first because its result feeds this very plan:
+    # DCVisitStreak.consecutive_misses drives the Critical flag below. Idempotent --
+    # only still-UNKNOWN past tasks are touched, so the second generation of a day
+    # finds nothing to do. Never blocks generation: a failure lands in the
+    # Exceptions_Report and the plan proceeds on whatever streak data already exists.
+    if client.configured:
+        from .reconciliation import reconcile_past_tasks  # local import -- reconciliation imports this module
+        try:
+            for summary in reconcile_past_tasks(
+                client=client, before_date=timezone.now().date().isoformat(),
+                se_ids=[str(se_user_ids.get(e, e)) for e in se_emails],
+            ):
+                for failure in summary["pull_failures"]:
+                    run_exceptions.append({
+                        "source": "reconcile_outcomes", "reason_code": "Live_Pull_Failed",
+                        "detail": f"Reconciling {summary['plan_date']}: {failure}",
+                    })
+        except Exception as e:
+            run_exceptions.append({
+                "source": "reconcile_outcomes", "reason_code": "Reconciliation_Failed",
+                "detail": f"{type(e).__name__}: {e} -- past outcomes for this scope stay UNKNOWN this run",
+            })
 
     last_visit_by_dc: Dict[str, str] = {}
     recent_attempts_by_se_dc: Dict[int, Dict[str, int]] = {}
