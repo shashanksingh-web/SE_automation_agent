@@ -17,8 +17,11 @@ Every figure is computed from the DB / output files at request time -- nothing h
 a new write path, and nothing is estimated: a metric whose underlying data has never
 been produced comes back as None with the count of what IS there (e.g. Tasks_Reconciled
 0 of N), so the dashboard can say "never measured" rather than show a fabricated 0%.
-Windowed by PlanRun.run_timestamp (when the plan was generated), not plan_date, so a
-tomorrow-dated run generated today counts as today's work.
+Windowed by PlanRun.plan_date -- the day the visits were FOR -- over an inclusive
+[from, to] range (changed 2026-09-16 from run_timestamp when "Yesterday" and a custom
+range were added: "how did yesterday go" means the visits planned for yesterday, not
+the plans generated yesterday). A rolling "last N days" is [today-(N-1), today]; a
+tomorrow-dated run only shows in a range that includes tomorrow.
 """
 from __future__ import annotations
 
@@ -54,8 +57,34 @@ def _pct(numerator: float, denominator: float) -> Optional[float]:
     return round(100.0 * numerator / denominator, 1) if denominator else None
 
 
-def _window(days: int) -> datetime:
-    return timezone.now() - timedelta(days=days)
+MAX_WINDOW_DAYS = 90
+
+
+class TrackingWindowError(ValueError):
+    pass
+
+
+def resolve_window(days: Optional[int] = None, date_from: Optional[str] = None, date_to: Optional[str] = None) -> tuple:
+    """(from_date, to_date) as ISO strings, inclusive. Explicit from/to win; otherwise
+    the last `days` days ending today (default 7). Raises TrackingWindowError for a
+    malformed date, from > to, or a span past MAX_WINDOW_DAYS."""
+    today = timezone.now().date()
+    if date_from or date_to:
+        try:
+            f = datetime.fromisoformat(date_from).date() if date_from else None
+            t = datetime.fromisoformat(date_to).date() if date_to else None
+        except ValueError:
+            raise TrackingWindowError("from/to must be YYYY-MM-DD dates")
+        f = f or t
+        t = t or f
+        if f > t:
+            raise TrackingWindowError("from must not be after to")
+    else:
+        n = max(1, min(int(days or 7), MAX_WINDOW_DAYS))
+        f, t = today - timedelta(days=n - 1), today
+    if (t - f).days + 1 > MAX_WINDOW_DAYS:
+        raise TrackingWindowError(f"window must be at most {MAX_WINDOW_DAYS} days")
+    return f.isoformat(), t.isoformat()
 
 
 _OUTCOME_RANK = {"UNKNOWN": -1, "MISSED": 0, "PARTIAL": 1, "COMPLETED": 2}
@@ -266,13 +295,15 @@ def _ops() -> Dict[str, Any]:
     }
 
 
-def compute_tracking_metrics(days: int = 7) -> Dict[str, Any]:
-    days = max(1, min(int(days), 90))
-    since = _window(days)
-    runs = PlanRun.objects.filter(run_timestamp__gte=since)
+def compute_tracking_metrics(days: Optional[int] = None, date_from: Optional[str] = None, date_to: Optional[str] = None) -> Dict[str, Any]:
+    f, t = resolve_window(days, date_from, date_to)
+    runs = PlanRun.objects.filter(plan_date__gte=f, plan_date__lte=t)
     tasks = DailyTask.objects.filter(plan_run__in=runs)
     return {
-        "Window": {"Days": days, "From": since.isoformat(), "To": timezone.now().isoformat(), "Plan_Runs": runs.count()},
+        "Window": {
+            "From": f, "To": t, "Days": (datetime.fromisoformat(t) - datetime.fromisoformat(f)).days + 1,
+            "Plan_Runs": runs.count(),
+        },
         "Outcomes": _outcomes(runs, tasks),
         "Adoption": _adoption(runs),
         "Quality": _quality(runs),

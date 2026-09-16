@@ -25,7 +25,7 @@ from .routing import (
 from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
 from .services import _output_dir as _planning_output_dir
 from .services import agent  # se_daily_plan_agent, imported once there as a library
-from .tracking import compute_tracking_metrics
+from .tracking import TrackingWindowError, compute_tracking_metrics
 
 
 def _focus_product_kwargs(params: dict) -> dict:
@@ -946,17 +946,22 @@ def plan_run_detail(request, plan_run_id: int):
 
 @require_GET
 def admin_tracking(request):
-    """GET /api/planning/admin/tracking/?days=7 -- the Tracking dashboard's numbers
-    (added 2026-09-16, see planning.tracking's own docstring for what each tier means
-    and why). days: 1-90, default 7; windowed on PlanRun.run_timestamp. Read-only,
+    """GET /api/planning/admin/tracking/?days=7 | ?from=YYYY-MM-DD&to=YYYY-MM-DD -- the
+    Tracking dashboard's numbers (added 2026-09-16, see planning.tracking's own
+    docstring for what each tier means and why). Explicit from/to (inclusive plan
+    dates, span <= 90 days) wins; else the last `days` days ending today (default 7). Read-only,
     computed at request time from what the pipeline already persists -- ~1.5s over a
     week of runs. ADMIN-only in the frontend nav, same as the rest of the admin/ family
     (the API itself enforces nothing, per this app's stated RBAC convention)."""
     try:
-        days = int(request.GET.get("days", 7))
+        days = int(request.GET["days"]) if request.GET.get("days") else None
     except ValueError:
         return JsonResponse({"error": "days must be an integer"}, status=400)
-    return JsonResponse(compute_tracking_metrics(days), json_dumps_params={"default": str})
+    try:
+        metrics = compute_tracking_metrics(days, request.GET.get("from") or None, request.GET.get("to") or None)
+    except TrackingWindowError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    return JsonResponse(metrics, json_dumps_params={"default": str})
 
 
 @csrf_exempt
