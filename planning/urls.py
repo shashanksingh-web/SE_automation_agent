@@ -49,6 +49,7 @@ urlpatterns = [
     path("admin/routing-overrides/", views.admin_routing_overrides, name="admin_routing_overrides"),
     path("admin/routing-overrides/delete/", views.admin_routing_overrides_delete, name="admin_routing_overrides_delete"),
     path("admin/config/", views.admin_pipeline_config, name="admin_pipeline_config"),
+    path("admin/tracking/", views.admin_tracking, name="admin_tracking"),
     path("admin/dc-selection/", views.admin_dc_selection, name="admin_dc_selection"),
     path("admin/dc-selection/preview/", views.admin_dc_selection_preview, name="admin_dc_selection_preview"),
     path("admin/dc-selection/search/", views.admin_dc_selection_search, name="admin_dc_selection_search"),

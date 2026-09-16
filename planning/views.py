@@ -24,6 +24,7 @@ from .routing import (
 )
 from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
 from .services import _output_dir as _planning_output_dir
+from .tracking import compute_tracking_metrics
 
 
 def _focus_product_kwargs(params: dict) -> dict:
@@ -940,6 +941,21 @@ def plan_run_detail(request, plan_run_id: int):
     except PlanRun.DoesNotExist:
         return JsonResponse({"error": f"PlanRun {plan_run_id} not found"}, status=404)
     return JsonResponse(_serialize_plan_run(plan_run), safe=False, json_dumps_params={"default": str})
+
+
+@require_GET
+def admin_tracking(request):
+    """GET /api/planning/admin/tracking/?days=7 -- the Tracking dashboard's numbers
+    (added 2026-09-16, see planning.tracking's own docstring for what each tier means
+    and why). days: 1-90, default 7; windowed on PlanRun.run_timestamp. Read-only,
+    computed at request time from what the pipeline already persists -- ~1.5s over a
+    week of runs. ADMIN-only in the frontend nav, same as the rest of the admin/ family
+    (the API itself enforces nothing, per this app's stated RBAC convention)."""
+    try:
+        days = int(request.GET.get("days", 7))
+    except ValueError:
+        return JsonResponse({"error": "days must be an integer"}, status=400)
+    return JsonResponse(compute_tracking_metrics(days), json_dumps_params={"default": str})
 
 
 @require_GET
