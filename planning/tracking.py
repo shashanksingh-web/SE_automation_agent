@@ -153,22 +153,64 @@ def _outcomes(runs, tasks) -> Dict[str, Any]:
 
 
 def _adoption(runs) -> Dict[str, Any]:
-    by_status = {row["status"]: row["n"] for row in runs.values("status").annotate(n=Count("id"))}
-    total = runs.count()
-    reviewed = runs.exclude(reviewed_by="").exclude(reviewed_by__isnull=True).count()
-    route_plans = RoutePlan.objects.filter(plan_run__in=runs)
-    selected = route_plans.filter(is_default_selected=True)
+    # Counted per SE-DAY -- a distinct (SE, plan_date) among SE-scope runs, the plan an
+    # SE actually sees in their own view -- not per PlanRun. Every view load regenerates
+    # the plan (134 SE-scope runs for 23 SE-days in one week; one SE's day regenerated
+    # 30 times), and an SE reviews ONE plan a day, so per-run counting buried the
+    # reviewed rate at 3%. A day's verdict is its LATEST review (an SE who rejected,
+    # regenerated and then approved has approved); it's manually edited if any of its
+    # runs' routes were; its route model of record is the selected plan on its latest
+    # run. Admin-generated STATE/NODE/... runs aren't something an SE reviews, so they
+    # count toward Plan_Runs but not toward adoption.
+    total_runs = runs.count()
+    days: Dict[tuple, Dict[str, Any]] = {}
+    for run_id, se, d, status, reviewed_by, reviewed_at, ts in (
+        runs.filter(scope_type=PlanRun.ScopeType.SE)
+        .values_list("id", "scope_value", "plan_date", "status", "reviewed_by", "reviewed_at", "run_timestamp")
+    ):
+        day = days.setdefault((se, str(d)), {"runs": 0, "run_ids": [], "latest": (None, None), "review": (None, None)})
+        day["runs"] += 1
+        day["run_ids"].append(run_id)
+        if day["latest"][0] is None or ts > day["latest"][0]:
+            day["latest"] = (ts, run_id)
+        if reviewed_by and reviewed_at and (day["review"][0] is None or reviewed_at > day["review"][0]):
+            day["review"] = (reviewed_at, status)
+
+    se_run_ids = [rid for day in days.values() for rid in day["run_ids"]]
+    edited_runs = set(RoutePlan.objects.filter(plan_run_id__in=se_run_ids, manually_edited=True).values_list("plan_run_id", flat=True))
+    latest_ids = [day["latest"][1] for day in days.values() if day["latest"][1] is not None]
+    selected_by_run = dict(
+        RoutePlan.objects.filter(plan_run_id__in=latest_ids, is_default_selected=True).values_list("plan_run_id", "plan_type")
+    )
+
+    n_days = len(days)
+    by_status: Dict[str, int] = {}
+    edited_days = 0
+    plan_types: Dict[str, int] = {}
+    for day in days.values():
+        verdict = day["review"][1] or PlanRun.Status.PENDING_REVIEW
+        by_status[verdict] = by_status.get(verdict, 0) + 1
+        if any(rid in edited_runs for rid in day["run_ids"]):
+            edited_days += 1
+        pt = selected_by_run.get(day["latest"][1])
+        if pt:
+            plan_types[pt] = plan_types.get(pt, 0) + 1
+    reviewed = n_days - by_status.get(PlanRun.Status.PENDING_REVIEW, 0)
+
     return {
-        "Plan_Runs": total,
+        "Plan_Runs": total_runs,
+        "SE_Runs": len(se_run_ids),
+        "SE_Days": n_days,
+        "Runs_Per_SE_Day": round(len(se_run_ids) / n_days, 1) if n_days else None,
         "By_Status": by_status,
         "Approved": by_status.get(PlanRun.Status.APPROVED, 0),
         "Rejected": by_status.get(PlanRun.Status.REJECTED, 0),
         "Reviewed": reviewed,
-        "Reviewed_Rate_Pct": _pct(reviewed, total),
-        "Route_Plans": route_plans.count(),
-        "Manually_Edited_Routes": route_plans.filter(manually_edited=True).count(),
-        "Manual_Edit_Rate_Pct": _pct(route_plans.filter(manually_edited=True).count(), selected.count()),
-        "Selected_Plan_Type_Breakdown": {row["plan_type"]: row["n"] for row in selected.values("plan_type").annotate(n=Count("id"))},
+        "Reviewed_Rate_Pct": _pct(reviewed, n_days),
+        "Route_Plans": RoutePlan.objects.filter(plan_run__in=runs).count(),
+        "Manually_Edited_Days": edited_days,
+        "Manual_Edit_Rate_Pct": _pct(edited_days, n_days),
+        "Selected_Plan_Type_Breakdown": plan_types,
     }
 
 
