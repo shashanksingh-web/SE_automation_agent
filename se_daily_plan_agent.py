@@ -199,6 +199,41 @@ LLM_ROUTING_TIMEOUT_SECONDS = float(os.environ.get("LLM_ROUTING_TIMEOUT_SECONDS"
 # shouldn't re-bill the API or risk sampling a different LLM response.
 LLM_ROUTE_CACHE_PATH = Path(os.environ.get("SE_AGENT_LLM_ROUTE_CACHE", BASE_DIR / "output" / "llm_route_cache.json"))
 
+
+class JsonFileCache:
+    """Lazy-loaded, disk-backed JSON cache -- loads once into memory on first access
+    (`load()`), written back to disk on `save()`. Extracted 2026-09-16 (architecture
+    audit finding) from 4 previously independent copy-pastes of this exact same
+    load/save pattern: this file's own Google route cache, Google distance-matrix
+    cache, and LLM route cache, plus planning.ai_sales_forecast's AI pitch cache --
+    each had its own module-level `Optional[Dict]` global and near-identical
+    try/except FileNotFoundError/JSONDecodeError on load, try/except OSError on save.
+    One implementation now, four thin call sites.
+
+    `load()` returns the SAME dict object on every call (not a copy) -- every existing
+    caller's pattern of `cache = X.load(); cache[key] = value; X.save()` (mutate the
+    returned dict in place, save with no args) keeps working unchanged, since `save()`
+    always writes whatever `self._data` currently holds."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._data: Optional[Dict[str, Any]] = None
+
+    def load(self) -> Dict[str, Any]:
+        if self._data is None:
+            try:
+                self._data = json.loads(self.path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                self._data = {}
+        return self._data
+
+    def save(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(self._data), encoding="utf-8")
+        except OSError:
+            pass  # best-effort cache -- a write failure just means this run re-fetches next time, not a hard error
+
 # Pitching Agent's AI Sales Forecast (added 2026-09-12, explicit user request -- see
 # planning.ai_sales_forecast's own module docstring for the full design). Lives here,
 # not in planning/ai_sales_forecast.py itself, ONLY because every "module"-target Admin
@@ -3792,25 +3827,15 @@ def _candidate_coords(c: Dict[str, Any]) -> Tuple[Optional[float], Optional[floa
 
 
 _active_distance_matrix: Optional[Dict[Tuple[float, float, float, float], Tuple[float, float]]] = None  # call-scoped, see prime_google_distance_matrix
-_google_distance_matrix_cache: Optional[Dict[str, List[float]]] = None  # lazy-loaded, module-level, disk-backed
+_google_distance_matrix_cache_store = JsonFileCache(GOOGLE_DISTANCE_MATRIX_CACHE_PATH)
 
 
 def _load_google_distance_matrix_cache() -> Dict[str, List[float]]:
-    global _google_distance_matrix_cache
-    if _google_distance_matrix_cache is None:
-        try:
-            _google_distance_matrix_cache = json.loads(GOOGLE_DISTANCE_MATRIX_CACHE_PATH.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            _google_distance_matrix_cache = {}
-    return _google_distance_matrix_cache
+    return _google_distance_matrix_cache_store.load()
 
 
 def _save_google_distance_matrix_cache() -> None:
-    try:
-        GOOGLE_DISTANCE_MATRIX_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GOOGLE_DISTANCE_MATRIX_CACHE_PATH.write_text(json.dumps(_google_distance_matrix_cache), encoding="utf-8")
-    except OSError:
-        pass  # best-effort cache, same convention as _save_google_route_cache
+    _google_distance_matrix_cache_store.save()
 
 
 def _matrix_pair_key(a: Tuple[float, float], b: Tuple[float, float]) -> str:
@@ -4020,25 +4045,15 @@ def _route_metrics(stop_candidates: List[Dict[str, Any]], origin: Tuple[float, f
     }
 
 
-_google_route_cache: Optional[Dict[str, List[List[float]]]] = None  # lazy-loaded, module-level
+_google_route_cache_store = JsonFileCache(GOOGLE_ROUTE_CACHE_PATH)
 
 
 def _load_google_route_cache() -> Dict[str, List[List[float]]]:
-    global _google_route_cache
-    if _google_route_cache is None:
-        try:
-            _google_route_cache = json.loads(GOOGLE_ROUTE_CACHE_PATH.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            _google_route_cache = {}
-    return _google_route_cache
+    return _google_route_cache_store.load()
 
 
 def _save_google_route_cache() -> None:
-    try:
-        GOOGLE_ROUTE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GOOGLE_ROUTE_CACHE_PATH.write_text(json.dumps(_google_route_cache), encoding="utf-8")
-    except OSError:
-        pass  # best-effort cache -- a write failure just means this run re-fetches next time, not a hard error
+    _google_route_cache_store.save()
 
 
 def _google_route_cache_key(origin: Tuple[float, float], stop_coords: List[Tuple[float, float]]) -> str:
@@ -4941,25 +4956,15 @@ def _cluster_candidates_by_density(
     return clusters
 
 
-_llm_route_cache: Optional[Dict[str, Dict[str, Any]]] = None
+_llm_route_cache_store = JsonFileCache(LLM_ROUTE_CACHE_PATH)
 
 
 def _load_llm_route_cache() -> Dict[str, Dict[str, Any]]:
-    global _llm_route_cache
-    if _llm_route_cache is None:
-        try:
-            _llm_route_cache = json.loads(LLM_ROUTE_CACHE_PATH.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            _llm_route_cache = {}
-    return _llm_route_cache
+    return _llm_route_cache_store.load()
 
 
 def _save_llm_route_cache() -> None:
-    try:
-        LLM_ROUTE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        LLM_ROUTE_CACHE_PATH.write_text(json.dumps(_llm_route_cache), encoding="utf-8")
-    except OSError:
-        pass  # best-effort cache, same convention as _save_google_route_cache
+    _llm_route_cache_store.save()
 
 
 def _llm_route_cache_key(
