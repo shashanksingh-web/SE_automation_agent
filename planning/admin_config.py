@@ -284,7 +284,8 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
     {
         "group": "Routing", "key": "plan_a_max_round_trip_distance_km", "type": "float",
         "label": "Plan A distance ceiling (all 3 models)", "unit": "km", "min": 10, "max": 500,
-        "description": "Added 2026-09-09 -- Plan A's round-trip distance budget (Priority-Max/Distance-Min/Balanced all share this ceiling, same as the travel-time ceiling above). Not part of the original spec (Model 1 previously had no distance cap at all).",
+        "description": "Added 2026-09-09 -- Plan A's round-trip distance budget (Priority-Max/Distance-Min/Balanced all share this ceiling, same as the travel-time ceiling above). Not part of the original spec (Model 1 previously had no distance cap at all). "
+                        "Note: \"Plan C cluster definition -- max intra-cluster spread\" (in the Plan C group below) defaults to ~45% of whatever this value was at 100.0km -- that field does NOT recompute itself if you change this one, see its own description.",
         "target": "module", "module_attr": "PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM", "default": 100.0,
     },
     {
@@ -359,7 +360,8 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
     {
         "group": "Plan C (AI-Reasoned)", "key": "plan_c_cluster_max_intra_km", "type": "float",
         "label": "Cluster definition -- max intra-cluster spread", "unit": "km", "min": 1, "max": 200,
-        "description": "Only used when Decision style = cluster_based. The same max-pairwise-distance bound Plan B's own clustering uses (Section 3.2): a DC can only join a cluster if doing so keeps every pair within the cluster no farther apart than this.",
+        "description": "Only used when Decision style = cluster_based. The same max-pairwise-distance bound Plan B's own clustering uses (Section 3.2): a DC can only join a cluster if doing so keeps every pair within the cluster no farther apart than this. "
+                        "Independently overridable from Plan A's distance ceiling above (architecture-audit note, 2026-09-16) -- the 45.0 default is ~45% of that ceiling's own default (100km), matching Section 3.2's \"40-50% of the daily distance budget\" guidance, but this value is only ever set ONCE at that ratio and never re-derives itself. If you change \"Plan A distance ceiling\" above, this field's own value does NOT follow it automatically -- revisit this one too if you want the ~45% relationship preserved.",
         "target": "module", "module_attr": "PLAN_C_CLUSTER_MAX_INTRA_KM", "default": 45.0,
     },
     {

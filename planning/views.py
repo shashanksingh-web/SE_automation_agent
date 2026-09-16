@@ -26,32 +26,37 @@ from .services import PlanningError, activate_tuff_scope, generate_plan_for_scop
 from .services import _output_dir as _planning_output_dir
 
 
-def _focus_product_kwargs_from_get(request) -> dict:
+def _focus_product_kwargs(params: dict) -> dict:
     """Shared by _generate_and_respond/tuff -- lets any scope endpoint accept the same
-    ?focus_product=<materialId>&focus_node=...&... query params activate_tuff/
-    generate_se_plan's CLI flags do, so the API isn't a second, drifting implementation
-    of the same optional Focus Product Campaign Targeting wiring (see
-    planning.services.generate_plan_for_scope's focus_product_* docstring)."""
-    material_id = request.GET.get("focus_product")
+    focus_product/focus_node/... params activate_tuff/generate_se_plan's CLI flags do,
+    so the API isn't a second, drifting implementation of the same optional Focus
+    Product Campaign Targeting wiring (see planning.services.generate_plan_for_scope's
+    focus_product_* docstring).
+
+    Takes a plain params dict (from _json_body(request)) rather than the request object
+    directly -- renamed from _focus_product_kwargs_from_get 2026-09-16 when its two
+    callers moved from GET query params to a POST JSON body (architecture-audit fix:
+    these were GET endpoints that mutate PlanRun/DailyTask/PitchScript/DCCard state)."""
+    material_id = params.get("focus_product")
     if not material_id:
         return {}
     season_weeks = build_season_weeks(
-        request.GET.get("focus_product_outer_weeks", "1-52"), request.GET.get("focus_product_buildup_weeks"),
-        int(request.GET["focus_product_peak_week"]) if request.GET.get("focus_product_peak_week") else None,
-        request.GET.get("focus_product_closure_weeks"),
+        params.get("focus_product_outer_weeks", "1-52"), params.get("focus_product_buildup_weeks"),
+        int(params["focus_product_peak_week"]) if params.get("focus_product_peak_week") else None,
+        params.get("focus_product_closure_weeks"),
     )
     return {
         "focus_product_material_id": material_id,
-        "focus_product_node_id": request.GET.get("focus_node"),
-        "focus_product_years": int(request.GET.get("focus_product_years", 4)),
+        "focus_product_node_id": params.get("focus_node"),
+        "focus_product_years": int(params.get("focus_product_years", 4)),
         "focus_product_season_weeks": season_weeks,
-        "focus_product_crop_districts": split_csv(request.GET.get("focus_product_crop_districts")),
-        "focus_product_related_products": split_csv(request.GET.get("focus_product_related_products")),
+        "focus_product_crop_districts": split_csv(params.get("focus_product_crop_districts")),
+        "focus_product_related_products": split_csv(params.get("focus_product_related_products")),
     }
 
 
-def _routing_plan_choice_from_get(request) -> "str | None":
-    """Shared by _generate_and_respond/tuff -- ?routing_plan=A|B|C (case-insensitive),
+def _routing_plan_choice(params: dict) -> "str | None":
+    """Shared by _generate_and_respond/tuff -- routing_plan=A|B|C (case-insensitive),
     mirroring activate_tuff/generate_se_plan's --routing-plan CLI flag (2026-08-31 fix:
     the API previously had no way to request Plan B at all, silently always running
     Plan A). None (param omitted) is passed straight through as routing_plan_choice=None,
@@ -67,8 +72,12 @@ def _routing_plan_choice_from_get(request) -> "str | None":
     now produces 3 routes per SE like Plan A/B) -- fine for a single SE/day request, but
     a STATE/NODE-scope request now fans that out across every SE in scope sequentially,
     same as Plan A/B always have for their own (cheaper, local) per-SE work -- 3x the
-    per-SE cost now applies here too."""
-    raw = request.GET.get("routing_plan")
+    per-SE cost now applies here too.
+
+    Takes a plain params dict rather than the request object directly -- see
+    _focus_product_kwargs's own docstring for why (renamed from
+    _routing_plan_choice_from_get 2026-09-16)."""
+    raw = params.get("routing_plan")
     if not raw:
         return None
     choice = raw.strip().upper()
@@ -177,8 +186,8 @@ def _serialize_plan_run(plan_run: PlanRun) -> dict:
             }
             for e in plan_run.exceptions.all()
         ],
-        # Empty unless this run was given ?focus_product=... -- see
-        # _focus_product_kwargs_from_get, product-first not DC-first, opt-in per call.
+        # Empty unless this run was given focus_product=... -- see
+        # _focus_product_kwargs, product-first not DC-first, opt-in per call.
         "Focus_Product_Targets": [
             {
                 "ID": f.id, "Material_ID": f.material_id, "Node_ID": f.node_id,
@@ -189,13 +198,23 @@ def _serialize_plan_run(plan_run: PlanRun) -> dict:
     }
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(["POST"])
 def _generate_and_respond(request, scope_type: str, scope_value: str):
-    plan_date = request.GET.get("date")
-    enable_rotation = request.GET.get("rotation", "").lower() in ("1", "true", "yes")
+    """Moved from GET to POST 2026-09-16 (architecture audit, round 2 -- this and
+    normalize/tuff below were the 3 remaining GET-mutation endpoints missed by the
+    earlier fix to Select/Accept/Reject/Add-stop/Remove-stop; this one is the heaviest
+    of all 8, creating a new PlanRun + DailyTask rows + live Pitching/DC Card generation
+    on every call). Body (JSON): {"date": ..., "rotation": bool, "routing_plan": "A"|"B"|"C",
+    "focus_product": ..., ...} -- see _focus_product_kwargs/_routing_plan_choice for the
+    full optional param set. csrf_exempt: same SameSite=Lax-cookie trust boundary as
+    every other POST view in this file."""
+    params = _json_body(request)
+    plan_date = params.get("date")
+    enable_rotation = str(params.get("rotation", "")).lower() in ("1", "true", "yes")
     try:
-        focus_product_kwargs = _focus_product_kwargs_from_get(request)
-        routing_plan_choice = _routing_plan_choice_from_get(request)
+        focus_product_kwargs = _focus_product_kwargs(params)
+        routing_plan_choice = _routing_plan_choice(params)
     except (ProductCohortError, ValueError) as e:
         return JsonResponse({"error": str(e)}, status=422)
     try:
@@ -214,49 +233,69 @@ def _generate_and_respond(request, scope_type: str, scope_value: str):
 # State hierarchy (Source 1c). Each just fixes scope_type and forwards scope_value/date --
 # all the real logic lives in services.generate_plan_for_scope().
 
+@csrf_exempt
 def se_plan(request, scope_value: str):
-    """GET /api/planning/se/<se_email>/?date=YYYY-MM-DD"""
+    """POST /api/planning/se/<se_email>/ -- body: {"date": "YYYY-MM-DD"} (moved from GET
+    2026-09-16, see _generate_and_respond's own docstring). csrf_exempt is repeated here
+    (not just on _generate_and_respond) because CsrfViewMiddleware inspects the
+    url-resolved callback -- this function, not whatever it calls internally -- so the
+    marker doesn't propagate through a plain function call. require_http_methods,
+    unlike csrf_exempt, IS a runtime check inside _generate_and_respond's own wrapped
+    body and correctly fires regardless of call path, so it's not repeated here."""
     return _generate_and_respond(request, PlanRun.ScopeType.SE, scope_value)
 
 
+@csrf_exempt
 def abm_plan(request, scope_value: str):
-    """GET /api/planning/abm/<abm_code>/?date=YYYY-MM-DD -- requires live Metabase (Source 1c)."""
+    """POST /api/planning/abm/<abm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _generate_and_respond(request, PlanRun.ScopeType.ABM, scope_value)
 
 
+@csrf_exempt
 def rbm_plan(request, scope_value: str):
-    """GET /api/planning/rbm/<rbm_code>/?date=YYYY-MM-DD -- requires live Metabase (Source 1c)."""
+    """POST /api/planning/rbm/<rbm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _generate_and_respond(request, PlanRun.ScopeType.RBM, scope_value)
 
 
+@csrf_exempt
 def node_plan(request, scope_value: str):
-    """GET /api/planning/node/<node_name>/?date=YYYY-MM-DD"""
+    """POST /api/planning/node/<node_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _generate_and_respond(request, PlanRun.ScopeType.NODE, scope_value)
 
 
+@csrf_exempt
 def block_plan(request, scope_value: str):
-    """GET /api/planning/block/<block_name>/?date=YYYY-MM-DD -- requires live Metabase (Source 1c)."""
+    """POST /api/planning/block/<block_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _generate_and_respond(request, PlanRun.ScopeType.BLOCK, scope_value)
 
 
+@csrf_exempt
 def district_plan(request, scope_value: str):
-    """GET /api/planning/district/<district_name>/?date=YYYY-MM-DD -- requires live Metabase (Source 1c)."""
+    """POST /api/planning/district/<district_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _generate_and_respond(request, PlanRun.ScopeType.DISTRICT, scope_value)
 
 
+@csrf_exempt
 def state_plan(request, scope_value: str):
-    """GET /api/planning/state/<state_name>/?date=YYYY-MM-DD"""
+    """POST /api/planning/state/<state_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _generate_and_respond(request, PlanRun.ScopeType.STATE, scope_value)
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(["POST"])
 def normalize(request):
-    """GET /api/planning/normalize/?date=YYYY-MM-DD&force=true -- Data Normalization
-    Agent, once-per-day dedup (see planning.services.run_normalization_step). Always
-    returns 200 with Reused indicating whether a live pull actually happened, so a
-    caller can tell "ran fresh" from "reused today's data" without parsing free text."""
-    date = request.GET.get("date")
-    force = request.GET.get("force", "").lower() in ("1", "true", "yes")
+    """POST /api/planning/normalize/ -- body: {"date": "YYYY-MM-DD", "force": bool} --
+    Data Normalization Agent, once-per-day dedup (see
+    planning.services.run_normalization_step). Always returns 200 with Reused
+    indicating whether a live pull actually happened, so a caller can tell "ran fresh"
+    from "reused today's data" without parsing free text.
+
+    Moved from GET to POST 2026-09-16 -- see _generate_and_respond's own docstring for
+    why (this triggers live Redshift pulls + writes output JSON files to disk -- a real
+    mutation, was GET)."""
+    params = _json_body(request)
+    date = params.get("date")
+    force = str(params.get("force", "")).lower() in ("1", "true", "yes")
     try:
         result = run_normalization_step(date=date, force=force)
     except PlanningError as e:
@@ -266,24 +305,31 @@ def normalize(request):
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(["POST"])
 def tuff(request, scope_type: str, scope_value: str):
-    """GET /api/planning/tuff/<scope_type>/<scope_value>/?date=YYYY-MM-DD&force_normalization=true&skip_normalization=true&routing_plan=A|B&rotation=true
-    -- Agent TUFF: Step 1 (Data Normalization, once-per-day) + Step 2 (SE Daily Task +
-    Pitching + Routing) in one call, mirroring `manage.py activate_tuff`. Response
-    combines Step 1's outcome (Normalization) with the same PlanRun shape the scope
-    endpoints (se_plan/state_plan/...) return. routing_plan (2026-08-31 fix): omit for
-    Plan A (default, unattended-safe), pass B to run the Beat Planning / Cluster-Based
-    Model instead -- see _routing_plan_choice_from_get. rotation (Plan B only, Sheet 11
-    Model B "Fixed Rotation"): off by default, pass true to restrict each SE to today's
-    persisted beat-zone -- see planning.routing.generate_route_plans_for_se."""
-    plan_date = request.GET.get("date")
-    force_normalization = request.GET.get("force_normalization", "").lower() in ("1", "true", "yes")
-    skip_normalization = request.GET.get("skip_normalization", "").lower() in ("1", "true", "yes")
-    enable_rotation = request.GET.get("rotation", "").lower() in ("1", "true", "yes")
+    """POST /api/planning/tuff/<scope_type>/<scope_value>/ -- body: {"date": "YYYY-MM-DD",
+    "force_normalization": bool, "skip_normalization": bool, "routing_plan": "A"|"B"|"C",
+    "rotation": bool} -- Agent TUFF: Step 1 (Data Normalization, once-per-day) + Step 2
+    (SE Daily Task + Pitching + Routing) in one call, mirroring `manage.py
+    activate_tuff`. Response combines Step 1's outcome (Normalization) with the same
+    PlanRun shape the scope endpoints (se_plan/state_plan/...) return. routing_plan
+    (2026-08-31 fix): omit for Plan A (default, unattended-safe), pass B to run the Beat
+    Planning / Cluster-Based Model instead -- see _routing_plan_choice. rotation (Plan B
+    only, Sheet 11 Model B "Fixed Rotation"): off by default, pass true to restrict each
+    SE to today's persisted beat-zone -- see planning.routing.generate_route_plans_for_se.
+
+    Moved from GET to POST 2026-09-16 -- the single heaviest mutation in this API
+    (normalization + full plan generation combined), was GET -- see
+    _generate_and_respond's own docstring for the full rationale."""
+    params = _json_body(request)
+    plan_date = params.get("date")
+    force_normalization = str(params.get("force_normalization", "")).lower() in ("1", "true", "yes")
+    skip_normalization = str(params.get("skip_normalization", "")).lower() in ("1", "true", "yes")
+    enable_rotation = str(params.get("rotation", "")).lower() in ("1", "true", "yes")
     try:
-        focus_product_kwargs = _focus_product_kwargs_from_get(request)
-        routing_plan_choice = _routing_plan_choice_from_get(request)
+        focus_product_kwargs = _focus_product_kwargs(params)
+        routing_plan_choice = _routing_plan_choice(params)
     except (ProductCohortError, ValueError) as e:
         return JsonResponse({"error": str(e)}, status=422)
     try:
@@ -315,13 +361,36 @@ def route_plans(request, se: str, plan_date: str):
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})
 
 
-@require_GET
+def _json_body(request) -> Dict[str, Any]:
+    """Shared POST-body parser for the 5 route-mutation views below (architecture-audit
+    fix, 2026-09-16: these were all @require_GET despite mutating PlanRun/RoutePlan/
+    DailyTask/PitchScript/DCCard state -- GET is supposed to be safe/idempotent, and a
+    real risk existed: browser prefetch, a proxy cache, or React Query's own
+    refetch-on-window-focus could silently trigger a real mutation as a side effect of
+    just viewing a link. Same JSON-body convention every other POST view in this file
+    already uses (see admin_generate_all_states above)."""
+    try:
+        return json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
 def select_route_plan_view(request, se: str, plan_date: str, plan_type: str):
-    """GET /api/planning/routes/<se>/<plan_date>/select/<plan_type>/?plan_run=<id> --
-    the trust-equivalent of the Routing Agent's R5.3 ("the SE selects the final plan"),
-    same as `manage.py select_route_plan --select`. Flips is_default_selected and
-    re-syncs DailyTask rows from the newly-selected plan's stops."""
-    plan_run_id = request.GET.get("plan_run")
+    """POST /api/planning/routes/<se>/<plan_date>/select/<plan_type>/ -- body: {"plan_run":
+    <id> (optional)} -- the trust-equivalent of the Routing Agent's R5.3 ("the SE selects
+    the final plan"), same as `manage.py select_route_plan --select`. Flips
+    is_default_selected and re-syncs DailyTask rows from the newly-selected plan's stops.
+
+    Moved from GET to POST 2026-09-16 (architecture audit) -- see _json_body's own
+    docstring. csrf_exempt: same SameSite=Lax-cookie trust boundary as every other POST
+    endpoint in this file (see New Lead gen model/src/shared/api/client.ts's own comment
+    on apiPost) -- a cross-site POST can't carry the session cookie in the first place,
+    so a separate CSRF-token round trip isn't needed on top of that for this same-origin
+    SPA."""
+    body = _json_body(request)
+    plan_run_id = body.get("plan_run")
     try:
         result = select_default_route_plan(se, plan_date, plan_type.upper(), int(plan_run_id) if plan_run_id else None)
     except RoutingError as e:
@@ -329,16 +398,22 @@ def select_route_plan_view(request, se: str, plan_date: str, plan_type: str):
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(["POST"])
 def accept_route_plan_view(request, se: str, plan_date: str, plan_type: str):
-    """GET /api/planning/routes/<se>/<plan_date>/accept/<plan_type>/?plan_run=<id>&actor=<name>
-    -- an SE's own "Accept" action (added 2026-09-15, explicit user request). Distinct
-    from select_route_plan_view above (which stays as the plain pick-among-3-alternatives
-    action, no approval implied, still used by admin/CLI browsing) -- this does the same
-    pick + DailyTask resync, then also marks the whole day's PlanRun APPROVED with a real
-    reviewer record (see routing.accept_route_plan's own docstring)."""
-    plan_run_id = request.GET.get("plan_run")
-    actor = request.GET.get("actor", "")
+    """POST /api/planning/routes/<se>/<plan_date>/accept/<plan_type>/ -- body: {"plan_run":
+    <id>, "actor": <name>} (both optional) -- an SE's own "Accept" action (added
+    2026-09-15, explicit user request). Distinct from select_route_plan_view above (which
+    stays as the plain pick-among-3-alternatives action, no approval implied, still used
+    by admin/CLI browsing) -- this does the same pick + DailyTask resync, then also marks
+    the whole day's PlanRun APPROVED with a real reviewer record (see
+    routing.accept_route_plan's own docstring).
+
+    Moved from GET to POST 2026-09-16 -- see select_route_plan_view's own docstring for
+    why, and the CSRF reasoning (unchanged)."""
+    body = _json_body(request)
+    plan_run_id = body.get("plan_run")
+    actor = body.get("actor", "")
     try:
         result = accept_route_plan(se, plan_date, plan_type.upper(), int(plan_run_id) if plan_run_id else None, actor)
     except RoutingError as e:
@@ -346,15 +421,21 @@ def accept_route_plan_view(request, se: str, plan_date: str, plan_type: str):
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(["POST"])
 def reject_route_plan_view(request, se: str, plan_date: str):
-    """GET /api/planning/routes/<se>/<plan_date>/reject/?plan_run=<id>&actor=<name> --
-    an SE's own "Reject" action (added 2026-09-15, explicit user request, explicit
-    follow-up choice: purely an audit flag, DailyTask is deliberately left untouched --
-    see routing.reject_route_plan's own docstring). Rejects the whole day's PlanRun, not
-    one specific route alternative -- PlanRun.status is a PlanRun-level field."""
-    plan_run_id = request.GET.get("plan_run")
-    actor = request.GET.get("actor", "")
+    """POST /api/planning/routes/<se>/<plan_date>/reject/ -- body: {"plan_run": <id>,
+    "actor": <name>} (both optional) -- an SE's own "Reject" action (added 2026-09-15,
+    explicit user request, explicit follow-up choice: purely an audit flag, DailyTask is
+    deliberately left untouched -- see routing.reject_route_plan's own docstring).
+    Rejects the whole day's PlanRun, not one specific route alternative --
+    PlanRun.status is a PlanRun-level field.
+
+    Moved from GET to POST 2026-09-16 -- see select_route_plan_view's own docstring for
+    why, and the CSRF reasoning (unchanged)."""
+    body = _json_body(request)
+    plan_run_id = body.get("plan_run")
+    actor = body.get("actor", "")
     try:
         result = reject_route_plan(se, plan_date, int(plan_run_id) if plan_run_id else None, actor)
     except RoutingError as e:
@@ -362,16 +443,22 @@ def reject_route_plan_view(request, se: str, plan_date: str):
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(["POST"])
 def add_route_stop_view(request, se: str, plan_date: str, plan_type: str):
-    """GET /api/planning/routes/<se>/<plan_date>/<plan_type>/stops/add/?dc_id=<id>&plan_run=<id>
-    -- an SE adding a DC to their own route (added 2026-09-15, explicit user request,
-    explicit follow-up choice: any DC in the SE's own assigned scope, not just this
-    route's own dropped candidates). See routing.edit_route_stops' own docstring for the
-    full validation (DC must be assigned to this SE, have real geo, not already on the
-    route) and how distances/times get recomputed for real."""
-    dc_id = request.GET.get("dc_id")
-    plan_run_id = request.GET.get("plan_run")
+    """POST /api/planning/routes/<se>/<plan_date>/<plan_type>/stops/add/ -- body: {"dc_id":
+    <id> (required), "plan_run": <id> (optional)} -- an SE adding a DC to their own route
+    (added 2026-09-15, explicit user request, explicit follow-up choice: any DC in the
+    SE's own assigned scope, not just this route's own dropped candidates). See
+    routing.edit_route_stops' own docstring for the full validation (DC must be assigned
+    to this SE, have real geo, not already on the route) and how distances/times get
+    recomputed for real.
+
+    Moved from GET to POST 2026-09-16 -- see select_route_plan_view's own docstring for
+    why, and the CSRF reasoning (unchanged)."""
+    body = _json_body(request)
+    dc_id = body.get("dc_id")
+    plan_run_id = body.get("plan_run")
     if not dc_id:
         return JsonResponse({"error": "dc_id is required"}, status=400)
     try:
@@ -381,14 +468,20 @@ def add_route_stop_view(request, se: str, plan_date: str, plan_type: str):
     return JsonResponse(result, safe=False, json_dumps_params={"default": str})
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(["POST"])
 def remove_route_stop_view(request, se: str, plan_date: str, plan_type: str):
-    """GET /api/planning/routes/<se>/<plan_date>/<plan_type>/stops/remove/?dc_id=<id>&plan_run=<id>
-    -- an SE removing a DC from their own route (added 2026-09-15, explicit user
-    request). See routing.edit_route_stops' own docstring - at least one stop must
-    remain (reject the whole route instead if none of it is wanted)."""
-    dc_id = request.GET.get("dc_id")
-    plan_run_id = request.GET.get("plan_run")
+    """POST /api/planning/routes/<se>/<plan_date>/<plan_type>/stops/remove/ -- body:
+    {"dc_id": <id> (required), "plan_run": <id> (optional)} -- an SE removing a DC from
+    their own route (added 2026-09-15, explicit user request). See
+    routing.edit_route_stops' own docstring - at least one stop must remain (reject the
+    whole route instead if none of it is wanted).
+
+    Moved from GET to POST 2026-09-16 -- see select_route_plan_view's own docstring for
+    why, and the CSRF reasoning (unchanged)."""
+    body = _json_body(request)
+    dc_id = body.get("dc_id")
+    plan_run_id = body.get("plan_run")
     if not dc_id:
         return JsonResponse({"error": "dc_id is required"}, status=400)
     try:
