@@ -667,8 +667,12 @@ def resolve_route_plan_run(se: str, plan_date: str, plan_run_id: Optional[int] =
             return PlanRun.objects.get(id=plan_run_id)
         except PlanRun.DoesNotExist:
             raise RoutingError(f"PlanRun #{plan_run_id} not found.")
+    # finished_at filter added 2026-09-16: generate_plan_for_scope no longer runs inside
+    # one transaction (see services._discard_plan_run_on_failure), so a run still being
+    # built is visible here with its RoutePlans already written but its tasks not yet
+    # -- "newest" must mean newest COMPLETE run, never the one mid-generation.
     candidate = (
-        RoutePlan.objects.filter(plan_date=plan_date).filter(_se_filter(se))
+        RoutePlan.objects.filter(plan_date=plan_date, plan_run__finished_at__isnull=False).filter(_se_filter(se))
         .order_by("-plan_run__run_timestamp").first()
     )
     if candidate is None:

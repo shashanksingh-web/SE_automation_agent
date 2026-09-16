@@ -26,8 +26,10 @@ than silently resolving against stale or absent data.
 from __future__ import annotations
 
 import calendar
+import functools
 import json
 import sys
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -1878,7 +1880,61 @@ def run_pitching_and_dc_card_agents(
     return run_exceptions
 
 
-@transaction.atomic
+# The PlanRun a generate_plan_for_scope call has created and not yet finished, so
+# _discard_plan_run_on_failure can remove it if the call dies part-way. A ContextVar
+# rather than a module global: the dev server runs each request in its own thread and
+# threads get their own context, so two concurrent generations never see each other's.
+_IN_PROGRESS_PLAN_RUN: ContextVar[Optional[PlanRun]] = ContextVar("_IN_PROGRESS_PLAN_RUN", default=None)
+
+
+def _discard_plan_run_on_failure(fn: Callable[..., PlanRun]) -> Callable[..., PlanRun]:
+    """Replaces the @transaction.atomic that used to wrap generate_plan_for_scope
+    (removed 2026-09-16, explicit user request: "fix it properly narrow the lock").
+
+    That one atomic block spanned the ENTIRE generation -- every Redshift pull, the
+    scoring, routing (Plan C's LLM calls), pitching (the AI pitch's LLM calls) -- so
+    under transaction_mode=IMMEDIATE the SQLite write lock was taken at function entry
+    and held for the full run, 2+ minutes under Plan C. Any other writer in that window
+    (an SE switching Today -> Tomorrow while today's plan was still generating, a route
+    Accept, a password reset, another scope's generation) either waited the whole time
+    or died with "database is locked". The lock is now only ever held by the individual
+    write statements themselves (milliseconds each; the one multi-row cluster is under
+    its own small atomic() below), and every slow external call runs with no lock held.
+
+    What the big transaction also gave us was all-or-nothing persistence: a crash
+    part-way left no half-built PlanRun behind. This decorator keeps that guarantee the
+    only way that's possible without holding the lock -- as a compensating delete: the
+    body publishes its PlanRun into _IN_PROGRESS_PLAN_RUN right after creating it, and
+    if the call then raises for any reason, that row is deleted (FK cascade takes the
+    tasks, route plans, pitches, cards and exception records with it) before the
+    original error propagates. Best-effort by design -- if even the delete fails, the
+    original exception still wins, and the orphan is visible (finished_at NULL) rather
+    than hidden.
+
+    One consequence worth knowing: a PlanRun is now visible to other readers while it's
+    still being built (finished_at NULL, task_count 0) instead of appearing fully-formed
+    at commit. planning.routing.resolve_route_plan_run's newest-run fallback filters
+    those out; the System Plan Runs list simply shows them as in progress."""
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> PlanRun:
+        token = _IN_PROGRESS_PLAN_RUN.set(None)
+        try:
+            return fn(*args, **kwargs)
+        except BaseException:
+            partial = _IN_PROGRESS_PLAN_RUN.get()
+            if partial is not None and partial.pk is not None:
+                try:
+                    with transaction.atomic():
+                        PlanRun.objects.filter(pk=partial.pk).delete()
+                except Exception:
+                    pass  # the original failure below is the one that matters
+            raise
+        finally:
+            _IN_PROGRESS_PLAN_RUN.reset(token)
+    return wrapper
+
+
+@_discard_plan_run_on_failure
 def generate_plan_for_scope(
     scope_type: str, scope_value: str, plan_date: Optional[str] = None,
     farmer_meeting_asker: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
@@ -2884,6 +2940,8 @@ def generate_plan_for_scope(
              "8.12/GR-25. Long-Term (BO5) is correctly SE-level, not a gap -- it's not a "
              "DC-scoped objective and routes through the separate FM_Urgency gate, not dc_bo_scores.",
     )
+    # From here on a crash must take this row with it -- see _discard_plan_run_on_failure.
+    _IN_PROGRESS_PLAN_RUN.set(plan_run)
 
     # Confirmed 2026-08-18 -- DCVisitStreak.consecutive_misses (only ever written by
     # `manage.py reconcile_outcomes`, on PAST plan_dates) drives generate_se_daily_plan's
@@ -3066,13 +3124,17 @@ def generate_plan_for_scope(
                 credit_active=t.get("Credit_Active"),
             ))
 
-    DailyTask.objects.bulk_create(pending_tasks)
-    total_tasks = len(pending_tasks)
+    # The one multi-statement write cluster: tasks + the count/finished_at that
+    # describe them land together, so a reader never sees a finished run with its
+    # tasks still arriving. Held for milliseconds -- nothing slow happens inside.
+    with transaction.atomic():
+        DailyTask.objects.bulk_create(pending_tasks)
+        total_tasks = len(pending_tasks)
 
-    plan_run.task_count = total_tasks
-    plan_run.finished_at = timezone.now()
-    plan_run.skipped_ses = skipped_ses
-    plan_run.save(update_fields=["task_count", "finished_at", "skipped_ses"])
+        plan_run.task_count = total_tasks
+        plan_run.finished_at = timezone.now()
+        plan_run.skipped_ses = skipped_ses
+        plan_run.save(update_fields=["task_count", "finished_at", "skipped_ses"])
 
     # Pitching Agent + DC Card, wired 2026-08-08/2026-08-14 -- activates automatically
     # right after task assignment, per direct instruction. Extracted 2026-09-15 into
