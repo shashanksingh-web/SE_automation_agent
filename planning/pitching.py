@@ -40,6 +40,8 @@ composer, unchanged.
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 from .ai_sales_forecast import build_ai_pitch
@@ -48,6 +50,20 @@ from .pitch_config_loader import get_pitch_config
 from .pitch_context import ExtraDcContext
 
 logger = logging.getLogger(__name__)
+
+# How many build_ai_pitch() calls run concurrently in generate_pitches_for_plan_run
+# (added 2026-09-17, explicit user request to speed up plan generation -- live-timed at
+# 98s for a 5-task SE plan beforehand, almost entirely sequential LLM latency). Each
+# call is pure network I/O (the Gemini/OpenRouter/Anthropic fallback chain), releases
+# the GIL while waiting, and never touches the DB itself -- the PitchScript write
+# happens afterward, sequentially, in the main thread, so this never introduces any
+# Django-ORM/SQLite concurrency risk. Kept modest and env-overridable rather than
+# one-thread-per-task: a STATE-scope run can have 100+ tasks, and running that many
+# LLM calls at once risks tripping provider rate limits (each provider call already
+# degrades gracefully on its own failure -- see build_ai_pitch's own fallback chain --
+# but a rate-limit storm would just turn into a wall of degraded templated scripts for
+# no speed benefit beyond this cap).
+PITCH_GENERATION_MAX_WORKERS = int(os.environ.get("PITCH_GENERATION_MAX_WORKERS", "5"))
 
 # --- Hindi Ask/Wish phrasing per single Purpose ------------------------------------------
 # The CSVs' own "What to Ask"/"What to Wish" columns are English guidance on WHAT ground
@@ -613,6 +629,12 @@ def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str,
     at all); failures is a list the caller can fold into its own run_exceptions."""
     created = 0
     failures: List[Dict[str, str]] = []
+
+    # Phase 1 (sequential, cheap): build each task's ctx + the templated script. Both
+    # are deterministic, in-memory, no network I/O -- nothing here benefits from
+    # parallelizing, and _compose must run before build_ai_pitch regardless (its
+    # purposes/matched_key feed straight into that call).
+    prepared: List[Dict[str, Any]] = []
     for task in plan_run.tasks.filter(dc_id__isnull=False):  # Farmer Meeting tasks have no DC -- no pitch to generate
         try:
             ctx = dict(extra_data_by_dc.get(task.dc_id, {}))
@@ -627,45 +649,67 @@ def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str,
             # pass regardless of which script actually gets saved.
             script, used, skipped = _compose(task, ctx)
             purposes, matched_key, _ = _match_script(task.purpose_of_visit or "")
-            # Same list already folded into script's own S1 sentence via
-            # _format_product_list - captured structured here too. Empty list means
-            # neither this DC's own category-scoped peers nor the geographic fallback
-            # had anything to recommend this run.
-            #
-            # AI-Generated Pitch (added 2026-09-12, explicit user request -- "script and
-            # scheme and benifit of sales and outstanding clearance from ai") -- isolated
-            # in its own try/except so a provider outage or malformed response degrades
-            # cleanly to the templated script above, never breaks the pitch entirely.
-            # Only OVERRIDES script_hindi when it actually produced a non-empty one --
-            # see build_ai_pitch's own docstring for the full caller contract. purposes/
-            # dc_name passed through (added 2026-09-15, explicit follow-up request --
-            # "use that pattern in Pitching agent which use ai token") so the AI script
-            # follows the exact same Ask/Tell/Wish structure the template uses: Ask and
-            # Wish/Close are the SAME fixed _ASK_HINDI/_WISH_HINDI lines either way (never
-            # left to the model to invent), only the middle [बताना]/Tell content is the
-            # model's own persuasive text -- see build_ai_pitch's own docstring.
-            try:
-                ai_pitch = build_ai_pitch(
-                    task.dc_id, matched_key or task.purpose_of_visit or "", ctx,
-                    purposes=purposes, dc_name=task.dc_name,
-                )
-            except Exception as e:
-                logger.warning("AI-Generated Pitch failed for DC %s (task %s): %s: %s", task.dc_id, task.id, type(e).__name__, e)
-                ai_pitch = {}
-            final_script = ai_pitch.get("script_hindi") or script
-            final_used = used + ["AI-Generated Script"] if ai_pitch.get("script_hindi") else used
+            prepared.append({
+                "task": task, "ctx": ctx, "script": script, "used": used, "skipped": skipped,
+                "purposes": purposes, "matched_key": matched_key, "ai_pitch": {},
+            })
+        except Exception as e:
+            logger.warning("PitchingAgent: failed to prepare a pitch for DC %s (task %s): %s: %s", task.dc_id, task.id, type(e).__name__, e)
+            failures.append({"dc_id": task.dc_id, "detail": f"{type(e).__name__}: {e}"})
+
+    # Phase 2 (parallel): the actual LLM calls -- pure network I/O, no DB access, so
+    # nothing here needs Django-ORM thread-safety. AI-Generated Pitch (added
+    # 2026-09-12, explicit user request -- "script and scheme and benifit of sales and
+    # outstanding clearance from ai") -- isolated per-task exactly as before (a provider
+    # outage or malformed response for one DC degrades that DC alone to its templated
+    # script, never breaks another DC's pitch). Only OVERRIDES script_hindi when it
+    # actually produced a non-empty one -- see build_ai_pitch's own docstring for the
+    # full caller contract. purposes/dc_name passed through (added 2026-09-15, explicit
+    # follow-up request -- "use that pattern in Pitching agent which use ai token") so
+    # the AI script follows the exact same Ask/Tell/Wish structure the template uses.
+    #
+    # Parallelized 2026-09-17 (explicit user request, after live-timing a 5-task SE plan
+    # at 98s -- see PITCH_GENERATION_MAX_WORKERS' own comment above): a bounded
+    # ThreadPoolExecutor, not one thread per task, replacing the fully sequential loop
+    # that used to make every task pay for every other task's LLM latency in full.
+    def _run_ai_pitch(item: Dict[str, Any]) -> Dict[str, Any]:
+        task = item["task"]
+        try:
+            return build_ai_pitch(
+                task.dc_id, item["matched_key"] or task.purpose_of_visit or "", item["ctx"],
+                purposes=item["purposes"], dc_name=task.dc_name,
+            )
+        except Exception as e:
+            logger.warning("AI-Generated Pitch failed for DC %s (task %s): %s: %s", task.dc_id, task.id, type(e).__name__, e)
+            return {}
+
+    if prepared:
+        with ThreadPoolExecutor(max_workers=min(PITCH_GENERATION_MAX_WORKERS, len(prepared))) as executor:
+            future_to_item = {executor.submit(_run_ai_pitch, item): item for item in prepared}
+            for future in as_completed(future_to_item):
+                future_to_item[future]["ai_pitch"] = future.result()
+
+    # Phase 3 (sequential, main thread): every PitchScript write happens here, one at a
+    # time, exactly as the original all-sequential loop did -- no change to DB-write
+    # behavior, only to how the (now-already-collected) AI results got produced.
+    for item in prepared:
+        task = item["task"]
+        try:
+            ai_pitch = item["ai_pitch"]
+            final_script = ai_pitch.get("script_hindi") or item["script"]
+            final_used = item["used"] + ["AI-Generated Script"] if ai_pitch.get("script_hindi") else item["used"]
             ai_sales_forecast = {k: v for k, v in ai_pitch.items() if k != "script_hindi"}
             PitchScript.objects.update_or_create(
                 daily_task=task,
                 defaults={
-                    "purpose_key": matched_key or task.purpose_of_visit, "script_hindi": final_script,
-                    "data_sources_used": final_used, "data_sources_skipped": skipped,
-                    "recommended_products": ctx.get("recommended_products") or [],
+                    "purpose_key": item["matched_key"] or task.purpose_of_visit, "script_hindi": final_script,
+                    "data_sources_used": final_used, "data_sources_skipped": item["skipped"],
+                    "recommended_products": item["ctx"].get("recommended_products") or [],
                     "ai_sales_forecast": ai_sales_forecast,
                 },
             )
             created += 1
         except Exception as e:
-            logger.warning("PitchingAgent: failed to generate a pitch for DC %s (task %s): %s: %s", task.dc_id, task.id, type(e).__name__, e)
+            logger.warning("PitchingAgent: failed to save a pitch for DC %s (task %s): %s: %s", task.dc_id, task.id, type(e).__name__, e)
             failures.append({"dc_id": task.dc_id, "detail": f"{type(e).__name__}: {e}"})
     return created, failures
