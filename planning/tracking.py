@@ -160,8 +160,18 @@ def _outcomes(runs, tasks, selected: Optional[set] = None) -> Dict[str, Any]:
         if ptp_date:
             ptp_by_dc_day[dc_day] = max(ptp_amount or 0, ptp_by_dc_day.get(dc_day, 0))
 
+    # Visit execution = (COMPLETED + PARTIAL) / planned visits DUE, per direct
+    # instruction 2026-09-17 ("take planned completed plus planned partial / planned").
+    # Denominator changed from reconciled visits to planned ones: a past visit nobody
+    # has reconciled counts as NOT executed rather than dropping out of the rate. "Due"
+    # = plan_date before today -- a visit planned for today or later can't have an
+    # outcome yet (reconciliation only runs for past dates), so counting it would mark
+    # every not-yet-happened visit as missed; those are reported as Tasks_Not_Yet_Due.
+    today = timezone.now().date().isoformat()
     total = len(visits)
-    reconciled = {k: s for k, s in visits.items() if s != "UNKNOWN"}
+    due = {k: s for k, s in visits.items() if k[2] < today}
+    n_due = len(due)
+    reconciled = {k: s for k, s in due.items() if s != "UNKNOWN"}
     n_rec = len(reconciled)
     breakdown: Dict[str, int] = {}
     for s in reconciled.values():
@@ -174,13 +184,15 @@ def _outcomes(runs, tasks, selected: Optional[set] = None) -> Dict[str, Any]:
     # whose visit it was (a DC belongs to one SE, so a (DC, day) has one owner here).
     per_se: Dict[str, Dict[str, Any]] = {}
     owner_by_dc_day: Dict[tuple, str] = {(k[1], k[2]): k[0] for k in visits}
-    for (email, _, _), status in visits.items():
-        row = per_se.setdefault(email, {"Planned": 0, "Reconciled": 0, "Executed": 0, "Collection": 0.0, "Sales": 0.0})
+    for (email, _, d), status in visits.items():
+        row = per_se.setdefault(email, {"Planned": 0, "Due": 0, "Reconciled": 0, "Executed": 0, "Collection": 0.0, "Sales": 0.0})
         row["Planned"] += 1
-        if status != "UNKNOWN":
-            row["Reconciled"] += 1
-            if status in ("COMPLETED", "PARTIAL"):
-                row["Executed"] += 1
+        if d < today:
+            row["Due"] += 1
+            if status != "UNKNOWN":
+                row["Reconciled"] += 1
+                if status in ("COMPLETED", "PARTIAL"):
+                    row["Executed"] += 1
     for dc_day, (paid, ordered) in money_by_dc_day.items():
         owner = owner_by_dc_day.get(dc_day)
         if owner in per_se:
@@ -199,12 +211,15 @@ def _outcomes(runs, tasks, selected: Optional[set] = None) -> Dict[str, Any]:
 
     return {
         "Tasks_Planned": total,
+        "Tasks_Due": n_due,
+        "Tasks_Not_Yet_Due": total - n_due,
         "Task_Rows": task_rows,
         "Tasks_Reconciled": n_rec,
-        "Reconciliation_Rate_Pct": _pct(n_rec, total),
+        "Reconciliation_Rate_Pct": _pct(n_rec, n_due),
         # Across ALL time, not just the window -- "has this ever run" is the question.
         "Reconciliation_Last_Run_At": DailyTask.objects.aggregate(m=Max("reconciled_at"))["m"],
-        "Visit_Execution_Rate_Pct": _pct(completed, n_rec),
+        "Visit_Execution_Rate_Pct": _pct(completed, n_due),
+        "Visits_Executed": completed,
         "Outcome_Status_Breakdown": breakdown,
         "Overdue_Pitched": sum(overdue_by_dc_day.values()) or None,
         "Collection_Realised": paid_total if n_rec else None,
@@ -369,8 +384,9 @@ def compute_tracking_metrics(
             o, a = outcome_by_se.get(email, {}), adoption_by_se.get(email, {})
             by_se.append({
                 "SE": email,
-                "Planned": o.get("Planned", 0), "Reconciled": o.get("Reconciled", 0),
-                "Execution_Rate_Pct": _pct(o.get("Executed", 0), o.get("Reconciled", 0)),
+                "Planned": o.get("Planned", 0), "Due": o.get("Due", 0), "Reconciled": o.get("Reconciled", 0),
+                "Executed": o.get("Executed", 0),
+                "Execution_Rate_Pct": _pct(o.get("Executed", 0), o.get("Due", 0)),
                 "Collection": o.get("Collection", 0.0), "Sales": o.get("Sales", 0.0),
                 "SE_Days": a.get("SE_Days", 0), "Runs": a.get("Runs", 0),
                 "Approved": a.get("Approved", 0), "Rejected": a.get("Rejected", 0), "Edited_Days": a.get("Edited_Days", 0),
