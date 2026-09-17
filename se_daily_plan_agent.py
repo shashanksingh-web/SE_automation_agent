@@ -3642,6 +3642,24 @@ R3_2_DEFAULT_AVG_SPEED_KMPH = 25.0  # R3.2 -- undefined in the sheet; bottom of 
 # prompt (see PLAN_C_DECISION_STYLE_GUIDANCE below) -- never touches the caps, the
 # validation, the fallback chain, or the one-route-per-call scope decision.
 PLAN_C_DECISION_STYLE = "balanced"
+# How the model must write its "reasoning" (added 2026-09-17, explicit user request on
+# a live route note that read "Selected 5 maximum priority score (1000.0) DCs located
+# within a tight 10 km radius of the origin to maximize high outstanding collection ...
+# and objective matches while keeping total travel distance well under the 100 km
+# limit": "ai reasoning should be leyman langauage"). The reader is the SE or ABM
+# deciding whether to trust the route -- not the engineer who built the scoring.
+PLAN_C_REASONING_STYLE = (
+    "Write the reasoning for the Sales Executive who will drive this route, in plain everyday "
+    "language a field salesperson understands at a glance -- 1-3 short sentences. Say which "
+    "shops (by name) you chose and why in business terms: how much money is due there, what the "
+    "visit is for (collect a payment, take an order), and that they are close together so the "
+    "day is short. Never use system words or internal numbers: no 'priority score', 'objective "
+    "match', 'candidate', 'cluster', 'origin', 'constraint', 'cap', 'km limit', 'DC_ID', or "
+    "Priority_Score values. Rupee amounts and distances in km are fine when they help "
+    "(e.g. 'Rs. 3.5 lakh is pending at Vaishnavi Khad Bhandar', 'all within 10 km'). Do not "
+    "mention that a system pre-scored or filtered the list."
+)
+
 PLAN_C_DECISION_STYLE_GUIDANCE: Dict[str, str] = {
     "balanced": (
         "Prefer higher Priority_Score DCs, but weigh real distance too -- a lower-priority DC "
@@ -5004,8 +5022,12 @@ def _llm_route_cache_key(
     # already-cached stop-set instead of being forced distinct from it.
     _model_by_provider = {"anthropic": ANTHROPIC_ROUTING_MODEL, "openrouter": OPENROUTER_ROUTING_MODEL, "gemini": GEMINI_ROUTING_MODEL}
     effective_style = decision_style or PLAN_C_DECISION_STYLE
+    # Prompt version prefix (added 2026-09-17): a cached route's reasoning text is part
+    # of the cached value, so a change to how the reasoning must be WRITTEN has to bust
+    # the cache too -- otherwise a stop-set already decided keeps replaying the old
+    # engineer-speak note. r2 = plain-language reasoning (PLAN_C_REASONING_STYLE).
     parts = [
-        f"{LLM_ROUTING_PROVIDER}:{_model_by_provider.get(LLM_ROUTING_PROVIDER, '')}:{effective_style}:"
+        f"r2:{LLM_ROUTING_PROVIDER}:{_model_by_provider.get(LLM_ROUTING_PROVIDER, '')}:{effective_style}:"
         f"{PLAN_C_CLUSTER_MAX_INTRA_KM}:{PLAN_C_CLUSTER_TARGET_SIZE}"
     ]
     parts.append(f"{origin[0]:.4f},{origin[1]:.4f}")
@@ -5416,7 +5438,12 @@ def build_route_llm_reasoned(
     cache_key = _llm_route_cache_key(origin, with_coords, decision_style=effective_style, exclude_stop_sets=exclude_stop_sets)
     cached = cache.get(cache_key)
     if cached is not None:
-        validated_ids, reasoning, notes = cached["stops"], cached["reasoning"], cached.get("notes", [])
+        # Copies, never the cached objects themselves: `notes` is appended to further
+        # down (provider/trim notes), and handing out the cache's own list let those
+        # appends leak back into the cache entry and be persisted by the next save --
+        # confirmed live 2026-09-17 (a route replayed "System trimmed ..." notes from
+        # an earlier run). Same for stops.
+        validated_ids, reasoning, notes = list(cached["stops"]), cached["reasoning"], list(cached.get("notes", []))
     else:
         # cluster_based reuses Plan B's own _cluster_candidates_by_density partitioning
         # (see PLAN_C_CLUSTER_MAX_INTRA_KM/PLAN_C_CLUSTER_TARGET_SIZE's own comment for
@@ -5528,13 +5555,15 @@ def build_route_llm_reasoned(
             "",
             cluster_guidance or PLAN_C_DECISION_STYLE_GUIDANCE.get(effective_style, PLAN_C_DECISION_STYLE_GUIDANCE["balanced"]),
             "",
+            PLAN_C_REASONING_STYLE,
+            "",
             (
                 'Respond with ONLY a JSON object, no other text: {"stops": ["dc_id_1", "dc_id_2", ...], '
-                '"reasoning": "1-3 sentences explaining why these DCs and this order", "cluster_adjustment": '
+                '"reasoning": "1-3 plain sentences, see above", "cluster_adjustment": '
                 '{"type": "none"|"merge"|"move", ...}}. '
                 if effective_style == "cluster_based" else
                 'Respond with ONLY a JSON object, no other text: {"stops": ["dc_id_1", "dc_id_2", ...], '
-                '"reasoning": "1-3 sentences explaining why these DCs and this order"}. '
+                '"reasoning": "1-3 plain sentences, see above"}. '
             )
             + "stops must be DC_IDs from the list above, in visit order, closed loop back to origin implied.",
         ]
@@ -5562,7 +5591,7 @@ def build_route_llm_reasoned(
             )
             if adjustment_note:
                 notes.append(adjustment_note)
-        cache[cache_key] = {"stops": validated_ids, "reasoning": reasoning, "notes": notes}
+        cache[cache_key] = {"stops": list(validated_ids), "reasoning": reasoning, "notes": list(notes)}
         _save_llm_route_cache()
 
     if not validated_ids:
@@ -5580,12 +5609,14 @@ def build_route_llm_reasoned(
     # Same GR-R5 remedy Model 1 uses -- the model's proposal is evaluated against real
     # caps, never shown as-is if it breaches them, never silently re-ordered to "fix" it.
     metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
+    trimmed_names: List[Tuple[str, str]] = []
     while visited_order and not _within_caps(metrics):
         lowest = min(visited_order, key=lambda c: c["priority_score"])
         visited_order = [c for c in visited_order if c is not lowest]
         reason = "Distance_Ceiling_Exceeded" if metrics["total_distance_km"] > PLAN_A_MAX_ROUND_TRIP_DISTANCE_KM else "Travel_Ceiling_Exceeded"
         dropped.append({"dc_id": lowest["dc"]["DC_ID"], "reason": reason})
-        notes.append(f"System trimmed {lowest['dc']['DC_ID']} -- the model's proposed route breached a real cap")
+        why = "the full loop would have been too long a drive for one day" if reason == "Distance_Ceiling_Exceeded" else "the full loop would have taken more time than one day allows"
+        trimmed_names.append((lowest["dc"].get("DC_Name") or lowest["dc"]["DC_ID"], why))
         metrics = _route_metrics(visited_order, origin, avg_speed_kmph)
 
     final_ids = {c["dc"]["DC_ID"] for c in visited_order}
@@ -5601,8 +5632,27 @@ def build_route_llm_reasoned(
 
     feasible = _within_caps(metrics)
     full_reasoning = reasoning or "(model returned no reasoning text)"
+    # Reader-facing additions in the same plain language as the reasoning itself (the
+    # SE reads this, not an engineer; the technical detail is already on dropped[] and
+    # in the audit notes). Added 2026-09-17 with PLAN_C_REASONING_STYLE -- the old
+    # "[System notes: System trimmed 1000008536 -- ... breached a real cap]" suffix
+    # undid the plain-language reasoning it was appended to.
+    reader_notes: List[str] = []
+    if trimmed_names:
+        names = ", ".join(n for n, _ in trimmed_names)
+        why = trimmed_names[0][1]
+        reader_notes.append(
+            f"{'One shop' if len(trimmed_names) == 1 else str(len(trimmed_names)) + ' shops'} the AI suggested "
+            f"({names}) {'was' if len(trimmed_names) == 1 else 'were'} left out because {why}."
+        )
+    if any(d.get("reason") == "Route_Diversity_Swap" for d in dropped):
+        reader_notes.append("One stop was swapped so this route differs from the other route options.")
+    if reader_notes:
+        full_reasoning += " " + " ".join(reader_notes)
     if notes:
-        full_reasoning += " [System notes: " + "; ".join(notes) + "]"
+        # Provider fallbacks, hallucinated/duplicate picks, cluster adjustments -- kept
+        # for the audit trail but in a clearly separate, marked bracket.
+        full_reasoning += " [Audit: " + "; ".join(notes) + "]"
     return {
         "stops": metrics["stops"], "dropped": dropped,
         "total_distance_km": metrics["total_distance_km"], "total_travel_min": metrics["total_travel_min"],
