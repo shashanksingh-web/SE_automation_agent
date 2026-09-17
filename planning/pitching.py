@@ -192,6 +192,33 @@ def _tp_suggested_discount(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return f"आपकी और आसपास के दुकानदारों की हिस्ट्री के हिसाब से, {products[0]['name']} पर अभी ₹{discount:.0f} प्रति यूनिट डिस्काउंट सजेस्ट हो रहा है।", "S2b"
 
 
+_HINDI_MONTHS = ["जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"]
+
+
+def _tp_active_schemes(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """One "- " line per currently-active Sales/ABS Scheme for this DC's Node (added
+    2026-09-17, explicit user request on the AI pitch - "all eligible scheme should in
+    batana part" - mirrored here so the templated fallback lists every scheme too;
+    until now the template mentioned none, only the DC Card did). Multi-line so
+    _tell_lines splits it into one bullet per scheme, same convention as
+    _format_product_list. Name and validity only - the scheme's own facts, no invented
+    benefit. None when no scheme is active."""
+    schemes = [s for s in (ctx.get("active_schemes") or []) if s.get("name")]
+    if not schemes:
+        return None
+    lines = []
+    for s in schemes[:10]:
+        until = ""
+        try:
+            from datetime import date as _date
+            d = _date.fromisoformat(str(s.get("valid_until")))
+            until = f" ({d.day} {_HINDI_MONTHS[d.month - 1]} {d.year} तक चालू)"
+        except (TypeError, ValueError):
+            pass
+        lines.append(f"- '{s['name'].strip()}' योजना अभी सक्रिय है{until} -- इसके तहत आज ही एडवांस बुकिंग दर्ज कराएं।")
+    return "\n".join(lines), "Schemes"
+
+
 def _format_product_list(products: List[Dict[str, Any]]) -> str:
     """Renders recommended_products (planning.services' _peer_stats/
     _attach_nearby_product_recommendations, 0-5 items, highest value first) as one
@@ -286,13 +313,15 @@ _TALKING_POINTS = {
     # reached through _applicable_sources() (CSV-driven), only appended explicitly by
     # _compose()/_compose_sale_ptp_combo() for the Sale purpose.
     "Club": _tp_club_standing,
+    # "Schemes" (added 2026-09-17) -- likewise not a CSV source; appended for Sale.
+    "Schemes": _tp_active_schemes,
 }
 
 # Human-readable label for codes with no CSV Applicable-Sources entry (currently just
 # "Club" -- see _TALKING_POINTS's own comment) -- without this, cfg.data_source_labels.
 # get(code, code) falls back to the bare code itself, and Data_Sources_Used would show
 # the redundant "Club Club" instead of a real label.
-_EXTRA_LABELS = {"Club": "DC Club / Scheme Standing"}
+_EXTRA_LABELS = {"Club": "DC Club / Scheme Standing", "Schemes": "Active Sales/ABS Schemes"}
 
 
 def _order_for_purposes(purposes: List[str], ctx: Dict[str, Any]) -> List[str]:
@@ -440,7 +469,7 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
     # 2026-08-24, right after S1 since it's a discount ON the product S1 just named.
     # Club wired 2026-09-07, last -- a motivational closer once the product ask and
     # numbers are already on the table, not competing with them for attention.
-    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S2b", "S3", "S8", "Club")) if s]
+    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S2b", "S3", "S8", "Schemes", "Club")) if s]
 
     skipped.append("S4 Current Inventory (no DC-level data source exists anywhere in this system)")
 
@@ -512,7 +541,7 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     # appended directly, last, only for a standalone Sale purpose (see _tp_club_standing's
     # docstring for why Sale specifically, not Promise To Pay / Collection).
     if "Sale" in purposes:
-        ordered_codes = ordered_codes + ["Club"]
+        ordered_codes = ordered_codes + ["Schemes", "Club"]
 
     cfg = get_pitch_config()
     used, skipped, tell_sentences = [], [], []

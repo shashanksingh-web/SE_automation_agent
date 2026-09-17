@@ -62,6 +62,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -89,7 +90,9 @@ AI_PITCH_CACHE_PATH = Path(
 #   v4 (2026-09-16): product pointers started carrying the product's benefit text.
 #   v5 (2026-09-16): the peer-summed rupee value left the prompt and the pointers
 #     (see _candidate_lines) -- a v4 script quotes "₹3.52 लाख की मांग" per product.
-CACHE_SCHEMA_VERSION = "v5"
+#   v6 (2026-09-17): one pointer per active scheme, guaranteed (_scheme_rule /
+#     _ensure_scheme_pointers) -- a v5 script names only one of several schemes.
+CACHE_SCHEMA_VERSION = "v6"
 
 _pitch_cache_store = agent.JsonFileCache(AI_PITCH_CACHE_PATH)
 
@@ -343,6 +346,60 @@ def _scheme_lines(schemes: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+# Every active scheme gets its own pointer (added 2026-09-17, explicit user request on
+# a live pitch that named only one of two active schemes: "Rabi Hybrid Corn ABS 2026
+# Bihar why this is missing in the pitch - all eligible scheme should in batana part").
+# The prompt used to ask for "the benefit of any active Scheme", so with two schemes
+# the model wrote one pointer and picked. Two layers: the prompt now demands one per
+# scheme, by its exact name, and _ensure_scheme_pointers below appends a factual
+# pointer for any scheme the model still leaves out -- built only from the scheme's
+# own name and validity, never an invented benefit.
+_HINDI_MONTHS = ["जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"]
+
+
+def _scheme_rule(schemes: List[Dict[str, Any]]) -> str:
+    if not schemes:
+        return ""
+    names = ", ".join(f"'{s['name']}'" for s in schemes)
+    return (
+        f"Active schemes: write ONE pointer for EACH of the {len(schemes)} scheme(s) listed above "
+        f"({names}) -- every one of them, none skipped, each naming the scheme by its exact "
+        "name as given (in English, in quotes) so the DC can find it, with what it offers "
+        "taken only from that scheme's own text above."
+    )
+
+
+def _hindi_date(iso: Optional[str]) -> Optional[str]:
+    try:
+        d = datetime.fromisoformat(str(iso)).date()
+    except (TypeError, ValueError):
+        return None
+    return f"{d.day} {_HINDI_MONTHS[d.month - 1]} {d.year}"
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def _ensure_scheme_pointers(pointers: List[str], schemes: List[Dict[str, Any]], notes: List[str]) -> List[str]:
+    """Appends a factual pointer for every active scheme none of `pointers` names. A
+    scheme counts as covered when its whitespace-normalized name appears in a pointer
+    (the prompt asks for exact names for exactly this reason; a model that
+    transliterates a name anyway gets a second, English-named pointer rather than a
+    missing scheme). The fallback line states only the scheme's name and validity."""
+    out = list(pointers)
+    joined = _norm(" ".join(pointers))
+    for s in schemes:
+        name = (s.get("name") or "").strip()
+        if not name or _norm(name) in joined:
+            continue
+        until = _hindi_date(s.get("valid_until"))
+        validity = f" ({until} तक चालू)" if until else ""
+        out.append(f"'{name}' योजना अभी सक्रिय है{validity} -- इसके तहत आज ही अपनी एडवांस बुकिंग दर्ज कराएं।")
+        notes.append(f"Scheme {name!r} was missing from the model's Tell -- appended a factual pointer")
+    return out
+
+
 # How the sales pointers must talk about a product (added 2026-09-16, explicit user
 # request: "in sales - batana part product benifits will be described by SE to DC for
 # maximise trust and sales by using llm"). Until now a product pointer only carried the
@@ -474,12 +531,13 @@ def _build_ai_pitch_combo(
         'benefit of clearing it now (e.g. club tier eligibility, avoiding further aging). Leave '
         'this as an empty array if there is no real overdue/outstanding figure above -- never '
         'invent one.',
-        f"- sales_tell: 2-5 pointers ONLY about products/scheme/Club benefit for the next "
+        f"- sales_tell: 2-{4 + len(schemes)} pointers ONLY about products/scheme/Club benefit for the next "
         f"{window_days} days' worth of business: one pointer per featured candidate product (up "
-        "to 3), then the benefit of any active Scheme (tied to a real product where possible), "
+        "to 3), then one pointer per active Scheme (tied to a real product where possible), "
         "and this DC's Club standing and what acting today could earn it. Never mention the "
         "overdue/outstanding payment in this field -- that belongs only in collection_tell.",
         _PRODUCT_BENEFIT_RULE,
+        _scheme_rule(schemes),
         "Also separately list which of the candidate products (if any) you featured in sales_tell.",
         "",
         'Respond with ONLY this JSON, no other text: {"collection_tell": ["...", ...], '
@@ -508,6 +566,7 @@ def _build_ai_pitch_combo(
         return {}
     if not parsed["sales_tell"]:
         return {}
+    parsed["sales_tell"] = _ensure_scheme_pointers(parsed["sales_tell"], schemes, notes)
 
     # Tell pointers go through the same _tell_lines the templated script uses -- one
     # inline sentence stays on the [बताना] line, 2+ become "- " bullets under it, which
@@ -659,16 +718,17 @@ def build_ai_pitch(
         "the conversation, [बताना] (Tell) is the persuasive data-driven pitch, [विश/क्लोज़] "
         "(Wish/Close) asks for the commitment. The Ask and Wish/Close lines are ALREADY "
         "fixed -- do not write them, they are added separately after your response. Your "
-        "ONLY job is the [बताना]/Tell section: write 2-5 short pointers for the next "
+        f"ONLY job is the [बताना]/Tell section: write 2-{5 + len(schemes)} short pointers for the next "
         f"{window_days} days' worth of business, as a JSON array -- every pointer is ONE "
         "complete persuasive Hindi sentence about ONE thing (one product, one scheme, one "
         "benefit), written to be read aloud as a bullet, never a paragraph. Depending on "
         "which real facts exist above, cover: the benefit of clearing outstanding/overdue now "
         "(e.g. club tier eligibility, avoiding further aging), one pointer per featured "
-        "candidate product (up to 3), the benefit of any active Scheme (tied to a real "
+        "candidate product (up to 3), one pointer per active Scheme (tied to a real "
         "product where possible), and this DC's Club standing and what acting today could "
         "earn it.",
         _PRODUCT_BENEFIT_RULE,
+        _scheme_rule(schemes),
         "Also separately list which of the candidate products (if any) you featured.",
         "",
         'Respond with ONLY this JSON, no other text: {"tell": ["<one [बताना]/Tell pointer>", '
@@ -696,6 +756,8 @@ def build_ai_pitch(
         notes = [f"Routed via {attempted_providers[-1]} after {', '.join(attempted_providers[:-1])} failed"] + notes
     if not parsed["tell"]:
         return {}
+    if "Sale" in (purposes or [purpose_label]):
+        parsed["tell"] = _ensure_scheme_pointers(parsed["tell"], schemes, notes)
 
     # Assemble the full Ask/Tell/Wish script -- same structure/spacing
     # planning.pitching._compose() builds, greeting + fixed [पूछना] + the model's own
