@@ -92,7 +92,9 @@ AI_PITCH_CACHE_PATH = Path(
 #     (see _candidate_lines) -- a v4 script quotes "₹3.52 लाख की मांग" per product.
 #   v6 (2026-09-17): one pointer per active scheme, guaranteed (_scheme_rule /
 #     _ensure_scheme_pointers) -- a v5 script names only one of several schemes.
-CACHE_SCHEMA_VERSION = "v6"
+#   v7 (2026-09-17): every scheme pointer must state the scheme's profit (advance,
+#     discount slabs, payment channel, cap) -- a v6 script may give name + validity only.
+CACHE_SCHEMA_VERSION = "v7"
 
 _pitch_cache_store = agent.JsonFileCache(AI_PITCH_CACHE_PATH)
 
@@ -322,6 +324,9 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
             "name": s.get("name"), "category": s.get("category"), "brand": s.get("brand"),
             "valid_until": s.get("valid_until"),
             "description": s.get("generated_description") or s.get("description"),
+            # Structured profit facts (services.py attaches them from the scheme card)
+            # -- what the fallback pointer is built from; see _ensure_scheme_pointers.
+            "benefit": s.get("benefit"),
         }
         for s in schemes[:10] if s.get("name")
     ]
@@ -354,50 +359,66 @@ def _scheme_lines(schemes: List[Dict[str, Any]]) -> List[str]:
 # scheme, by its exact name, and _ensure_scheme_pointers below appends a factual
 # pointer for any scheme the model still leaves out -- built only from the scheme's
 # own name and validity, never an invented benefit.
-_HINDI_MONTHS = ["जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"]
-
-
 def _scheme_rule(schemes: List[Dict[str, Any]]) -> str:
     if not schemes:
         return ""
     names = ", ".join(f"'{s['name']}'" for s in schemes)
     return (
-        f"Active schemes: write ONE pointer for EACH of the {len(schemes)} scheme(s) listed above "
-        f"({names}) -- every one of them, none skipped, each naming the scheme by its exact "
-        "name as given (in English, in quotes) so the DC can find it, with what it offers "
-        "taken only from that scheme's own text above."
+        f"Active schemes: write ONE SEPARATE pointer for EACH of the {len(schemes)} scheme(s) listed above "
+        f"({names}) -- every one of them, none skipped, never two schemes in one pointer. Each "
+        "pointer names the scheme by its exact name as given (in English, in quotes) so the DC "
+        "can find it, and MUST state the DC's PROFIT from it in figures taken only from that "
+        "scheme's own text above: the advance per kg, the discount per kg (each slab or date "
+        "band, with its condition), how it is paid (e.g. credit note) and any maximum. A scheme "
+        "pointer that gives only the name and validity is NOT acceptable -- the discount is the "
+        "reason to book."
     )
-
-
-def _hindi_date(iso: Optional[str]) -> Optional[str]:
-    try:
-        d = datetime.fromisoformat(str(iso)).date()
-    except (TypeError, ValueError):
-        return None
-    return f"{d.day} {_HINDI_MONTHS[d.month - 1]} {d.year}"
 
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
-def _ensure_scheme_pointers(pointers: List[str], schemes: List[Dict[str, Any]], notes: List[str]) -> List[str]:
-    """Appends a factual pointer for every active scheme none of `pointers` names. A
-    scheme counts as covered when its whitespace-normalized name appears in a pointer
-    (the prompt asks for exact names for exactly this reason; a model that
-    transliterates a name anyway gets a second, English-named pointer rather than a
-    missing scheme). The fallback line states only the scheme's name and validity."""
-    out = list(pointers)
-    joined = _norm(" ".join(pointers))
-    for s in schemes:
-        name = (s.get("name") or "").strip()
-        if not name or _norm(name) in joined:
+_FIGURE_RE = re.compile(r"₹\s?\d|\d+(?:\.\d+)?\s?%")
+
+
+def _ensure_scheme_pointers(
+    pointers: List[str], schemes: List[Dict[str, Any]], notes: List[str], product_names: Optional[set] = None,
+) -> List[str]:
+    """Guarantees every active scheme has a pointer that states its PROFIT. A scheme
+    counts as covered only when a pointer names it (whitespace-normalized, so the DB
+    name's double space still matches) AND that same pointer carries a figure (a ₹
+    amount or a %). For any scheme not covered that way a factual pointer is appended
+    from the scheme's card facts (pitching.scheme_pointer_hindi: exact name, validity,
+    advance, every discount slab, how it's paid, the cap) -- never an invented number.
+
+    A model pointer that names scheme(s) with NO figure and no candidate product (the
+    "'X' और 'Y' योजनाओं का लाभ उठाकर अपनी बुकिंग समय से सुरक्षित कर सकते हैं" line the
+    2026-09-17 correction was about) is dropped, since the appended pointers say the
+    same thing with the profit; a pointer that mentions a product is always kept."""
+    from .pitching import scheme_pointer_hindi  # local import -- pitching imports this module
+    product_names = {_norm(n) for n in (product_names or set()) if n}
+    scheme_names = [(_norm(sc.get("name") or ""), sc) for sc in schemes if sc.get("name")]
+
+    covered: set = set()
+    kept: List[str] = []
+    for ptr in pointers:
+        n = _norm(ptr)
+        named = [name for name, _ in scheme_names if name in n]
+        has_figure = bool(_FIGURE_RE.search(ptr))
+        if named and has_figure:
+            covered.update(named)
+        if named and not has_figure and not any(pn in n for pn in product_names):
+            notes.append("Dropped a scheme pointer that named " + ", ".join(repr(x) for x in named) + " without stating any profit figure")
             continue
-        until = _hindi_date(s.get("valid_until"))
-        validity = f" ({until} तक चालू)" if until else ""
-        out.append(f"'{name}' योजना अभी सक्रिय है{validity} -- इसके तहत आज ही अपनी एडवांस बुकिंग दर्ज कराएं।")
-        notes.append(f"Scheme {name!r} was missing from the model's Tell -- appended a factual pointer")
-    return out
+        kept.append(ptr)
+
+    for name, sc in scheme_names:
+        if name in covered:
+            continue
+        kept.append(scheme_pointer_hindi(sc))
+        notes.append(f"Scheme {sc['name']!r} had no pointer with its profit -- appended one from the scheme card")
+    return kept
 
 
 # How the sales pointers must talk about a product (added 2026-09-16, explicit user
@@ -566,7 +587,7 @@ def _build_ai_pitch_combo(
         return {}
     if not parsed["sales_tell"]:
         return {}
-    parsed["sales_tell"] = _ensure_scheme_pointers(parsed["sales_tell"], schemes, notes)
+    parsed["sales_tell"] = _ensure_scheme_pointers(parsed["sales_tell"], schemes, notes, valid_names)
 
     # Tell pointers go through the same _tell_lines the templated script uses -- one
     # inline sentence stays on the [बताना] line, 2+ become "- " bullets under it, which
@@ -757,7 +778,7 @@ def build_ai_pitch(
     if not parsed["tell"]:
         return {}
     if "Sale" in (purposes or [purpose_label]):
-        parsed["tell"] = _ensure_scheme_pointers(parsed["tell"], schemes, notes)
+        parsed["tell"] = _ensure_scheme_pointers(parsed["tell"], schemes, notes, valid_names)
 
     # Assemble the full Ask/Tell/Wish script -- same structure/spacing
     # planning.pitching._compose() builds, greeting + fixed [पूछना] + the model's own

@@ -748,6 +748,15 @@ def _sql_scheme_description_cards(plan_date: str) -> str:
 
         COALESCE(tr.terms_and_conditions, 'None')          AS terms_and_conditions,
         st.slabs_short,
+        -- Structured benefit facts for the pitch's scheme pointer (added 2026-09-17,
+        -- "add the profit of these scheme"): the same numbers generated_description
+        -- folds into prose, kept separate so a Hindi pointer can be built from them.
+        CASE WHEN st.adv_slabs = st.slab_rows AND st.adv_min = st.adv_max THEN st.adv_min END AS advance_per_unit,
+        CASE s.slab_min_max_type
+            WHEN 'DATE'  THEN 'date' WHEN 'DAYS' THEN 'days' WHEN 'VALUE' THEN 'value' ELSE 'quantity'
+        END                                                 AS slab_basis,
+        LOWER(REPLACE(s.benefit_channel, '_', ' '))         AS benefit_channel,
+        TO_CHAR(s.booking_end, 'YYYY-MM-DD')                AS booking_end,
         s.max_discount_per_user                             AS max_discount_per_dc,
         COALESCE(rc.active_rules, 0)                        AS active_rules,
         nit.node_names_raw,
@@ -3363,6 +3372,11 @@ def generate_plan_for_scope(
                     for entry in schemes:
                         if entry.get("name") == scheme_name:
                             entry["generated_description"] = row.get("generated_description")
+                            entry["benefit"] = {
+                                "advance_per_unit": row.get("advance_per_unit"), "slabs": row.get("slabs_short"),
+                                "slab_basis": row.get("slab_basis"), "benefit_channel": row.get("benefit_channel"),
+                                "booking_end": row.get("booking_end"), "max_discount_per_dc": row.get("max_discount_per_dc"),
+                            }
         except Exception as e:
             run_exceptions.append({"source": "coupon_service.scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 

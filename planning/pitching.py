@@ -40,6 +40,7 @@ composer, unchanged.
 from __future__ import annotations
 
 import logging
+import re
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
@@ -209,30 +210,126 @@ def _tp_suggested_discount(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 
 _HINDI_MONTHS = ["जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"]
+_EN_MONTHS = {m: i + 1 for i, m in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])}
+_UNIT_HINDI = {"kg": "किग्रा", "litre": "लीटर", "packet": "पैकेट", "unit": "यूनिट"}
+
+
+def hindi_date(value: Any) -> Optional[str]:
+    """'2026-10-10' / '10 Oct 2026' / a date -> '10 अक्टूबर 2026'; None when unparseable."""
+    if value is None:
+        return None
+    from datetime import date as _date
+    try:
+        if isinstance(value, _date):
+            d = value
+        else:
+            text = str(value).strip()
+            parts = text.split()
+            if len(parts) == 3 and parts[1][:3] in _EN_MONTHS:
+                d = _date(int(parts[2]), _EN_MONTHS[parts[1][:3]], int(parts[0]))
+            else:
+                d = _date.fromisoformat(text[:10])
+    except (TypeError, ValueError):
+        return None
+    return f"{d.day} {_HINDI_MONTHS[d.month - 1]} {d.year}"
+
+
+def _hindi_unit(text: str) -> str:
+    for en, hi in _UNIT_HINDI.items():
+        text = re.sub(rf"/{en}\b", f"/{hi}", text)
+        text = re.sub(rf"\b{en}\b", hi, text)
+    return text
+
+
+def _hindi_slab(slab: str, basis: Optional[str]) -> str:
+    """One slab "cond -> ₹X/kg" from the scheme card's slabs_short into Hindi:
+    '08 Aug 2026 to 07 Sep 2026 -> ₹50/kg' -> '8 अगस्त 2026 से 7 सितंबर 2026 तक बुकिंग पर ₹50/किग्रा'
+    '20-50,000 kg -> ₹2.80/kg'             -> '20-50,000 किग्रा पर ₹2.80/किग्रा'.
+    Anything it can't read is passed through with units translated, never dropped."""
+    if "->" not in slab:
+        return _hindi_unit(slab.strip())
+    cond, rate = (x.strip() for x in slab.split("->", 1))
+    rate = _hindi_unit(rate)
+    if basis == "date" and " to " in cond:
+        a, b = (x.strip() for x in cond.split(" to ", 1))
+        ha, hb = hindi_date(a), hindi_date(b)
+        if ha and hb:
+            return f"{ha} से {hb} तक बुकिंग पर {rate}"
+    return f"{_hindi_unit(cond)} पर {rate}"
+
+
+def scheme_profit_hindi(scheme: Dict[str, Any]) -> Optional[str]:
+    """The scheme's PROFIT, in Hindi, from the structured card facts (services.py
+    attaches them as scheme["benefit"]: advance_per_unit, slabs, slab_basis,
+    benefit_channel, max_discount_per_dc) -- added 2026-09-17, explicit user request
+    on a pointer that named both schemes with only their validity: "add the profit of
+    these scheme". E.g. "₹100/किग्रा एडवांस पर बुकिंग; छूट: 8 अगस्त 2026 से 7 सितंबर 2026
+    तक बुकिंग पर ₹50/किग्रा, 8 सितंबर 2026 से 15 सितंबर 2026 तक बुकिंग पर ₹40/किग्रा; क्रेडिट
+    नोट से भुगतान; अधिकतम ₹10,00,000 प्रति DC". None when the card has no slab -- the
+    caller then falls back to the plain validity line rather than inventing a figure."""
+    b = scheme.get("benefit") or {}
+    slabs = (b.get("slabs") or "").strip()
+    if not slabs or slabs == "no slabs set":
+        return None
+    parts = []
+    if b.get("advance_per_unit"):
+        parts.append(f"{_hindi_unit(str(b['advance_per_unit']))} एडवांस पर बुकिंग")
+    parts.append("छूट: " + ", ".join(_hindi_slab(x, b.get("slab_basis")) for x in slabs.split("|") if x.strip()))
+    channel = (b.get("benefit_channel") or "").lower()
+    if "credit" in channel:
+        parts.append("क्रेडिट नोट से भुगतान")
+    elif channel:
+        parts.append(f"{channel} से भुगतान")
+    mx = b.get("max_discount_per_dc")
+    try:
+        if mx and float(mx) > 0:
+            parts.append(f"अधिकतम ₹{inr_group(float(mx))} प्रति DC")
+    except (TypeError, ValueError):
+        pass
+    return "; ".join(parts)
+
+
+def inr_group(amount: float) -> str:
+    """Indian digit grouping: 1000000 -> '10,00,000'; 2500 -> '2,500'."""
+    n = f"{int(round(amount))}"
+    if len(n) <= 3:
+        return n
+    head, tail = n[:-3], n[-3:]
+    groups = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    if head:
+        groups.insert(0, head)
+    return ",".join(groups) + "," + tail
+
+
+def scheme_pointer_hindi(scheme: Dict[str, Any]) -> str:
+    """A complete factual बताना pointer for one scheme: exact name, validity, and its
+    profit (scheme_profit_hindi) when the card carries one. Shared by the templated
+    fallback here and the AI pitch's missing-scheme guarantee
+    (ai_sales_forecast._ensure_scheme_pointers)."""
+    name = (scheme.get("name") or "").strip()
+    until = hindi_date(scheme.get("valid_until"))
+    validity = f" ({until} तक)" if until else ""
+    profit = scheme_profit_hindi(scheme)
+    if profit:
+        return f"'{name}'{validity}: {profit} -- आज ही बुकिंग दर्ज कराकर यह लाभ पक्का करें।"
+    return f"'{name}' योजना अभी सक्रिय है{validity} -- इसके तहत आज ही एडवांस बुकिंग दर्ज कराएं।"
 
 
 def _tp_active_schemes(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """One "- " line per currently-active Sales/ABS Scheme for this DC's Node (added
     2026-09-17, explicit user request on the AI pitch - "all eligible scheme should in
     batana part" - mirrored here so the templated fallback lists every scheme too;
-    until now the template mentioned none, only the DC Card did). Multi-line so
+    until now the template mentioned none, only the DC Card did). Each line carries
+    the scheme's profit from its card facts (scheme_pointer_hindi). Multi-line so
     _tell_lines splits it into one bullet per scheme, same convention as
-    _format_product_list. Name and validity only - the scheme's own facts, no invented
-    benefit. None when no scheme is active."""
+    _format_product_list. None when no scheme is active."""
     schemes = [s for s in (ctx.get("active_schemes") or []) if s.get("name")]
     if not schemes:
         return None
-    lines = []
-    for s in schemes[:10]:
-        until = ""
-        try:
-            from datetime import date as _date
-            d = _date.fromisoformat(str(s.get("valid_until")))
-            until = f" ({d.day} {_HINDI_MONTHS[d.month - 1]} {d.year} तक चालू)"
-        except (TypeError, ValueError):
-            pass
-        lines.append(f"- '{s['name'].strip()}' योजना अभी सक्रिय है{until} -- इसके तहत आज ही एडवांस बुकिंग दर्ज कराएं।")
-    return "\n".join(lines), "Schemes"
+    return "\n".join(f"- {scheme_pointer_hindi(s)}" for s in schemes[:10]), "Schemes"
 
 
 def _format_product_list(products: List[Dict[str, Any]]) -> str:
