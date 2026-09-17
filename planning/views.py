@@ -15,7 +15,7 @@ from . import admin_config, dc_selection
 from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
 from .models import (
-    DailyTask, DCCard, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, RoutingScopeOverride,
+    DailyTask, DCCard, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, RoutePlan, RoutingScopeOverride,
     ScheduledScope,
 )
 from .product_cohort import ProductCohortError, build_season_weeks, split_csv
@@ -259,27 +259,62 @@ def _generate_and_respond(request, scope_type: str, scope_value: str):
     return JsonResponse(_serialize_plan_run(plan_run), safe=False, json_dumps_params={"default": str})
 
 
-def _latest_finished_run(scope_type: str, scope_value: str, plan_date: str):
-    """(PlanRun, se_filter) -- the most recent COMPLETE run to show for this scope and
-    date, or (None, None). Exact scope match first; for an SE, the newest of that and
-    any broader finished run (ABM/RBM/NODE/STATE, e.g. the admin's "Generate for all
-    states") whose tasks include the SE -- served as the SE's own slice."""
-    exact = (
+# Which Routing Agent family a RoutePlan.plan_type belongs to -- the A/B/C the UI's
+# selector and the Admin Panel's "SE view's routing plan" speak in.
+_PLAN_FAMILY = {
+    RoutePlan.PlanType.PRIORITY_MAX: "A", RoutePlan.PlanType.DISTANCE_MIN: "A", RoutePlan.PlanType.BALANCED: "A",
+    RoutePlan.PlanType.CLUSTER_BASED: "B", RoutePlan.PlanType.CLUSTER_SCOREMAX: "B", RoutePlan.PlanType.CLUSTER_DISTMIN: "B",
+    RoutePlan.PlanType.LLM_REASONED: "C", RoutePlan.PlanType.LLM_REASONED_VALUE_MAX: "C", RoutePlan.PlanType.LLM_REASONED_DISTMIN: "C",
+}
+
+
+def _latest_finished_run(scope_type: str, scope_value: str, plan_date: str, routing_plan: Optional[str] = None):
+    """(PlanRun, se_filter, family) -- the most recent COMPLETE run to show for this
+    scope and date, or (None, None, None). Candidates are every finished exact-scope
+    run for the date and, for an SE, every broader finished run (ABM/RBM/NODE/STATE,
+    e.g. the admin's "Generate for all states") whose tasks include the SE -- those
+    are served as the SE's own slice.
+
+    routing_plan (A/B/C, added 2026-09-17 after "why plan c is not working"): prefer
+    the newest candidate whose routes were generated under that family, so an SE whose
+    admin-set plan is C sees their latest Plan C run even when a Plan A run was made
+    later (which is exactly what happened: a CLI Plan A regeneration hid four Plan C
+    runs for the same day). Falls back to the newest run of any family when none
+    match -- and the returned family lets the UI say so, rather than silently showing
+    Plan A routes under a "Plan C" badge."""
+    exact = list(
         PlanRun.objects.filter(scope_type=scope_type, scope_value__iexact=scope_value, plan_date=plan_date, finished_at__isnull=False)
-        .order_by("-run_timestamp").first()
+        .order_by("-run_timestamp")[:30]
     )
-    if scope_type != PlanRun.ScopeType.SE:
-        return exact, None
-    containing_task = (
-        DailyTask.objects.filter(se_name__iexact=scope_value, plan_date=plan_date, plan_run__finished_at__isnull=False)
-        .exclude(plan_run__scope_type=PlanRun.ScopeType.SE)
-        .select_related("plan_run").order_by("-plan_run__run_timestamp").first()
-    )
-    containing = containing_task.plan_run if containing_task else None
-    candidates = [r for r in (exact, containing) if r is not None]
+    se_filter = None
+    candidates = exact
+    if scope_type == PlanRun.ScopeType.SE:
+        se_filter = scope_value
+        containing_ids = (
+            DailyTask.objects.filter(se_name__iexact=scope_value, plan_date=plan_date, plan_run__finished_at__isnull=False)
+            .exclude(plan_run__scope_type=PlanRun.ScopeType.SE)
+            .values_list("plan_run_id", flat=True).distinct()
+        )
+        candidates = exact + list(PlanRun.objects.filter(id__in=list(containing_ids)).order_by("-run_timestamp")[:30])
+        candidates.sort(key=lambda r: r.run_timestamp, reverse=True)
     if not candidates:
-        return None, None
-    return max(candidates, key=lambda r: r.run_timestamp), scope_value
+        return None, None, None
+
+    routes = RoutePlan.objects.filter(plan_run_id__in=[r.id for r in candidates])
+    if se_filter:
+        se_ids = set(DailyTask.objects.filter(se_name__iexact=se_filter, plan_run_id__in=[r.id for r in candidates]).values_list("se_id", flat=True))
+        routes = routes.filter(se_id__in=se_ids)
+    family_by_run: Dict[int, str] = {}
+    for run_id, plan_type in routes.values_list("plan_run_id", "plan_type"):
+        family_by_run.setdefault(run_id, _PLAN_FAMILY.get(plan_type))
+
+    chosen = candidates[0]
+    if routing_plan:
+        for r in candidates:
+            if family_by_run.get(r.id) == routing_plan:
+                chosen = r
+                break
+    return chosen, se_filter, family_by_run.get(chosen.id)
 
 
 def _read_latest_and_respond(request, scope_type: str, scope_value: str):
@@ -294,13 +329,20 @@ def _read_latest_and_respond(request, scope_type: str, scope_value: str):
     404 with code NO_PLAN when nothing has been generated yet -- the UI shows that as
     an empty state with the Create / Refresh button, never a silent regeneration."""
     plan_date = request.GET.get("date") or timezone.now().date().isoformat()
-    plan_run, se_filter = _latest_finished_run(scope_type, scope_value, plan_date)
+    routing_plan = (request.GET.get("routing_plan") or "").upper() or None
+    if routing_plan and routing_plan not in ("A", "B", "C"):
+        return JsonResponse({"error": "routing_plan must be A, B or C"}, status=400)
+    plan_run, se_filter, family = _latest_finished_run(scope_type, scope_value, plan_date, routing_plan)
     if plan_run is None:
         return JsonResponse(
             {"error": f"No plan has been generated for {scope_type} '{scope_value}' on {plan_date} yet.", "code": "NO_PLAN"},
             status=404,
         )
-    return JsonResponse(_serialize_plan_run(plan_run, se_filter=se_filter), safe=False, json_dumps_params={"default": str})
+    payload = _serialize_plan_run(plan_run, se_filter=se_filter)
+    # The family the served run's routes were generated under (None: no routes), so the
+    # UI can tell "Plan A shown because no Plan C run exists" from "Plan C shown".
+    payload["Routing_Plan"] = family
+    return JsonResponse(payload, safe=False, json_dumps_params={"default": str})
 
 
 def _scope_view(request, scope_type: str, scope_value: str):
