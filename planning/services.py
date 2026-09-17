@@ -774,6 +774,33 @@ def _sql_scheme_description_cards(plan_date: str) -> str:
     """
 
 
+_SCHEME_DESCRIPTION_CACHE_PATH = agent.BASE_DIR / "output" / "scheme_description_cache.json"
+_scheme_description_cache_store = agent.JsonFileCache(_SCHEME_DESCRIPTION_CACHE_PATH)
+
+
+def _fetch_scheme_description_cards(client: Any, plan_date: str) -> List[Dict[str, Any]]:
+    """Cached wrapper around _sql_scheme_description_cards() -- added 2026-09-17 after
+    live timing showed the raw query costs ~17.5s (vs ~0.6s for the node-scoped
+    _sql_active_schemes_for_nodes it enriches), and it was being re-run on EVERY single
+    plan generation regardless of scope -- a single SE's plan paid the same 17.5s as a
+    whole STATE's, directly inflating every frontend request that triggers generation
+    (diagnosed live 2026-09-17: "why loading time on frontend too much").
+
+    Same once-per-day convention as se_daily_plan_agent's own normalization dedup
+    (run_normalization_step): cached by plan_date, one Redshift round trip per day, every
+    other generation that day reuses it. json.dumps(..., default=str) round-trip on
+    write -- raw psycopg2 rows carry Decimal/date objects JsonFileCache's plain
+    json.dumps() can't serialize on its own."""
+    cache = _scheme_description_cache_store.load()
+    if cache.get("date") == plan_date and "rows" in cache:
+        return cache["rows"]
+    rows = client.execute_sql(agent.REDSHIFT_DB_ID, _sql_scheme_description_cards(plan_date))
+    cache["date"] = plan_date
+    cache["rows"] = json.loads(json.dumps(rows, default=str))
+    _scheme_description_cache_store.save()
+    return cache["rows"]
+
+
 def _sql_club_qualifying_turnover(dc_ids: List[str]) -> str:
     """Scoped counterpart of se_daily_plan_agent.SQL_DC_CLUB_QUALIFYING_TURNOVER_3G --
     same confirmed filter (status='confirmed', 2026 calendar-year window, the 3
@@ -3322,7 +3349,7 @@ def generate_plan_for_scope(
             for d in scoped_dcs:
                 if d.get("Node") and d["Node"] not in state_by_node:
                     state_by_node[d["Node"]] = d.get("State")
-            for row in client.execute_sql(agent.REDSHIFT_DB_ID, _sql_scheme_description_cards(plan_date)):
+            for row in _fetch_scheme_description_cards(client, plan_date):
                 scheme_name = row.get("scheme_name")
                 if not scheme_name or not row.get("active_rules"):
                     continue  # no active eligibility rule set up -- don't attribute this description anywhere
