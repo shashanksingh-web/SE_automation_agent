@@ -1,17 +1,20 @@
 """Tracking dashboard metrics (added 2026-09-16, explicit user request: "according to
 this whole project what we have to track" -> "design this dashboard in this").
 
-One read-only aggregation over what the pipeline already persists, in the five tiers
-that matter for this system, most important first:
+One read-only aggregation over what the pipeline already persists, in the three tiers
+that matter for the business, most important first:
 
   1. Outcomes   -- does the plan change what SEs collect and sell (DailyTask's
                    outcome_status / actual_* fields, written only by reconcile_outcomes)
   2. Adoption   -- do SEs accept the plan or fight it (PlanRun.status, manual route edits)
   3. Quality    -- what the agents produced (AI vs template pitch, hallucination drops,
                    empty recommendations, route budget, generation latency)
-  4. Data health-- live-pull failures, real vs structural exceptions, freshness, geo
-                   coverage
-  5. Ops        -- alert routing, Redshift reachability, DB settings
+
+Data health (live-pull failures, real vs structural exceptions, freshness, geo coverage)
+and Ops (alert routing, Redshift reachability, DB settings) were tiers 4 and 5 until
+2026-09-17 and were removed per direct instruction ("4th and 5th not part of this") --
+this dashboard is the business view of the system, not its operations console. The
+removed code is in git history (commit 6c3a799 and earlier) if an Ops page wants it.
 
 Every figure is computed from the DB / output files at request time -- nothing here is
 a new write path, and nothing is estimated: a metric whose underlying data has never
@@ -26,31 +29,21 @@ tomorrow-dated run only shows in a range that includes tomorrow.
 from __future__ import annotations
 
 import json
-import os
-import re
-import socket
 from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from django.conf import settings
-from django.db import connection
-from django.db.models import Avg, Count, F, Max, Q, Sum
+from django.db.models import Avg, Count, Max, Q
 from django.utils import timezone
 
-from .models import DailyTask, DCVisitStreak, ExceptionRecord, PitchScript, PlanRun, RoutePlan, ScheduledScope
+from .models import DailyTask, DCVisitStreak, ExceptionRecord, PitchScript, PlanRun, RoutePlan
 
 # Route budget the Plan B spec and Plan C prompt both work to (Beat_Planning_Routing_
 # Agent_Cluster_Model.xlsx: 80 km / 180 min) -- a route past either is "over budget".
 ROUTE_BUDGET_KM = 80.0
 ROUTE_BUDGET_MINUTES = 180.0
 
-# Exception reason codes that mean "something broke" rather than "a policy applied".
-# Everything else in ExceptionRecord is structural: a DC excluded by the Top-DC list,
-# GR-28 bypass notes, provisional FM_Urgency, inactive-DC datamart gaps -- all expected,
-# all logged by design, and together >99% of the 700k+ rows. Counting those against the
-# 10% run-health threshold is why that alert fires on every single run today.
-_FAILURE_CODE_RE = re.compile(r"Failed|Error|Crash|Timeout|Exhausted", re.IGNORECASE)
 
 
 def _pct(numerator: float, denominator: float) -> Optional[float]:
@@ -356,81 +349,6 @@ def _quality(runs) -> Dict[str, Any]:
     }
 
 
-def _data_health(runs) -> Dict[str, Any]:
-    exc = ExceptionRecord.objects.filter(plan_run__in=runs)
-    total = exc.count()
-    by_code = {row["reason_code"]: row["n"] for row in exc.values("reason_code").annotate(n=Count("id")).order_by("-n")}
-    failures = {code: n for code, n in by_code.items() if _FAILURE_CODE_RE.search(code)}
-    n_fail = sum(failures.values())
-    pull_failures = {
-        row["source"]: row["n"]
-        for row in exc.filter(reason_code="Live_Pull_Failed").values("source").annotate(n=Count("id")).order_by("-n")
-    }
-    runs_with_failure = exc.filter(reason_code__in=list(failures)).values("plan_run_id").distinct().count()
-    # When the newest failure happened -- the difference between "an incident in the
-    # window" and "still broken right now" (the 14-15 Sep permission outage looked
-    # identical to a live problem on the tile until this was shown).
-    last_failure_at = exc.filter(reason_code__in=list(failures)).aggregate(m=Max("run_timestamp"))["m"] if failures else None
-
-    output_dir = Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output"
-    normalization_at = None
-    geo_rows = geo_with_coords = None
-    try:
-        summary = json.loads((output_dir / "Run_Summary.json").read_text())
-        normalization_at = summary.get("Run_Timestamp")
-    except (OSError, ValueError):
-        pass
-    try:
-        rows = json.loads((output_dir / "DC_Master_Normalized.json").read_text())
-        rows = rows if isinstance(rows, list) else rows.get("records", [])
-        geo_rows = len(rows)
-        geo_with_coords = sum(1 for r in rows if r.get("Latitude") is not None and r.get("Longitude") is not None)
-    except (OSError, ValueError, AttributeError):
-        pass
-
-    return {
-        "Exceptions_Total": total,
-        "Exceptions_Failures": n_fail,
-        "Exceptions_Structural": total - n_fail,
-        "Failure_Codes": failures,
-        "Top_Structural_Codes": dict(list((c, n) for c, n in by_code.items() if c not in failures)[:6]),
-        "Live_Pull_Failures_By_Source": pull_failures,
-        "Runs_With_A_Failure": runs_with_failure,
-        "Runs_With_A_Failure_Pct": _pct(runs_with_failure, runs.count()),
-        "Last_Failure_At": last_failure_at,
-        "Normalization_Last_Run_At": normalization_at,
-        "DC_Master_Rows": geo_rows,
-        "DC_Master_Geo_Coverage_Pct": _pct(geo_with_coords or 0, geo_rows or 0),
-        "Scheduled_Scopes": ScheduledScope.objects.count(),
-    }
-
-
-def _redshift_reachable() -> Optional[bool]:
-    host = os.environ.get("REDSHIFT_HOST", "")
-    if not host:
-        return None
-    try:
-        with socket.create_connection((host, int(os.environ.get("REDSHIFT_PORT", "5439"))), timeout=2):
-            return True
-    except OSError:
-        return False
-
-
-def _ops() -> Dict[str, Any]:
-    opts = settings.DATABASES["default"].get("OPTIONS", {})
-    with connection.cursor() as cur:
-        cur.execute("PRAGMA journal_mode")
-        journal = cur.fetchone()[0]
-    return {
-        "Alert_Webhook_Configured": bool(getattr(settings, "ALERT_WEBHOOK_URL", "")),
-        "Redshift_Reachable": _redshift_reachable(),
-        "DB_Journal_Mode": journal,
-        "DB_Busy_Timeout_Sec": opts.get("timeout"),
-        "DB_Transaction_Mode": opts.get("transaction_mode"),
-        "Plan_Generation_Weekly_Off_Day": getattr(__import__("se_daily_plan_agent"), "PLAN_GENERATION_WEEKLY_OFF_DAY", None),
-    }
-
-
 def compute_tracking_metrics(
     days: Optional[int] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     se_emails: Optional[List[str]] = None, abm_codes: Optional[List[str]] = None,
@@ -468,7 +386,5 @@ def compute_tracking_metrics(
         "Adoption": adoption,
         "By_SE": by_se,
         "Quality": _quality(runs),
-        "Data_Health": _data_health(runs),
-        "Ops": _ops(),
         "Generated_At": datetime.now(dt_timezone.utc).isoformat(),
     }
