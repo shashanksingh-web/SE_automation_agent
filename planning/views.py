@@ -949,7 +949,10 @@ def admin_tracking(request):
     """GET /api/planning/admin/tracking/?days=7 | ?from=YYYY-MM-DD&to=YYYY-MM-DD -- the
     Tracking dashboard's numbers (added 2026-09-16, see planning.tracking's own
     docstring for what each tier means and why). Explicit from/to (inclusive plan
-    dates, span <= 90 days) wins; else the last `days` days ending today (default 7). Read-only,
+    dates, span <= 90 days) wins; else the last `days` days ending today (default 7).
+    Repeatable &se=<email> / &abm=<code> narrow Outcomes and Adoption to those SEs (an
+    ABM expands to the SEs under it) and add a per-SE table; Quality / Data health /
+    Ops stay network-wide. Read-only,
     computed at request time from what the pipeline already persists -- ~1.5s over a
     week of runs. ADMIN-only in the frontend nav, same as the rest of the admin/ family
     (the API itself enforces nothing, per this app's stated RBAC convention)."""
@@ -958,7 +961,10 @@ def admin_tracking(request):
     except ValueError:
         return JsonResponse({"error": "days must be an integer"}, status=400)
     try:
-        metrics = compute_tracking_metrics(days, request.GET.get("from") or None, request.GET.get("to") or None)
+        metrics = compute_tracking_metrics(
+            days, request.GET.get("from") or None, request.GET.get("to") or None,
+            se_emails=request.GET.getlist("se"), abm_codes=request.GET.getlist("abm"),
+        )
     except TrackingWindowError as e:
         return JsonResponse({"error": str(e)}, status=400)
     return JsonResponse(metrics, json_dumps_params={"default": str})

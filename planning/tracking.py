@@ -90,7 +90,44 @@ def resolve_window(days: Optional[int] = None, date_from: Optional[str] = None, 
 _OUTCOME_RANK = {"UNKNOWN": -1, "MISSED": 0, "PARTIAL": 1, "COMPLETED": 2}
 
 
-def _outcomes(runs, tasks) -> Dict[str, Any]:
+def resolve_selection(se_emails: Optional[List[str]], abm_codes: Optional[List[str]]) -> tuple:
+    """(selected SE emails as a lowercase set, or None for no filter; an info dict for
+    the response). SE/ABM filtering added 2026-09-16 (explicit user request: "add SE
+    and ABM wise tracking ... selection must be multiple select"). An ABM resolves to
+    the SEs under it via Geo_Mapping_Normalized.json (abm_e_code -> sales_rep_email,
+    the same Source 1c relationship resolve_scope_dcs uses for an ABM-scope plan);
+    an ABM code with no SE in that file is reported as unmatched rather than silently
+    matching nothing. Emails compare case-insensitively - DailyTask.se_name and
+    PlanRun.scope_value carry them lowercase, Geo_Mapping doesn't always."""
+    ses = {e.strip().lower() for e in (se_emails or []) if e and e.strip()}
+    abms = [a.strip() for a in (abm_codes or []) if a and a.strip()]
+    if not ses and not abms:
+        return None, None
+    unmatched: List[str] = []
+    via_abm: set = set()
+    if abms:
+        by_abm: Dict[str, set] = {}
+        try:
+            rows = json.loads((Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output" / "Geo_Mapping_Normalized.json").read_text())
+            rows = rows if isinstance(rows, list) else rows.get("records", [])
+            for r in rows:
+                code, email = r.get("abm_e_code"), r.get("sales_rep_email")
+                if code and email:
+                    by_abm.setdefault(str(code).strip(), set()).add(str(email).strip().lower())
+        except (OSError, ValueError, AttributeError):
+            pass
+        for code in abms:
+            if code in by_abm:
+                via_abm |= by_abm[code]
+            else:
+                unmatched.append(code)
+    selected = ses | via_abm
+    return selected, {
+        "SEs": sorted(ses), "ABMs": abms, "SEs_Via_ABM": len(via_abm), "Resolved_SEs": len(selected), "Unmatched_ABMs": unmatched,
+    }
+
+
+def _outcomes(runs, tasks, selected: Optional[set] = None) -> Dict[str, Any]:
     # Counted per PLANNED VISIT -- a distinct (SE, DC, plan_date) -- not per DailyTask
     # row. This app regenerates a scope's plan on every view load, so one SE-day
     # routinely carries 10-20 duplicate rows per DC (2,826 rows for 762 visits on
@@ -98,15 +135,25 @@ def _outcomes(runs, tasks) -> Dict[str, Any]:
     # rate, and would sum the same DC's payment once per duplicate. A visit's outcome
     # is the best of its rows (COMPLETED > PARTIAL > MISSED); money is taken once per
     # (DC, day). Same dedup rule planning.reconciliation applies to streaks.
+    # `selected` (lowercase SE emails) narrows everything to those SEs' visits, across
+    # every scope's runs -- a visit is the same visit whether an SE-scope or ABM-scope
+    # run planned it -- and adds a per-SE breakdown.
     visits: Dict[tuple, str] = {}
     money_by_dc_day: Dict[tuple, tuple] = {}
     overdue_by_dc_day: Dict[tuple, float] = {}
     ptp_by_dc_day: Dict[tuple, float] = {}
-    for se_id, dc_id, d, status, paid, ordered, overdue, ptp_date, ptp_amount in tasks.exclude(dc_id="").values_list(
-        "se_id", "dc_id", "plan_date", "outcome_status", "actual_payment_amount", "actual_order_value",
+    task_rows = 0
+    se_ids: set = set()
+    for se_id, se_name, dc_id, d, status, paid, ordered, overdue, ptp_date, ptp_amount in tasks.exclude(dc_id="").values_list(
+        "se_id", "se_name", "dc_id", "plan_date", "outcome_status", "actual_payment_amount", "actual_order_value",
         "present_overdue", "promise_to_pay_date", "promise_to_pay_amount",
     ):
-        key = (se_id, dc_id, str(d))
+        email = (se_name or "").lower()
+        if selected is not None and email not in selected:
+            continue
+        task_rows += 1
+        se_ids.add(se_id)
+        key = (email, dc_id, str(d))
         if _OUTCOME_RANK.get(status, -1) > _OUTCOME_RANK.get(visits.get(key), -2):
             visits[key] = status
         dc_day = (dc_id, str(d))
@@ -129,9 +176,37 @@ def _outcomes(runs, tasks) -> Dict[str, Any]:
     completed = breakdown.get("COMPLETED", 0) + breakdown.get("PARTIAL", 0)
     paid_total = sum(p for p, _ in money_by_dc_day.values() if p)
     ordered_total = sum(o for _, o in money_by_dc_day.values() if o)
+
+    # Per-SE: same rules, grouped by the visit's SE. Money is attributed to the SE
+    # whose visit it was (a DC belongs to one SE, so a (DC, day) has one owner here).
+    per_se: Dict[str, Dict[str, Any]] = {}
+    owner_by_dc_day: Dict[tuple, str] = {(k[1], k[2]): k[0] for k in visits}
+    for (email, _, _), status in visits.items():
+        row = per_se.setdefault(email, {"Planned": 0, "Reconciled": 0, "Executed": 0, "Collection": 0.0, "Sales": 0.0})
+        row["Planned"] += 1
+        if status != "UNKNOWN":
+            row["Reconciled"] += 1
+            if status in ("COMPLETED", "PARTIAL"):
+                row["Executed"] += 1
+    for dc_day, (paid, ordered) in money_by_dc_day.items():
+        owner = owner_by_dc_day.get(dc_day)
+        if owner in per_se:
+            per_se[owner]["Collection"] += paid or 0.0
+            per_se[owner]["Sales"] += ordered or 0.0
+
+    streaks = DCVisitStreak.objects.filter(consecutive_misses__gte=DCVisitStreak.ESCALATION_THRESHOLD)
+    pending = DailyTask.objects.filter(
+        plan_date__lt=timezone.now().date().isoformat(), outcome_status=DailyTask.OutcomeStatus.UNKNOWN,
+    ).exclude(dc_id="")
+    if selected is not None:
+        streaks = streaks.filter(se_id__in=se_ids)
+        reconcilable_now = sum(1 for n in pending.values_list("se_name", flat=True) if (n or "").lower() in selected)
+    else:
+        reconcilable_now = pending.count()
+
     return {
         "Tasks_Planned": total,
-        "Task_Rows": tasks.count(),
+        "Task_Rows": task_rows,
         "Tasks_Reconciled": n_rec,
         "Reconciliation_Rate_Pct": _pct(n_rec, total),
         # Across ALL time, not just the window -- "has this ever run" is the question.
@@ -143,16 +218,15 @@ def _outcomes(runs, tasks) -> Dict[str, Any]:
         "Sales_After_Visit": ordered_total if n_rec else None,
         "PTP_Promises": len(ptp_by_dc_day),
         "PTP_Promised_Amount": sum(ptp_by_dc_day.values()) or None,
-        "Chronic_Non_Execution_Pairs": DCVisitStreak.objects.filter(consecutive_misses__gte=DCVisitStreak.ESCALATION_THRESHOLD).count(),
+        "Chronic_Non_Execution_Pairs": streaks.count(),
         "Escalation_Threshold_Misses": DCVisitStreak.ESCALATION_THRESHOLD,
         # All-time: past DC-visit tasks still UNKNOWN -- what "Reconcile now" would act on.
-        "Reconcilable_Now": DailyTask.objects.filter(
-            plan_date__lt=timezone.now().date().isoformat(), outcome_status=DailyTask.OutcomeStatus.UNKNOWN,
-        ).exclude(dc_id="").count(),
+        "Reconcilable_Now": reconcilable_now,
+        "Per_SE": per_se,
     }
 
 
-def _adoption(runs) -> Dict[str, Any]:
+def _adoption(runs, selected: Optional[set] = None) -> Dict[str, Any]:
     # Counted per SE-DAY -- a distinct (SE, plan_date) among SE-scope runs, the plan an
     # SE actually sees in their own view -- not per PlanRun. Every view load regenerates
     # the plan (134 SE-scope runs for 23 SE-days in one week; one SE's day regenerated
@@ -168,7 +242,10 @@ def _adoption(runs) -> Dict[str, Any]:
         runs.filter(scope_type=PlanRun.ScopeType.SE)
         .values_list("id", "scope_value", "plan_date", "status", "reviewed_by", "reviewed_at", "run_timestamp")
     ):
-        day = days.setdefault((se, str(d)), {"runs": 0, "run_ids": [], "latest": (None, None), "review": (None, None)})
+        email = (se or "").lower()
+        if selected is not None and email not in selected:
+            continue
+        day = days.setdefault((email, str(d)), {"runs": 0, "run_ids": [], "latest": (None, None), "review": (None, None)})
         day["runs"] += 1
         day["run_ids"].append(run_id)
         if day["latest"][0] is None or ts > day["latest"][0]:
@@ -187,14 +264,25 @@ def _adoption(runs) -> Dict[str, Any]:
     by_status: Dict[str, int] = {}
     edited_days = 0
     plan_types: Dict[str, int] = {}
-    for day in days.values():
+    per_se: Dict[str, Dict[str, Any]] = {}
+    for (email, _), day in days.items():
         verdict = day["review"][1] or PlanRun.Status.PENDING_REVIEW
         by_status[verdict] = by_status.get(verdict, 0) + 1
-        if any(rid in edited_runs for rid in day["run_ids"]):
+        edited = any(rid in edited_runs for rid in day["run_ids"])
+        if edited:
             edited_days += 1
         pt = selected_by_run.get(day["latest"][1])
         if pt:
             plan_types[pt] = plan_types.get(pt, 0) + 1
+        row = per_se.setdefault(email, {"SE_Days": 0, "Runs": 0, "Approved": 0, "Rejected": 0, "Edited_Days": 0})
+        row["SE_Days"] += 1
+        row["Runs"] += day["runs"]
+        if verdict == PlanRun.Status.APPROVED:
+            row["Approved"] += 1
+        elif verdict == PlanRun.Status.REJECTED:
+            row["Rejected"] += 1
+        if edited:
+            row["Edited_Days"] += 1
     reviewed = n_days - by_status.get(PlanRun.Status.PENDING_REVIEW, 0)
 
     return {
@@ -211,6 +299,7 @@ def _adoption(runs) -> Dict[str, Any]:
         "Manually_Edited_Days": edited_days,
         "Manual_Edit_Rate_Pct": _pct(edited_days, n_days),
         "Selected_Plan_Type_Breakdown": plan_types,
+        "Per_SE": per_se,
     }
 
 
@@ -342,17 +431,42 @@ def _ops() -> Dict[str, Any]:
     }
 
 
-def compute_tracking_metrics(days: Optional[int] = None, date_from: Optional[str] = None, date_to: Optional[str] = None) -> Dict[str, Any]:
+def compute_tracking_metrics(
+    days: Optional[int] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    se_emails: Optional[List[str]] = None, abm_codes: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     f, t = resolve_window(days, date_from, date_to)
+    selected, selection_info = resolve_selection(se_emails, abm_codes)
     runs = PlanRun.objects.filter(plan_date__gte=f, plan_date__lte=t)
     tasks = DailyTask.objects.filter(plan_run__in=runs)
+    outcomes = _outcomes(runs, tasks, selected)
+    adoption = _adoption(runs, selected)
+    outcome_by_se, adoption_by_se = outcomes.pop("Per_SE"), adoption.pop("Per_SE")
+    # Per-SE table only for a selection: it's the answer to "which of MY SEs is
+    # executing" for an ABM, not a 400-row network listing.
+    by_se = None
+    if selected is not None:
+        by_se = []
+        for email in sorted(selected | set(outcome_by_se) | set(adoption_by_se)):
+            o, a = outcome_by_se.get(email, {}), adoption_by_se.get(email, {})
+            by_se.append({
+                "SE": email,
+                "Planned": o.get("Planned", 0), "Reconciled": o.get("Reconciled", 0),
+                "Execution_Rate_Pct": _pct(o.get("Executed", 0), o.get("Reconciled", 0)),
+                "Collection": o.get("Collection", 0.0), "Sales": o.get("Sales", 0.0),
+                "SE_Days": a.get("SE_Days", 0), "Runs": a.get("Runs", 0),
+                "Approved": a.get("Approved", 0), "Rejected": a.get("Rejected", 0), "Edited_Days": a.get("Edited_Days", 0),
+            })
+        by_se.sort(key=lambda r: (-r["Planned"], r["SE"]))
     return {
         "Window": {
             "From": f, "To": t, "Days": (datetime.fromisoformat(t) - datetime.fromisoformat(f)).days + 1,
             "Plan_Runs": runs.count(),
+            "Selection": selection_info,
         },
-        "Outcomes": _outcomes(runs, tasks),
-        "Adoption": _adoption(runs),
+        "Outcomes": outcomes,
+        "Adoption": adoption,
+        "By_SE": by_se,
         "Quality": _quality(runs),
         "Data_Health": _data_health(runs),
         "Ops": _ops(),
