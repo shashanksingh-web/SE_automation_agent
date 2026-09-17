@@ -3,10 +3,11 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
@@ -22,7 +23,7 @@ from .routing import (
     RoutingError, accept_route_plan, edit_route_stops, list_route_plans,
     reject_route_plan, select_default_route_plan,
 )
-from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, run_normalization_step
+from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, load_dc_master, run_normalization_step
 from .services import _output_dir as _planning_output_dir
 from .services import agent  # se_daily_plan_agent, imported once there as a library
 from .tracking import TrackingWindowError, compute_tracking_metrics
@@ -152,11 +153,31 @@ def _serialize_task(t: DailyTask) -> dict:
     }
 
 
-def _serialize_plan_run(plan_run: PlanRun) -> dict:
+def _serialize_plan_run(plan_run: PlanRun, se_filter: Optional[str] = None) -> dict:
+    """se_filter (an SE email, added 2026-09-17): serialize only that SE's slice of the
+    run -- its tasks, its exceptions, and counts describing it rather than the run's
+    whole scope -- so an SE's view can be served from an ABM/STATE-scope run (e.g.
+    "Generate for all states") that contains it. Served_From says which run it came
+    from; None when unfiltered."""
     tasks_by_se = {}
-    for t in plan_run.tasks.all():
+    tasks = plan_run.tasks.all()
+    if se_filter:
+        tasks = tasks.filter(se_name__iexact=se_filter)
+    task_list = list(tasks)
+    for t in task_list:
         tasks_by_se.setdefault(t.se_id, {"SE_ID": t.se_id, "SE_Name": t.se_name, "Tasks": []})
         tasks_by_se[t.se_id]["Tasks"].append(_serialize_task(t))
+    exceptions = plan_run.exceptions.all()
+    if se_filter:
+        own_ids = {t.dc_id for t in task_list if t.dc_id} | {se_filter.lower()}
+        exceptions = [e for e in exceptions if not e.record_id or e.record_id.lower() in own_ids]
+        se_count = len(tasks_by_se)
+        dc_count = sum(1 for d in load_dc_master() if (d.get("Assigned_SE_Email") or "").lower() == se_filter.lower())
+        task_count = len(task_list)
+        skipped = [x for x in (plan_run.skipped_ses or []) if isinstance(x, dict) and (x.get("se_email") or "").lower() == se_filter.lower()]
+    else:
+        se_count, dc_count, task_count = plan_run.se_count, plan_run.dc_count, plan_run.task_count
+        skipped = plan_run.skipped_ses
     return {
         "PlanRun_ID": plan_run.id,
         "Scope_Type": plan_run.scope_type,
@@ -164,12 +185,19 @@ def _serialize_plan_run(plan_run: PlanRun) -> dict:
         "Plan_Date": plan_run.plan_date,
         "Run_Timestamp": plan_run.run_timestamp,
         "Metabase_Configured": plan_run.metabase_configured,
-        "SE_Count": plan_run.se_count,
-        "DC_Count": plan_run.dc_count,
-        "Task_Count": plan_run.task_count,
+        "SE_Count": se_count,
+        "DC_Count": dc_count,
+        "Task_Count": task_count,
+        # Only when the SE's plan came out of a BROADER run - their own SE-scope run
+        # needs no explanation.
+        "Served_From": (
+            {"Scope_Type": plan_run.scope_type, "Scope_Value": plan_run.scope_value, "Filtered_To_SE": se_filter}
+            if se_filter and not (plan_run.scope_type == PlanRun.ScopeType.SE and plan_run.scope_value.lower() == se_filter.lower())
+            else None
+        ),
         "Dynamic_Parameters_Resolved": plan_run.dynamic_parameters,
         "Note": plan_run.note,
-        "Skipped_SEs": plan_run.skipped_ses,
+        "Skipped_SEs": skipped,
         # Approval-workflow / lifecycle fields -- status is an audit trail, not a filter
         # (see PlanRun's own model docstring): no reviewer workflow exists yet to
         # guarantee every run gets reviewed, so every run still appears via GET
@@ -186,7 +214,7 @@ def _serialize_plan_run(plan_run: PlanRun) -> dict:
                 "Record_ID": e.record_id, "Source": e.source, "Reason_Code": e.reason_code,
                 "Detail": e.detail, "Run_Timestamp": e.run_timestamp,
             }
-            for e in plan_run.exceptions.all()
+            for e in exceptions
         ],
         # Empty unless this run was given focus_product=... -- see
         # _focus_product_kwargs, product-first not DC-first, opt-in per call.
@@ -231,9 +259,61 @@ def _generate_and_respond(request, scope_type: str, scope_value: str):
     return JsonResponse(_serialize_plan_run(plan_run), safe=False, json_dumps_params={"default": str})
 
 
+def _latest_finished_run(scope_type: str, scope_value: str, plan_date: str):
+    """(PlanRun, se_filter) -- the most recent COMPLETE run to show for this scope and
+    date, or (None, None). Exact scope match first; for an SE, the newest of that and
+    any broader finished run (ABM/RBM/NODE/STATE, e.g. the admin's "Generate for all
+    states") whose tasks include the SE -- served as the SE's own slice."""
+    exact = (
+        PlanRun.objects.filter(scope_type=scope_type, scope_value__iexact=scope_value, plan_date=plan_date, finished_at__isnull=False)
+        .order_by("-run_timestamp").first()
+    )
+    if scope_type != PlanRun.ScopeType.SE:
+        return exact, None
+    containing_task = (
+        DailyTask.objects.filter(se_name__iexact=scope_value, plan_date=plan_date, plan_run__finished_at__isnull=False)
+        .exclude(plan_run__scope_type=PlanRun.ScopeType.SE)
+        .select_related("plan_run").order_by("-plan_run__run_timestamp").first()
+    )
+    containing = containing_task.plan_run if containing_task else None
+    candidates = [r for r in (exact, containing) if r is not None]
+    if not candidates:
+        return None, None
+    return max(candidates, key=lambda r: r.run_timestamp), scope_value
+
+
+def _read_latest_and_respond(request, scope_type: str, scope_value: str):
+    """GET on a scope endpoint (added 2026-09-17, explicit user request: "if backend
+    complete all process why its again run for frontend - only data will capture").
+    Until now a view load was a full plan generation -- every Redshift pull, routing,
+    LLM calls, pitching -- so one SE-day was regenerated 7x on average just from people
+    looking at it (the Tracking dashboard's "regenerations per SE-day"), and every
+    duplicate run distorted the outcome/adoption numbers. A view load now only READS
+    the latest finished run for the scope and date; generation is the explicit POST
+    (Create / Refresh, the tuff endpoint, activate_tuff, run_all_states_tuff).
+    404 with code NO_PLAN when nothing has been generated yet -- the UI shows that as
+    an empty state with the Create / Refresh button, never a silent regeneration."""
+    plan_date = request.GET.get("date") or timezone.now().date().isoformat()
+    plan_run, se_filter = _latest_finished_run(scope_type, scope_value, plan_date)
+    if plan_run is None:
+        return JsonResponse(
+            {"error": f"No plan has been generated for {scope_type} '{scope_value}' on {plan_date} yet.", "code": "NO_PLAN"},
+            status=404,
+        )
+    return JsonResponse(_serialize_plan_run(plan_run, se_filter=se_filter), safe=False, json_dumps_params={"default": str})
+
+
+def _scope_view(request, scope_type: str, scope_value: str):
+    """GET reads the latest generated plan; POST generates a new one."""
+    if request.method == "GET":
+        return _read_latest_and_respond(request, scope_type, scope_value)
+    return _generate_and_respond(request, scope_type, scope_value)
+
+
 # One endpoint per scope, per the doc's SE -> Node -> ABM -> DC -> Block -> District ->
 # State hierarchy (Source 1c). Each just fixes scope_type and forwards scope_value/date --
-# all the real logic lives in services.generate_plan_for_scope().
+# GET reads the latest run (_read_latest_and_respond), POST generates
+# (services.generate_plan_for_scope via _generate_and_respond).
 
 @csrf_exempt
 def se_plan(request, scope_value: str):
@@ -244,43 +324,43 @@ def se_plan(request, scope_value: str):
     marker doesn't propagate through a plain function call. require_http_methods,
     unlike csrf_exempt, IS a runtime check inside _generate_and_respond's own wrapped
     body and correctly fires regardless of call path, so it's not repeated here."""
-    return _generate_and_respond(request, PlanRun.ScopeType.SE, scope_value)
+    return _scope_view(request, PlanRun.ScopeType.SE, scope_value)
 
 
 @csrf_exempt
 def abm_plan(request, scope_value: str):
     """POST /api/planning/abm/<abm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
-    return _generate_and_respond(request, PlanRun.ScopeType.ABM, scope_value)
+    return _scope_view(request, PlanRun.ScopeType.ABM, scope_value)
 
 
 @csrf_exempt
 def rbm_plan(request, scope_value: str):
     """POST /api/planning/rbm/<rbm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
-    return _generate_and_respond(request, PlanRun.ScopeType.RBM, scope_value)
+    return _scope_view(request, PlanRun.ScopeType.RBM, scope_value)
 
 
 @csrf_exempt
 def node_plan(request, scope_value: str):
     """POST /api/planning/node/<node_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
-    return _generate_and_respond(request, PlanRun.ScopeType.NODE, scope_value)
+    return _scope_view(request, PlanRun.ScopeType.NODE, scope_value)
 
 
 @csrf_exempt
 def block_plan(request, scope_value: str):
     """POST /api/planning/block/<block_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
-    return _generate_and_respond(request, PlanRun.ScopeType.BLOCK, scope_value)
+    return _scope_view(request, PlanRun.ScopeType.BLOCK, scope_value)
 
 
 @csrf_exempt
 def district_plan(request, scope_value: str):
     """POST /api/planning/district/<district_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
-    return _generate_and_respond(request, PlanRun.ScopeType.DISTRICT, scope_value)
+    return _scope_view(request, PlanRun.ScopeType.DISTRICT, scope_value)
 
 
 @csrf_exempt
 def state_plan(request, scope_value: str):
     """POST /api/planning/state/<state_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
-    return _generate_and_respond(request, PlanRun.ScopeType.STATE, scope_value)
+    return _scope_view(request, PlanRun.ScopeType.STATE, scope_value)
 
 
 @csrf_exempt
