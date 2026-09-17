@@ -25,6 +25,7 @@ class Command(BaseCommand):
         parser.add_argument("--date", required=True, help="Plan date YYYY-MM-DD to reconcile (must be in the past)")
         parser.add_argument("--scope-type", default=None, help="Restrict to one PlanRun scope type (SE/ABM/RBM/NODE/BLOCK/DISTRICT/STATE)")
         parser.add_argument("--scope-value", default=None, help="Restrict to one PlanRun scope value (requires --scope-type)")
+        parser.add_argument("--rebuild", action="store_true", help="Re-score every DC-visit task for the date, already-reconciled ones included (after an outcome-rule change); run rebuild_streaks afterwards for a multi-date rebuild")
 
     def handle(self, *args, **options):
         if options["scope_value"] and not options["scope_type"]:
@@ -33,6 +34,7 @@ class Command(BaseCommand):
         try:
             summary = reconcile_plan_date(
                 options["date"], client=client, scope_type=options["scope_type"], scope_value=options["scope_value"],
+                rebuild=options["rebuild"],
             )
         except ReconciliationError as e:
             raise CommandError(str(e))

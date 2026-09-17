@@ -18,7 +18,10 @@ So reconciliation no longer depends on a scheduler at all. It runs:
   3. still from the CLI (`manage.py reconcile_outcomes --date`), now a thin wrapper.
 
 What a reconciliation records, per task, from live data in [plan_date, plan_date+2]:
-  COMPLETED  a task_management_task DC visit by that SE at that DC (actual_visit_date)
+  COMPLETED  a Pathik DC visit by that SE at that DC with status 'done' -- the visit
+             happened (actual_visit_date). A Pathik row still 'submitted' is the SE's
+             own plan in Pathik, not an execution, and never counts (fixed 2026-09-17;
+             "planned" is always SE Daily Planning's DailyTask, never Pathik's plan)
   PARTIAL    no visit, but the DC placed an order (actual_order_value)
   MISSED     neither
 plus actual_payment_amount -- SUCCESS payments by the DC in the window (added here;
@@ -57,8 +60,10 @@ class ReconciliationError(Exception):
     pass
 
 
-def _pending_tasks(plan_date: str, se_ids: Optional[List[str]], scope_type: Optional[str], scope_value: Optional[str]):
-    qs = DailyTask.objects.filter(plan_date=plan_date, outcome_status=DailyTask.OutcomeStatus.UNKNOWN)
+def _pending_tasks(plan_date: str, se_ids: Optional[List[str]], scope_type: Optional[str], scope_value: Optional[str], rebuild: bool = False):
+    qs = DailyTask.objects.filter(plan_date=plan_date)
+    if not rebuild:
+        qs = qs.filter(outcome_status=DailyTask.OutcomeStatus.UNKNOWN)
     if se_ids is not None:
         qs = qs.filter(se_id__in=se_ids)
     if scope_type:
@@ -70,7 +75,7 @@ def _pending_tasks(plan_date: str, se_ids: Optional[List[str]], scope_type: Opti
 
 def reconcile_plan_date(
     plan_date: str, *, client, se_ids: Optional[List[str]] = None,
-    scope_type: Optional[str] = None, scope_value: Optional[str] = None,
+    scope_type: Optional[str] = None, scope_value: Optional[str] = None, rebuild: bool = False,
 ) -> Dict[str, Any]:
     """Reconciles every still-UNKNOWN DailyTask for plan_date (optionally narrowed to
     se_ids and/or one PlanRun scope). Returns a summary dict; never raises for a
@@ -78,13 +83,20 @@ def reconcile_plan_date(
     signal is simply absent -- a visit pull failure means visits can't be confirmed,
     so tasks fall through to PARTIAL/MISSED on the other signals, same posture the
     command always had). Raises ReconciliationError only for a misuse (a plan_date
-    that isn't in the past, no live client)."""
+    that isn't in the past, no live client).
+
+    rebuild=True re-evaluates EVERY DC-visit task for the date, already-reconciled
+    ones included -- for when the outcome rules themselves change (2026-09-17: a
+    Pathik 'submitted' row stopped counting as a visit) and history recorded under
+    the old rule has to be re-scored. Follow a multi-date rebuild with
+    rebuild_streaks(), since each date's streak pass reads the other dates' outcomes
+    as they stand at that moment."""
     if datetime.fromisoformat(plan_date).date() >= timezone.now().date():
         raise ReconciliationError("reconciliation needs a past plan_date -- outcomes can't exist yet for today or the future.")
     if not client.configured:
         raise ReconciliationError("Live data client not configured (REDSHIFT_HOST/USER/PASSWORD or METABASE_URL/METABASE_API_KEY) -- reconciliation needs live Visits/Sales/Payments data.")
 
-    all_tasks = list(_pending_tasks(plan_date, se_ids, scope_type, scope_value))
+    all_tasks = list(_pending_tasks(plan_date, se_ids, scope_type, scope_value, rebuild))
     summary: Dict[str, Any] = {
         "plan_date": plan_date, "tasks": 0, "completed": 0, "partial": 0, "missed": 0,
         "escalated": 0, "farmer_meeting_skipped": 0, "payment_amount": 0.0, "pull_failures": [], "visits_planned": 0,
@@ -142,6 +154,7 @@ def reconcile_plan_date(
         visit_date = visited.get(key)
         order_value = ordered_value.get(task.dc_id)
 
+        task.actual_visit_date = None
         if visit_date:
             status = DailyTask.OutcomeStatus.COMPLETED
             task.actual_visit_date = visit_date
@@ -277,21 +290,32 @@ def rebuild_streaks(se_ids: Optional[List[str]] = None) -> int:
     return len(history)
 
 
-def pending_plan_dates(*, before_date: str, se_ids: Optional[List[str]] = None) -> List[str]:
+def pending_plan_dates(*, before_date: str, se_ids: Optional[List[str]] = None, rebuild: bool = False) -> List[str]:
     """Distinct past plan_dates that still have UNKNOWN DC-visit tasks (for these SEs, or
     network-wide), oldest first -- the work list for reconcile_past_tasks and the
-    Tracking dashboard's "N tasks can be reconciled now" figure."""
-    qs = DailyTask.objects.filter(plan_date__lt=before_date, outcome_status=DailyTask.OutcomeStatus.UNKNOWN).exclude(dc_id="")
+    Tracking dashboard's "N tasks can be reconciled now" figure. rebuild=True lists
+    every past date with any DC-visit task instead."""
+    qs = DailyTask.objects.filter(plan_date__lt=before_date).exclude(dc_id="")
+    if not rebuild:
+        qs = qs.filter(outcome_status=DailyTask.OutcomeStatus.UNKNOWN)
     if se_ids is not None:
         qs = qs.filter(se_id__in=se_ids)
     return sorted({d.isoformat() if hasattr(d, "isoformat") else str(d) for d in qs.values_list("plan_date", flat=True).distinct()})
 
 
-def reconcile_past_tasks(*, client, before_date: Optional[str] = None, se_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def reconcile_past_tasks(*, client, before_date: Optional[str] = None, se_ids: Optional[List[str]] = None, rebuild: bool = False) -> List[Dict[str, Any]]:
     """Reconciles every past plan_date with pending tasks (for these SEs, or everything
-    when se_ids is None), one live pull set per date. Returns the per-date summaries."""
+    when se_ids is None), one live pull set per date. Returns the per-date summaries.
+    rebuild=True re-scores every past date and then recomputes every streak from the
+    corrected history."""
     before_date = before_date or timezone.now().date().isoformat()
-    return [reconcile_plan_date(d, client=client, se_ids=se_ids) for d in pending_plan_dates(before_date=before_date, se_ids=se_ids)]
+    summaries = [
+        reconcile_plan_date(d, client=client, se_ids=se_ids, rebuild=rebuild)
+        for d in pending_plan_dates(before_date=before_date, se_ids=se_ids, rebuild=rebuild)
+    ]
+    if rebuild:
+        rebuild_streaks(se_ids)
+    return summaries
 
 
 def format_summary(s: Dict[str, Any]) -> str:

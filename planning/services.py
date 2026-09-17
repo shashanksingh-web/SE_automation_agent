@@ -1874,12 +1874,20 @@ def _sql_recent_punch_ins(se_user_ids: List[int], plan_date: str, days: int = 30
 # DailyTask.actual_payment_amount is left honestly unpopulated rather than guessed. ---
 
 def _sql_visit_outcomes(dc_ids: List[str], se_user_ids: List[int], plan_date: str) -> str:
+    # t.status = 'done' added 2026-09-17 (explicit user correction: "planned means from
+    # se daily planning not from pathik"). Pathik's task_management_task has exactly two
+    # statuses for a DC visit, confirmed live: 'submitted' is the SE's own plan in Pathik
+    # -- every future-dated row is 'submitted', none 'done', and ~12% of each past day's
+    # rows stay 'submitted' forever (never carried out) -- and 'done' is the visit having
+    # happened. Without this filter a visit merely planned in Pathik counted as executed,
+    # inflating COMPLETED. "Planned" is SE Daily Planning's DailyTask; Pathik only ever
+    # answers "did it happen".
     return f"""
     SELECT cc.partner_id AS sap_partner_id, p.user_id AS se_user_id, p.plan_execution_date, t.status AS task_status
     FROM task_management_task t
     JOIN task_management_plan p ON p.id = t.plan_id
     JOIN customer_management_customer cc ON cc.id = t.partner_id
-    WHERE t.visit_type_id = 1 AND p.user_id IN ({",".join(str(u) for u in se_user_ids)})
+    WHERE t.visit_type_id = 1 AND t.status = 'done' AND p.user_id IN ({",".join(str(u) for u in se_user_ids)})
       AND cc.partner_id::text IN ({_sql_list(dc_ids)})
       AND p.plan_execution_date >= DATE '{plan_date}' AND p.plan_execution_date <= DATE '{plan_date}' + INTERVAL '2 days'
     ORDER BY cc.partner_id, p.plan_execution_date ASC
