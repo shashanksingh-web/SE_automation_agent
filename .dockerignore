@@ -1,0 +1,34 @@
+# Not part of the image -- dev tooling, local state, and mutable data that's mounted
+# in via volumes at runtime instead (see docker-compose.yml), not baked into the build.
+
+venv/
+__pycache__/
+*.pyc
+.git/
+.claude/
+.DS_Store
+
+# Local/dev process artifacts -- irrelevant inside a container, which uses gunicorn/
+# celery directly, not the nohup+scripts/*.sh pattern used for local dev.
+scripts/run_celery_worker.sh
+scripts/run_celery_beat.sh
+scripts/launchd_runserver.sh
+celerybeat-schedule*
+celerybeat.pid
+
+# Secrets -- never baked into the image, passed at runtime via env_file/environment.
+.env
+.env.*
+!.env.docker.example
+
+# Mutable data -- see docker-compose.yml's volumes: these are mounted at runtime, not
+# copied into the image, so a container restart/rebuild never loses or resets them.
+db.sqlite3
+db.sqlite3-shm
+db.sqlite3-wal
+logs/
+output/
+DC_RAnk.csv
+config and parameter /
+pitch_config/
+Niyojan Q2-FY_26_27 Dashboard - Planning.csv

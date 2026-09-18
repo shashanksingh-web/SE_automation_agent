@@ -1,0 +1,103 @@
+# Production-oriented stack: redis (Celery's broker) + web (gunicorn/Django) +
+# celery_worker + celery_beat. Scoped to just this backend repo -- the frontend
+# ("New Lead gen model") is a separate project, deployed independently, same as today.
+#
+# Secrets: NOT baked into the image -- every service reads them from .env at runtime
+# via env_file. Copy .env.docker.example to .env and fill in real values before
+# `docker compose up`; see that file for what's required vs optional.
+#
+# Data persistence: db.sqlite3, output/, logs/, and the operator-managed CSV/config
+# files (DC_RAnk.csv, "config and parameter /", the AOP CSV, pitch_config/) are bind
+# mounts back to the host, not baked into the image -- a rebuild or container restart
+# never loses them, and the admin CSV-upload endpoints keep writing to the same real
+# files an operator can inspect directly on the host.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes: &app_data_volumes
+      # Bind mount, not a named volume -- must land at the EXACT path Django's
+      # settings.py expects (BASE_DIR / 'db.sqlite3', i.e. /app/db.sqlite3), and WAL
+      # mode's -wal/-shm companion files need to sit on the same real filesystem as
+      # the main file, which a bind mount guarantees for free (they're all just files
+      # in the same host directory) in a way a separate named volume wouldn't. Docker
+      # gotcha: if ./db.sqlite3 doesn't already exist on the host before the first
+      # `docker compose up`, Docker creates it as a DIRECTORY instead of an empty
+      # file -- run `touch db.sqlite3` on the host first (see DOCKER.md).
+      - ./db.sqlite3:/app/db.sqlite3
+      - ./db.sqlite3-wal:/app/db.sqlite3-wal
+      - ./db.sqlite3-shm:/app/db.sqlite3-shm
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./DC_RAnk.csv:/app/DC_RAnk.csv
+      - "./config and parameter :/app/config and parameter "
+      - "./Niyojan Q2-FY_26_27 Dashboard - Planning.csv:/app/Niyojan Q2-FY_26_27 Dashboard - Planning.csv"
+      - ./pitch_config:/app/pitch_config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/admin/login/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  celery_worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes: *app_data_volumes
+    # --pool=solo: see Dockerfile's own comment -- a real, confirmed billiard/Python
+    # 3.14/macOS bug this project hit locally; kept as the safe default here too since
+    # it's untested whether Linux + Python 3.12 + prefork would avoid it, and this
+    # app's 3 scheduled/on-demand tasks are low-frequency enough that solo's lack of
+    # parallelism costs nothing real.
+    command: ["celery", "-A", "config", "worker", "--loglevel=info", "--pool=solo"]
+    # No process-level healthcheck: `celery inspect ping` can itself block for the
+    # duration of a long-running task under --pool=solo (the same process handles both
+    # the task and inspect requests), so a strict healthcheck here would misreport a
+    # legitimately busy worker (a real state-scope generation has taken ~750s) as
+    # unhealthy and trigger a restart mid-task. Rely on `docker compose logs
+    # celery_worker` / Redis's own connection tracking for operational visibility
+    # instead.
+
+  celery_beat:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes: *app_data_volumes
+    command: ["celery", "-A", "config", "beat", "--loglevel=info"]
+
+volumes:
+  redis_data:

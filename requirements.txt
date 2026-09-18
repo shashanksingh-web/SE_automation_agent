@@ -8,3 +8,4 @@ ortools==9.15.6755
 openpyxl==3.1.5
 celery==5.6.3
 redis==8.1.0
+gunicorn==23.0.0

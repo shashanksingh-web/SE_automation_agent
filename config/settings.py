@@ -44,7 +44,16 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-fallback-set-SECRET_K
 # the infra audit) and flipping the default would silently break `runserver` today.
 DEBUG = os.environ.get("DEBUG", "True") == "True"
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver']
+# ALLOWED_HOSTS_EXTRA (added 2026-09-18, Docker/production packaging): a real
+# deployment is reached via a real hostname/domain, never just localhost -- Django
+# rejects any request whose Host header isn't in this list with DisallowedHost, so a
+# production container serving real traffic needed a way to add its actual host(s)
+# without a code change. Comma-separated, e.g. "example.com,10.0.1.5". The 3 local
+# dev entries stay unconditionally present so `manage.py runserver` keeps working
+# exactly as before with no .env change required.
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver'] + [
+    h.strip() for h in os.environ.get('ALLOWED_HOSTS_EXTRA', '').split(',') if h.strip()
+]
 
 
 # Application definition
