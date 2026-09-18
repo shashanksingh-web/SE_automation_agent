@@ -2583,7 +2583,20 @@ def generate_plan_for_scope(
         for email in se_emails:
             if email not in se_user_ids:
                 run_exceptions.append({"source": "users_user", "reason_code": "SE_User_ID_Unresolved", "detail": f"Could not resolve user_id for {email} -- excluded from this run"})
+        unresolved_count = len([e for e in se_emails if e not in se_user_ids])
         se_emails = [e for e in se_emails if e in se_user_ids]
+        if not se_emails:
+            # Every SE dropped out -- in practice the users_user pull itself failed (seen
+            # live 2026-09-18: a Redshift DNS failure took West Bengal's whole run down,
+            # and without this guard it died much later with an UnboundLocalError on
+            # dc_datamart_query_ok, hiding the real cause). Fail here, naming it.
+            pull_failure = next((x["detail"] for x in run_exceptions if x.get("source") == "users_user" and x.get("reason_code") == "Live_Pull_Failed"), None)
+            client.close()
+            raise PlanningError(
+                f"None of the {unresolved_count} SE(s) under {scope_type}='{scope_value}' could be resolved to a user_id"
+                + (f" -- the users_user live pull failed: {pull_failure}" if pull_failure else "")
+                + " -- nothing to plan."
+            )
 
     # Outcome reconciliation for these SEs' past plans, before their new one is built
     # (added 2026-09-16, see planning.reconciliation's docstring for why it lives here
@@ -2626,6 +2639,7 @@ def generate_plan_for_scope(
     dc_bo_scores: Dict[str, Dict[str, Any]] = {}
     fm_urgency_by_se: Dict[str, Dict[str, Any]] = {}
     farmer_meeting_confirmed_by_se: Dict[str, bool] = {}
+    dc_datamart_query_ok = False  # read far below regardless of whether the live block runs
 
     if client.configured and se_emails:
         uids = [se_user_ids[e] for e in se_emails]
