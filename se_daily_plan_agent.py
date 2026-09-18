@@ -5358,6 +5358,38 @@ def _evaluate_cluster_adjustment(
     return None  # "none" or an unrecognized type -- nothing to note
 
 
+def _dc_ids_to_names(text: str, candidates: List[Dict[str, Any]]) -> str:
+    """Deterministic guarantee (2026-09-18, explicit user request -- "DC id will be
+    change the DC name") that no DC_ID reaches the SE-facing Plan C reasoning.
+    PLAN_C_REASONING_STYLE already asks the model to name shops, but a prompt is a
+    request, not a guarantee -- run 1900 (2026-09-17) still read "DC 1000000971 ...".
+    Applied at assembly time, after the (possibly cached) model text and the reader/
+    audit notes are joined, so a cached pre-fix answer is repaired on replay too.
+    Replaces every candidate DC_ID -- optionally prefixed "DC", "DC#", "DC-", "DC:",
+    "DC_ID=" -- with that candidate's DC_Name; IDs with no name on file are left as-is
+    (never invents a name). One regex pass, longest IDs first, word-bounded, so an ID
+    that happens to be a prefix of another can't be half-replaced and a name containing
+    digits is never re-matched."""
+    if not text:
+        return text
+    names: Dict[str, str] = {}
+    for c in candidates:
+        dc = c.get("dc") or {}
+        dc_id = str(dc.get("DC_ID") or "").strip()
+        name = str(dc.get("DC_Name") or "").strip()
+        if dc_id and name and name != dc_id:
+            names[dc_id] = name
+    if not names:
+        return text
+    ids = "|".join(re.escape(i) for i in sorted(names, key=len, reverse=True))
+    # Group 1 = a currency marker: a rupee figure that happens to equal an ID is a
+    # number, not a shop, and stays untouched.
+    pattern = re.compile(
+        r"(?<!\w)(?<!\d\.)(Rs\.?\s*|₹\s*)?(?:DC(?:_ID)?\s*[#:=\-]?\s*)?(" + ids + r")(?!\w)(?!\.\d)", re.IGNORECASE,
+    )
+    return pattern.sub(lambda m: m.group(0) if m.group(1) else names[m.group(2)], text)
+
+
 def build_route_llm_reasoned(
     candidates: List[Dict[str, Any]], origin: Tuple[float, float], constants: "BusinessConstants",
     avg_speed_kmph: float = R3_2_DEFAULT_AVG_SPEED_KMPH,
@@ -5599,7 +5631,9 @@ def build_route_llm_reasoned(
             "stops": [], "dropped": dropped + [{"dc_id": c["dc"]["DC_ID"], "reason": "Not_Selected_By_LLM"} for c in with_coords],
             "total_distance_km": 0.0, "total_travel_min": 0.0, "total_visit_min": 0.0, "priority_score_captured": 0.0,
             "feasible": True, "infeasibility_reason": "",
-            "llm_reasoning": reasoning or "Model proposed no valid stops." + (" " + "; ".join(notes) if notes else ""),
+            "llm_reasoning": _dc_ids_to_names(
+                reasoning or "Model proposed no valid stops." + (" " + "; ".join(notes) if notes else ""), with_coords,
+            ),
         }
 
     visited_order = [by_id[dc_id] for dc_id in validated_ids]
@@ -5659,7 +5693,7 @@ def build_route_llm_reasoned(
         "total_visit_min": metrics["total_visit_min"], "priority_score_captured": metrics["priority_score_captured"],
         "feasible": feasible,
         "infeasibility_reason": "" if feasible else "Field_Time_Cap_Exceeded: even after trimming to the lowest-priority stop-set possible, the model's proposed route still exceeds a hard cap",
-        "llm_reasoning": full_reasoning,
+        "llm_reasoning": _dc_ids_to_names(full_reasoning, with_coords),
     }
 
 
