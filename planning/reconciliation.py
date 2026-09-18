@@ -33,7 +33,7 @@ are touched, so every entry point is idempotent and safe to call again any time.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +58,24 @@ MAX_PRIORITY_MULTIPLIER = 3.0
 
 class ReconciliationError(Exception):
     pass
+
+
+# A planned visit still counts if it happens up to this many days after its plan date
+# -- the "[plan_date, plan_date+2]" window every outcome pull in services.py uses
+# (_sql_visit_outcomes / _sql_order_outcomes / _sql_payment_outcomes). Must stay in
+# step with those queries.
+OUTCOME_WINDOW_DAYS = 2
+
+
+def outcome_window_open(plan_date: str, today: Optional[str] = None) -> bool:
+    """True while a visit for plan_date can still legitimately be logged and counted --
+    i.e. today is on or before plan_date + OUTCOME_WINDOW_DAYS. Outcomes scored inside
+    the window are PROVISIONAL and get re-evaluated on every run until it closes
+    (added 2026-09-18: yesterday's 517 tasks had been scored MISSED at 06:18 the next
+    morning and never looked at again, so a visit made that day or the next -- which
+    the window exists to allow -- could never be credited)."""
+    today_d = datetime.fromisoformat(today or timezone.now().date().isoformat()).date()
+    return today_d <= datetime.fromisoformat(plan_date).date() + timedelta(days=OUTCOME_WINDOW_DAYS)
 
 
 def _pending_tasks(plan_date: str, se_ids: Optional[List[str]], scope_type: Optional[str], scope_value: Optional[str], rebuild: bool = False):
@@ -203,14 +221,28 @@ def reconcile_plan_date(
     # 3. Escalation: a missed day that takes the pair to the threshold flags every task
     #    of that day (they're the same visit) -- visible in the outcome table, not a
     #    silent internal-only adjustment.
+    # Escalation is a pure function of the task's current state, so re-evaluating a
+    # task any number of times (open-window re-checks, rebuilds) lands on the same
+    # result: generation always writes priority_multiplier 1.0 (confirmed live across
+    # every never-reconciled task), so an escalated task is exactly ESCALATION_BOOST
+    # and a non-escalated one exactly 1.0 -- never compounded. The old code multiplied
+    # on every pass and detected "already escalated" from a text marker it then
+    # truncated to 255 chars along with the reason itself (DailyTask.reason_of_visit is
+    # declared max_length=255 but generation writes up to ~750 chars and SQLite doesn't
+    # enforce it), so the marker vanished, the boost compounded to 3.0 on 265 tasks,
+    # and the SE's real reason text was cut off. No truncation here either.
     for task in tasks:
         key = (task.se_id, task.dc_id)
         length = streak_len.get(key, 0)
+        base_reason = (task.reason_of_visit or "").split(" [ESCALATED")[0]
         if day_best.get(key) == DailyTask.OutcomeStatus.MISSED and length >= ESCALATION_THRESHOLD:
-            task.priority_multiplier = round(min(task.priority_multiplier * ESCALATION_BOOST, MAX_PRIORITY_MULTIPLIER), 2)
-            base_reason = task.reason_of_visit.split(" [ESCALATED")[0]
-            task.reason_of_visit = (base_reason + f" [ESCALATED: missed {length}x running]")[:255]
-            summary["escalated"] += 1
+            if task.priority_multiplier < ESCALATION_BOOST:
+                summary["escalated"] += 1
+            task.priority_multiplier = ESCALATION_BOOST
+            task.reason_of_visit = base_reason + f" [ESCALATED: missed {length}x running]"
+        else:
+            task.priority_multiplier = 1.0
+            task.reason_of_visit = base_reason
 
     # batch_size=500 -- a STATE-scope day is thousands of tasks; one unbounded bulk
     # query at that size risks the DB's own parameter-count limits.
@@ -291,26 +323,37 @@ def rebuild_streaks(se_ids: Optional[List[str]] = None) -> int:
 
 
 def pending_plan_dates(*, before_date: str, se_ids: Optional[List[str]] = None, rebuild: bool = False) -> List[str]:
-    """Distinct past plan_dates that still have UNKNOWN DC-visit tasks (for these SEs, or
-    network-wide), oldest first -- the work list for reconcile_past_tasks and the
-    Tracking dashboard's "N tasks can be reconciled now" figure. rebuild=True lists
+    """Distinct past plan_dates with work to do (for these SEs, or network-wide), oldest
+    first -- the work list for reconcile_past_tasks and the Tracking dashboard's "N
+    tasks can be reconciled now" figure. A date qualifies when it still has UNKNOWN
+    DC-visit tasks, OR its outcome window is still open (every task of such a date is
+    provisional and gets re-evaluated -- see outcome_window_open). rebuild=True lists
     every past date with any DC-visit task instead."""
     qs = DailyTask.objects.filter(plan_date__lt=before_date).exclude(dc_id="")
-    if not rebuild:
-        qs = qs.filter(outcome_status=DailyTask.OutcomeStatus.UNKNOWN)
     if se_ids is not None:
         qs = qs.filter(se_id__in=se_ids)
-    return sorted({d.isoformat() if hasattr(d, "isoformat") else str(d) for d in qs.values_list("plan_date", flat=True).distinct()})
+    all_dates = {d.isoformat() if hasattr(d, "isoformat") else str(d) for d in qs.values_list("plan_date", flat=True).distinct()}
+    if rebuild:
+        return sorted(all_dates)
+    unknown = {
+        d.isoformat() if hasattr(d, "isoformat") else str(d)
+        for d in qs.filter(outcome_status=DailyTask.OutcomeStatus.UNKNOWN).values_list("plan_date", flat=True).distinct()
+    }
+    open_window = {d for d in all_dates if outcome_window_open(d, before_date)}
+    return sorted(unknown | open_window)
 
 
 def reconcile_past_tasks(*, client, before_date: Optional[str] = None, se_ids: Optional[List[str]] = None, rebuild: bool = False) -> List[Dict[str, Any]]:
-    """Reconciles every past plan_date with pending tasks (for these SEs, or everything
-    when se_ids is None), one live pull set per date. Returns the per-date summaries.
-    rebuild=True re-scores every past date and then recomputes every streak from the
-    corrected history."""
+    """Reconciles every past plan_date with work to do (for these SEs, or everything
+    when se_ids is None), one live pull set per date. A date whose outcome window is
+    still open is re-evaluated in full (rebuild semantics for that date) so a visit
+    logged on day+1 or day+2 upgrades a provisional MISSED; a date whose window has
+    closed only has its still-UNKNOWN tasks scored, and is then final. Returns the
+    per-date summaries. rebuild=True re-scores every past date regardless, and then
+    recomputes every streak from the corrected history."""
     before_date = before_date or timezone.now().date().isoformat()
     summaries = [
-        reconcile_plan_date(d, client=client, se_ids=se_ids, rebuild=rebuild)
+        reconcile_plan_date(d, client=client, se_ids=se_ids, rebuild=rebuild or outcome_window_open(d, before_date))
         for d in pending_plan_dates(before_date=before_date, se_ids=se_ids, rebuild=rebuild)
     ]
     if rebuild:

@@ -171,6 +171,11 @@ def _outcomes(runs, tasks, selected: Optional[set] = None) -> Dict[str, Any]:
     total = len(visits)
     due = {k: s for k, s in visits.items() if k[2] < today}
     n_due = len(due)
+    # Due visits whose outcome window hasn't closed: their status is provisional and
+    # is re-checked on every reconciliation until plan_date + OUTCOME_WINDOW_DAYS
+    # passes (see planning.reconciliation.outcome_window_open).
+    from .reconciliation import outcome_window_open
+    n_window_open = sum(1 for k in due if outcome_window_open(k[2], today))
     reconciled = {k: s for k, s in due.items() if s != "UNKNOWN"}
     n_rec = len(reconciled)
     breakdown: Dict[str, int] = {}
@@ -213,6 +218,7 @@ def _outcomes(runs, tasks, selected: Optional[set] = None) -> Dict[str, Any]:
         "Tasks_Planned": total,
         "Tasks_Due": n_due,
         "Tasks_Not_Yet_Due": total - n_due,
+        "Tasks_Window_Open": n_window_open,
         "Task_Rows": task_rows,
         "Tasks_Reconciled": n_rec,
         "Reconciliation_Rate_Pct": _pct(n_rec, n_due),
