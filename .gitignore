@@ -2,6 +2,8 @@ venv/
 __pycache__/
 *.pyc
 db.sqlite3
+db.sqlite3-shm
+db.sqlite3-wal
 .env
 .DS_Store
 output/google_route_cache.json

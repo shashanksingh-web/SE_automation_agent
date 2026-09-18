@@ -52,7 +52,7 @@ except ImportError:  # pragma: no cover - degrade gracefully, see the Google Map
 
 try:
     import openpyxl
-except ImportError:  # pragma: no cover - degrade gracefully, see load_top_dc_allowlist
+except ImportError:  # pragma: no cover - degrade gracefully, see load_config()'s Source 5 workbook read
     openpyxl = None
 
 # Moved to planning/agent.py 2026-09-18 (restructure: "external script" folded into
@@ -290,14 +290,10 @@ PLAN_GENERATION_WEEKLY_OFF_DAY = "Sunday"  # one of Monday..Sunday, or "None" to
 CONTACT_ATTEMPT_MODE = "visit_only"  # one of visit_only/contact_only/visit_plus_contact
 
 DC_MASTER_CSV = Path(os.environ.get("SE_AGENT_DC_MASTER_CSV", BASE_DIR / "DC_RAnk.csv"))
-# Added 2026-09-04, explicit user request -- an independent allowlist on top of
-# DC_RAnk.csv's own Rank<=6000 eligibility (see BusinessConstants.max_eligible_rank),
-# not a replacement for it. Confirmed live: this file has NO Rank/Cohort/Score columns
-# at all (just Partner Id/Name/Sales Rep/Node/State/Dehaat Club Scheme Slab/Prize/
-# Sales) -- it restricts WHICH DCs are eligible, DC_RAnk.csv still decides HOW they're
-# ranked among themselves. 3,143 rows / 2,517 unique Partner Ids as of 2026-09-04 (626
-# duplicate rows, harmless for a set-membership check).
-TOP_DC_LIST_XLSX = Path(os.environ.get("SE_AGENT_TOP_DC_LIST_XLSX", BASE_DIR / "updated TOP DC list.xlsx"))
+# TOP_DC_LIST_XLSX / load_top_dc_allowlist() (the static 'updated TOP DC list.xlsx'
+# allowlist, added 2026-09-04) removed 2026-09-18 -- see apply_dc_exclusion_rules'
+# own docstring for why (standardized on the CSV-uploaded, database-backed Program DC
+# Selection rule engine as the one DC-selection allowlist mechanism).
 # Moved into a subfolder 2026-08-06 -- note the trailing space in the folder name, that's
 # literal (confirmed via `ls`), not a typo to "fix".
 CONFIG_DIR = Path(os.environ.get("SE_AGENT_CONFIG_DIR", BASE_DIR / "config and parameter "))
@@ -1509,45 +1505,6 @@ def load_dc_master(path: Path = DC_MASTER_CSV) -> Tuple[Table, Exceptions]:
     return out, exc
 
 
-def load_top_dc_allowlist(path: Path = TOP_DC_LIST_XLSX) -> Tuple[Optional[Set[str]], Exceptions]:
-    """Added 2026-09-04, explicit user request -- restricts the DC universe to only the
-    Partner Ids listed in 'updated TOP DC list.xlsx', independent of (on top of, not
-    instead of) DC_RAnk.csv's own Rank<=6000 eligibility -- see apply_dc_exclusion_
-    rules()'s new top_dc_allowlist check.
-
-    Returns (None, exc) -- NOT an empty set -- when the file is missing or fails to
-    parse, per direct instruction ("fail open"): apply_dc_exclusion_rules() treats None
-    as "no allowlist restriction this run" rather than "everyone fails," so one missing/
-    renamed/corrupted file can't silently zero out DC selection for the whole network.
-    A loud DC_Top_List_Missing/DC_Top_List_Unreadable exception is still flagged either
-    way, so the degraded run is never silent about it."""
-    exc = Exceptions(utc_now_iso())
-    if openpyxl is None:
-        exc.flag("openpyxl", "Source2b", "DC_Top_List_Unreadable", "openpyxl not installed -- Top DC allowlist restriction skipped this run, every Rank-eligible DC treated as eligible")
-        return None, exc
-    if not path.exists():
-        exc.flag(str(path), "Source2b", "DC_Top_List_Missing", f"{path.name} not found -- Top DC allowlist restriction skipped this run, every Rank-eligible DC treated as eligible")
-        return None, exc
-    try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        ws = wb[wb.sheetnames[0]]
-        rows = ws.iter_rows(min_row=2, values_only=True)
-        allowlist: Set[str] = set()
-        for row in rows:
-            dc_id = normalize_id(row[0]) if row and row[0] is not None else None
-            if dc_id:
-                allowlist.add(dc_id)
-        wb.close()
-    except Exception as e:
-        exc.flag(str(path), "Source2b", "DC_Top_List_Unreadable", f"{type(e).__name__}: {e} -- Top DC allowlist restriction skipped this run, every Rank-eligible DC treated as eligible")
-        return None, exc
-    if not allowlist:
-        exc.flag(str(path), "Source2b", "DC_Top_List_Empty", f"{path.name} parsed with zero valid Partner Ids -- Top DC allowlist restriction skipped this run")
-        return None, exc
-    exc.ok("DC_Top_List_Loaded")
-    return allowlist, exc
-
-
 DC_SELECTION_CRITERIA_KEYS = ("rank_range", "cohort", "active_status", "overdue")
 
 
@@ -1756,44 +1713,48 @@ def apply_dc_exclusion_rules(
     and still drives Step 5's Cohort/Total_Score selection ordering; only its Rank
     column's eligibility role is gone.
 
-    top_dc_allowlist (2026-09-04, explicit user request, "use that list only" then "go
-    to first updated TOP DC list file"): checked FIRST, before every other gate below.
-    FAIL-CLOSED, not fail-open: if the allowlist itself fails to load this run (None),
-    every DC is excluded rather than falling back to Rank -- a load failure is now loud
-    (zero tasks network-wide that run) rather than silently substituting a different,
-    unconfirmed-for-this-purpose rule.
+    top_dc_allowlist / program_dc_gate_active (STANDARDIZED 2026-09-18, explicit user
+    request -- "standardize the rule engine processing (only csv uploader needed but
+    rule engine work with database)": the static 'updated TOP DC list.xlsx' allowlist
+    (load_top_dc_allowlist, added 2026-09-04) is removed entirely. It was the one
+    remaining DC-selection mechanism that was neither CSV-uploaded nor database-backed,
+    and its own computation here was silently discarded anyway wherever it mattered --
+    planning.services.generate_plan_for_scope (the only path that produces a real,
+    served PlanRun) always recomputes this gate itself against ProgramDCSelection before
+    anything downstream reads it. The standalone CLI's own run_pipeline() -- which
+    cannot reach ProgramDCSelection at all, it's a Django database model and this file
+    stays intentionally Django-free -- never had its Excel-gated In_Scope_Flag/
+    Exceptions_Report values consumed by anything either (output/SE_Daily_Plan.json,
+    the only place they fed into, has no reader anywhere in this repo).
+
+    program_dc_gate_active=True means `top_dc_allowlist` was computed by
+    planning.dc_selection's rule engine (an admin-configured AND/OR filter over
+    dc_datamart+DC_RAnk.csv -- the CSV an admin uploads via upload_rank_csv, database
+    is genuinely the master here, not this file) -- membership is checked and flagged
+    (Program_DC_Selection_Unavailable/DC_Not_In_Program_Selection) the same way it
+    always has. False means no Program DC Selection restriction applies at this layer
+    AT ALL (the standalone CLI's only real caller convention now) -- every DC passes
+    this particular gate, nothing flagged either way, rather than the old fail-closed-
+    on-a-missing-Excel-file behavior. False also still disables the separate
+    dc_active_by_id check below (see that param's own docstring) -- unrelated to this
+    change, that logic already correctly runs whenever real dc_active_by_id data is
+    available, independent of which allowlist mechanism (now: only one) is active.
 
     dc_active_by_id (2026-09-07, explicit user request, "first go top dc list than
-    active in those set"): checked SECOND, only within the Top-DC-list-eligible set --
-    a DC must be marked active in dc_datamart (is_active='true') to be selected at all.
-    Live-verified (2026-09-07): of the 2,517 DCs in the Top DC list, 2,223 (88%) are
-    active, 294 (12%) are not, and every single one has a dc_datamart row (zero
-    missing). A DC with NO dc_datamart row at all is treated as not-active (fails
-    toward exclusion, same fail-closed philosophy as the Top DC list itself) rather than
-    silently passed through -- flagged with its own distinct reason code so a future
-    case where this DOES occur is visible, not silently indistinguishable from a
-    confirmed-inactive DC. This is separate from (and upstream of) dc_datamart's
-    existing is_active filter inside normalize_sales_transactions, which only ever
-    withheld Outstanding-financial data for an inactive DC -- it never excluded the DC
-    from selection entirely the way this does.
-
-    program_dc_gate_active (2026-09-08, explicit user request, "in admin control panel
-    we have select the dcs for this whole program" -- dc_datamart as master, DC_RAnk.csv-
-    sourced Rank/Cohort via an admin-uploaded file, a per-criterion AND/OR filter over
-    rank range/cohort/active-status/overdue, plus manual include/exclude): when True,
-    `top_dc_allowlist` was computed by planning.dc_selection.compute_program_dc_allowlist
-    (an admin-configured rule over dc_datamart+DC_RAnk.csv), NOT the static 'updated TOP
-    DC list.xlsx' -- the two membership checks below (Program_DC_Selection_Unavailable/
-    DC_Not_In_Program_Selection) replace Top_DC_List_Unavailable/DC_Not_In_Top_List's
-    reason codes so exception logs can tell which mechanism excluded a DC. It also
-    disables the separate dc_active_by_id check below entirely: whether "active" gates
-    eligibility is now the admin's own per-criterion choice inside the rule itself (it
-    may already be folded into program_dc_gate's own matching, or deliberately left out),
-    so the old hardcoded mandatory active-check would either double-gate or wrongly
-    override that choice. False (the default, and the behavior for every caller until an
-    admin actually configures a Program DC Selection) reproduces this function's exact
-    pre-2026-09-08 behavior -- Excel-based top_dc_allowlist plus the mandatory active
-    check, unchanged."""
+    active in those set"): a DC must be marked active in dc_datamart (is_active='true')
+    to be selected at all, whenever real dc_active_by_id data is available and
+    program_dc_gate_active is False. A DC with NO dc_datamart row at all is treated as
+    not-active (fails toward exclusion) rather than silently passed through -- flagged
+    with its own distinct reason code so a future case where this DOES occur is
+    visible, not silently indistinguishable from a confirmed-inactive DC. This is
+    separate from (and upstream of) dc_datamart's existing is_active filter inside
+    normalize_sales_transactions, which only ever withheld Outstanding-financial data
+    for an inactive DC -- it never excluded the DC from selection entirely the way
+    this does. program_dc_gate_active=True disables this check entirely: whether
+    "active" gates eligibility is then the admin's own per-criterion choice inside the
+    rule itself (it may already be folded into the rule's own matching, or deliberately
+    left out), so this hardcoded mandatory check would either double-gate or wrongly
+    override that choice."""
     # BUG FIXED 2026-09-07 (caught in a self-audit, before any real run hit it): the
     # original version collapsed dc_active_by_id=None (the dc_datamart QUERY ITSELF
     # failed -- e.g. a transient Redshift timeout) into the exact same {} used for "the
@@ -1814,7 +1775,12 @@ def apply_dc_exclusion_rules(
         if last_visit:
             days_since_visit = (today_dt - datetime.fromisoformat(last_visit)).days
         too_recent = days_since_visit is not None and days_since_visit < constants.min_days_since_last_visit
-        top_list_eligible = top_dc_allowlist is not None and dc["DC_ID"] in top_dc_allowlist
+        # program_dc_gate_active=False (the standalone CLI's only real caller
+        # convention now the Excel allowlist is gone) means no Program DC Selection
+        # restriction applies at this layer at all -- top_list_eligible is
+        # unconditionally True, nothing flagged either way, rather than treating an
+        # unevaluated gate as a failed/missing one.
+        top_list_eligible = (not program_dc_gate_active) or (top_dc_allowlist is not None and dc["DC_ID"] in top_dc_allowlist)
         if program_dc_gate_active:
             if top_dc_allowlist is None:
                 exc.flag(
@@ -1830,19 +1796,6 @@ def apply_dc_exclusion_rules(
                 )
             else:
                 exc.ok("DC_Not_In_Program_Selection")
-        elif top_dc_allowlist is None:
-            exc.flag(
-                dc["DC_ID"], "Source2b", "Top_DC_List_Unavailable",
-                "'updated TOP DC list.xlsx' failed to load this run -- excluded from all agents' "
-                "DC selection (fail-closed, no Rank<=6000 fallback)",
-            )
-        elif not top_list_eligible:
-            exc.flag(
-                dc["DC_ID"], "Source2b", "DC_Not_In_Top_List",
-                "DC_ID not present in 'updated TOP DC list.xlsx' -- excluded from all agents' DC selection",
-            )
-        else:
-            exc.ok("DC_Not_In_Top_List")
         if not active_check_enabled:
             active_eligible = True
             if top_list_eligible and not program_dc_gate_active:
@@ -6911,8 +6864,13 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
         if v["DC_ID"] and v["Date"]:
             if v["DC_ID"] not in last_visit_by_dc or v["Date"] > last_visit_by_dc[v["DC_ID"]]:
                 last_visit_by_dc[v["DC_ID"]] = v["Date"]
-    top_dc_allowlist, top_dc_exc = load_top_dc_allowlist()
-    merge(top_dc_exc)
+    # No Program DC Selection allowlist at this layer -- run_pipeline() (the standalone
+    # CLI) has no Django/database access to evaluate one, and its own In_Scope_Flag/
+    # Exceptions_Report output has no reader that would need it anyway (see
+    # apply_dc_exclusion_rules' own docstring). apply_dc_exclusion_rules' default
+    # program_dc_gate_active=False + no top_dc_allowlist below means every DC passes
+    # this particular gate; the other checks (Legal_Hold, recency, active-status) still
+    # apply normally.
     # dc_active_by_id (2026-09-07, explicit user request) -- live["Outstanding_3d"] is
     # dc_datamart's own raw rows, already fetched earlier in this run (same source
     # normalize_sales_transactions() consumes below for dc_financials), just read here
@@ -6937,7 +6895,7 @@ def run_pipeline(output_dir: Path, plan_date: Optional[str] = None) -> Dict[str,
     excl_exc = Exceptions(run_ts)
     apply_dc_exclusion_rules(
         dc_master, excl_exc, constants, last_visit_by_dc, plan_date,
-        top_dc_allowlist=top_dc_allowlist, dc_active_by_id=dc_active_by_id,
+        dc_active_by_id=dc_active_by_id,
     )
     merge(excl_exc)
 

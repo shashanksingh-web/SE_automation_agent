@@ -3464,23 +3464,20 @@ def generate_plan_for_scope(
                     dc_overdue_by_id[row_dc_id] = overdue
 
     # Program DC Selection (2026-09-08, explicit user request -- "in admin control panel
-    # we have select the dcs for this whole program") supersedes the Excel-based Top DC
-    # list once an admin has actually configured a rule/manual list -- see
-    # se_daily_plan_agent.apply_dc_exclusion_rules' program_dc_gate_active docstring.
-    # get_selection_config() is a plain DB read (no live query); evaluate_dc_selection_
-    # rule reuses the scope-filtered dc_active_by_id/dc_overdue_by_id above rather than
-    # a second, unscoped dc_datamart pull.
+    # we have select the dcs for this whole program") is the ONE DC-selection allowlist
+    # mechanism now (the Excel-based Top DC list fallback was removed 2026-09-18 -- see
+    # se_daily_plan_agent.apply_dc_exclusion_rules' own docstring for why). No rule
+    # configured means no restriction applies here at all -- every DC passes this gate,
+    # not a fallback to a different mechanism. get_selection_config() is a plain DB
+    # read (no live query); evaluate_dc_selection_rule reuses the scope-filtered
+    # dc_active_by_id/dc_overdue_by_id above rather than a second, unscoped
+    # dc_datamart pull.
     selection_config = dc_selection.get_selection_config()
-    program_dc_allowlist = agent.evaluate_dc_selection_rule(
+    top_dc_allowlist = agent.evaluate_dc_selection_rule(
         selection_config["rules"], scoped_dcs, dc_active_by_id, dc_overdue_by_id,
         selection_config["manual_includes"], selection_config["manual_excludes"],
     )
-    program_dc_gate_active = program_dc_allowlist is not None
-    if program_dc_gate_active:
-        top_dc_allowlist = program_dc_allowlist
-    else:
-        top_dc_allowlist, top_dc_exc = agent.load_top_dc_allowlist()
-        run_exceptions.extend({"record_id": r["Record_ID"], "source": r["Source"], "reason_code": r["Reason_Code"], "detail": r["Detail"]} for r in top_dc_exc.rows)
+    program_dc_gate_active = top_dc_allowlist is not None
 
     excl_exc = agent.Exceptions(agent.utc_now_iso())
     agent.apply_dc_exclusion_rules(
