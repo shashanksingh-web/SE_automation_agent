@@ -140,6 +140,141 @@ def _today_zone_index(se_id: str, plan_date) -> Optional[Tuple[int, int]]:
     return days_since_anchor % row.num_zones, row.num_zones
 
 
+def _dc_display_name(candidate: Dict[str, Any]) -> str:
+    return str(candidate["dc"].get("DC_Name") or candidate["dc"]["DC_ID"])
+
+
+def _enforce_distinct_routes(
+    model_results: Dict[str, Dict[str, Any]], filtered: List[Dict[str, Any]], origin: Tuple[float, float],
+) -> List[Tuple[str, str]]:
+    """Guarantee (added 2026-09-18, explicit user request -- "there always must be
+    distinct route plan like plan a/b/c") that no two of a family's 3 routes are the
+    same route. Runs on every family (Plan A Models 1-3, Plan B's 3 routes, Plan C's 3
+    LLM calls) right after the builders, BEFORE the Google Directions overlay / ROI
+    attach so a changed route gets those computed for what's actually kept.
+
+    The builders already TRY to differ (exclude_stop_sets + _distinctness_swap), but
+    that swap only works when a spare eligible DC exists and its swapped route fits the
+    caps; otherwise the duplicate was kept and merely logged (Insufficient_Candidates_
+    For_3_Plans) -- confirmed live 2026-09-18 (sushil.ojha, 2 eligible candidates, all
+    3 Plan C routes identical). Routes are compared as ORDERED DC_ID tuples, the same
+    definition the GR-R10 check below uses: a different visit order of the same stops is
+    a different drive and counts as distinct. Route 1 (each family's default) is always
+    kept as built; a later route that repeats an earlier one is changed by the first
+    rung of this ladder that yields an unseen, within-caps route:
+      1. swap its lowest-priority stop for the best excluded eligible DC (rank order),
+      2. reverse the visit order,
+      3. rotate the loop (start from a different stop), both directions,
+      4. drop the lowest-priority stop (repeatedly) -- a shorter, different route.
+    Only a pool too thin for any of that (a single eligible DC: reversing a 1-stop loop
+    is the same loop, dropping it is no route) leaves the duplicate in place, and the
+    honest GR-R7 note below still says so. Every change is reported back as a plain-
+    language, DC-NAME (never DC_ID) note per plan_type for the exceptions list / the
+    route card. Mutates the affected result dicts in place (stops/totals/dropped)."""
+    by_id = {c["dc"]["DC_ID"]: c for c in filtered}
+    speed = agent.R3_2_DEFAULT_AVG_SPEED_KMPH
+    seen: List[Tuple[str, ...]] = []
+    notes: List[Tuple[str, str]] = []
+
+    def _try(order: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not order or tuple(c["dc"]["DC_ID"] for c in order) in seen:
+            return None
+        metrics = agent._route_metrics(order, origin, speed)
+        return metrics if agent._within_caps(metrics) else None
+
+    for plan_type, result in model_results.items():
+        seq = tuple(s["row"].DC_ID for s in result["stops"])
+        if not seq or seq not in seen or any(dc_id not in by_id for dc_id in seq):
+            seen.append(seq)
+            continue
+        order = [by_id[dc_id] for dc_id in seq]
+        lowest = min(order, key=lambda c: c["priority_score"])
+        low_idx = order.index(lowest)
+        others = [c for c in order if c is not lowest]
+        chosen: Optional[Tuple[Dict[str, Any], str, List[Dict[str, Any]], Optional[Dict[str, Any]], str]] = None
+
+        # 1. Swap in a different DC -- same spare-candidate idea as _distinctness_swap,
+        #    but re-verified against caps right here.
+        excluded = sorted((c for c in filtered if c["dc"]["DC_ID"] not in seq), key=lambda c: -c["priority_score"])
+        for alt in excluded:
+            for trial in (others[:low_idx] + [alt] + others[low_idx:], others + [alt]):
+                metrics = _try(trial)
+                if metrics:
+                    chosen = (
+                        metrics,
+                        f"{_dc_display_name(alt)} was put in place of {_dc_display_name(lowest)} so this route "
+                        "differs from the other route options.",
+                        [lowest], alt, "Route_Diversity_Swap",
+                    )
+                    break
+            if chosen:
+                break
+        # 2. Reverse the loop.
+        if chosen is None and len(order) >= 2:
+            metrics = _try(order[::-1])
+            if metrics:
+                chosen = (metrics, "The visit order was reversed so this route differs from the other route options.", [], None, "")
+        # 3. Rotate the loop -- start from a different shop.
+        if chosen is None and len(order) >= 3:
+            for i in range(1, len(order)):
+                rotated = order[i:] + order[:i]
+                for trial in (rotated, rotated[::-1]):
+                    metrics = _try(trial)
+                    if metrics:
+                        chosen = (
+                            metrics,
+                            f"The route starts from {_dc_display_name(trial[0])} instead so it differs from the "
+                            "other route options.", [], None, "",
+                        )
+                        break
+                if chosen:
+                    break
+        # 4. Drop the lowest-priority stop(s) -- a shorter, different route.
+        if chosen is None:
+            trial, removed = list(order), []
+            while trial and chosen is None:
+                low = min(trial, key=lambda c: c["priority_score"])
+                trial = [c for c in trial if c is not low]
+                removed.append(low)
+                metrics = _try(trial)
+                if metrics:
+                    names = ", ".join(_dc_display_name(c) for c in removed)
+                    chosen = (
+                        metrics,
+                        f"{names} {'was' if len(removed) == 1 else 'were'} left out so this route differs from the "
+                        "other route options.", removed, None, "Route_Diversity_Trim",
+                    )
+        if chosen is None:
+            seen.append(seq)  # genuinely impossible -- the GR-R7 note downstream reports it
+            continue
+
+        metrics, note, removed, swapped_in, drop_reason = chosen
+        result["stops"] = metrics["stops"]
+        for key in ("total_distance_km", "total_travel_min", "total_visit_min", "priority_score_captured"):
+            result[key] = metrics[key]
+        dropped = list(result.get("dropped", []))
+        if swapped_in is not None:
+            dropped = [d for d in dropped if d["dc_id"] != swapped_in["dc"]["DC_ID"]]
+        dropped += [{"dc_id": c["dc"]["DC_ID"], "reason": drop_reason} for c in removed]
+        result["dropped"] = dropped
+        if not result.get("feasible", True):
+            # The replacement passed _within_caps, so an earlier real infeasibility no
+            # longer applies (Plan B's informational Exceptional-DC note has feasible=True
+            # and is left untouched).
+            result["feasible"] = True
+            result["infeasibility_reason"] = ""
+        if result.get("llm_reasoning"):
+            # Plan C: keep the SE-facing reasoning consistent with the route it now
+            # describes (same plain-language reader-note convention as
+            # build_route_llm_reasoned's own trim/swap notes), ahead of any audit bracket.
+            text = result["llm_reasoning"]
+            head, sep, tail = text.partition(" [Audit:")
+            result["llm_reasoning"] = head.rstrip() + " " + note + sep + tail
+        seen.append(tuple(s["row"].DC_ID for s in result["stops"]))
+        notes.append((plan_type, note))
+    return notes
+
+
 def generate_route_plans_for_se(
     plan_run: PlanRun,
     se_id: str,
@@ -377,6 +512,14 @@ def generate_route_plans_for_se(
         }
         default_plan_type = RoutePlan.PlanType.PRIORITY_MAX
 
+    # Family-wide distinctness guarantee -- see _enforce_distinct_routes. Before the
+    # Google overlay / ROI attach below so a changed route gets those for what's kept.
+    for plan_type, note in _enforce_distinct_routes(model_results, filtered, origin):
+        exceptions.append({
+            "source": "RoutingAgent", "reason_code": "Route_Diversity_Enforced",
+            "detail": f"{who} @ {plan_date} ({plan_type}): {note}",
+        })
+
     # Google Maps route-accuracy overlay (added 2026-09-10, explicit user request).
     # Distinct from the candidate-pool priming above: that one feeds real distances into
     # SELECTION (which stops/order win); this one re-fetches the real Directions-API
@@ -449,7 +592,11 @@ def generate_route_plans_for_se(
         converged_note = None
         exceptions.append({
             "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
-            "detail": f"{who} @ {plan_date}: only {len(non_empty_sets)} genuinely distinct stop set(s) across {family} ({len(filtered)} eligible candidates -- pool too small/uniform for real variety)",
+            "detail": (
+                f"{who} @ {plan_date}: only {len(non_empty_sets)} genuinely distinct route(s) possible across {family} "
+                f"({len(filtered)} eligible candidate(s) -- too few to make 3 different routes even after swapping, "
+                "re-ordering and trimming)"
+            ),
         })
     else:
         converged_note = None
