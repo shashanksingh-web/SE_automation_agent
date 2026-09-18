@@ -57,7 +57,17 @@ COPY --chown=appuser:appuser . .
 # image -- these are just the mount points, created here so the volume mounts (and the
 # app writing into them before a mount is attached, e.g. during a `docker build`-only
 # smoke test) don't fail on a missing directory.
-RUN mkdir -p /app/output /app/logs && chown -R appuser:appuser /app/output /app/logs && \
+#
+# chown /app itself (not just its contents): WORKDIR created /app as root before
+# anything else ran, and COPY --chown only sets ownership on the copied entries, not
+# retroactively on the pre-existing directory they landed in -- confirmed live, this
+# left appuser able to read/modify existing files but NOT create new ones directly in
+# /app, which broke celery beat (it writes its celerybeat-schedule dbm file to the
+# current working directory): `PermissionError: [Errno 13] Permission denied:
+# 'celerybeat-schedule'`.
+RUN mkdir -p /app/output /app/logs && \
+    chown appuser:appuser /app && \
+    chown -R appuser:appuser /app/output /app/logs && \
     chmod +x docker-entrypoint.sh
 
 USER appuser
