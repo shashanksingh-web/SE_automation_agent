@@ -138,14 +138,15 @@ explicitly says so rather than silently shipping partial data as complete.
 
 ### Live infra
 
-Two possible clients, auto-selected by `get_live_client()`:
+One client, `RedshiftDirectClient` (psycopg2), returned by `get_client()` --
+direct connection, bypasses Metabase's REST/MCP layer entirely. This project used to
+also have a `MetabaseClient` fallback (Metabase's REST API, `METABASE_URL` +
+`METABASE_API_KEY`) for when direct Redshift access wasn't configured; removed
+2026-09-18 since it was never actually reachable in this project's real `.env` (no
+`METABASE_URL`/`METABASE_API_KEY` were ever set here) -- direct Redshift is, and always
+has been in practice, the only live-data path this deployment uses.
 
-1. **`RedshiftDirectClient`** (psycopg2, preferred when configured) -- direct connection,
-   bypasses Metabase's REST/MCP layer entirely.
-2. **`MetabaseClient`** -- fallback, hits Metabase's REST API (`METABASE_URL` +
-   `METABASE_API_KEY`, a Metabase Admin API key).
-
-Direct Redshift is what's wired up in this deployment. Both `db_id=41` (Redshift proper)
+Both `db_id=41` (Redshift proper)
 and `db_id=31` (input-backend Postgres, database name `input_backend_db`) live on the
 same physical cluster/host, just different database names on that connection.
 

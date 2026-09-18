@@ -47,7 +47,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 try:
     import requests
-except ImportError:  # pragma: no cover - degrade gracefully, see MetabaseClient
+except ImportError:  # pragma: no cover - degrade gracefully, see the Google Maps/Gemini call sites below
     requests = None
 
 try:
@@ -99,8 +99,8 @@ LOCUS_DB_ID = int(os.environ.get("SE_AGENT_LOCUS_DB_ID", "27"))                #
 # DCs for both Plan A and Plan B, NOT the candidate-pool-wide clustering/construction
 # search (that stays on the cheap Haversine estimate, same reasoning as every other
 # live-data source in this module: enabled purely by the key's presence, same
-# `configured`-property convention as MetabaseClient/RedshiftDirectClient above --
-# no separate feature flag). See apply_google_route_accuracy()'s own docstring.
+# `configured`-property convention as RedshiftDirectClient above -- no separate
+# feature flag). See apply_google_route_accuracy()'s own docstring.
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED = bool(GOOGLE_MAPS_API_KEY) and requests is not None
 
@@ -138,7 +138,7 @@ GOOGLE_DISTANCE_MATRIX_CACHE_PATH = Path(os.environ.get("SE_AGENT_GOOGLE_MATRIX_
 # Plan C -- LLM-Reasoned routing (added 2026-09-11, explicit user request -- "create the
 # separate system where system use anthropic api to create the route not the system
 # logic with reason why these route suggested"). Same `configured`-by-presence
-# convention as GOOGLE_MAPS_API_KEY/MetabaseClient above -- no separate feature flag.
+# convention as GOOGLE_MAPS_API_KEY/RedshiftDirectClient above -- no separate feature flag.
 # See build_route_llm_reasoned's own docstring for the full design (what the model
 # decides vs. what the system independently verifies).
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -363,45 +363,6 @@ class MetabaseNotConfigured(RuntimeError):
     """Raised when a live source is requested but METABASE_URL/METABASE_API_KEY are unset."""
 
 
-class MetabaseClient:
-    """Thin wrapper over the Metabase REST API (POST /api/dataset, native query).
-
-    This is the standalone-script equivalent of the live Metabase access already used to
-    confirm database ids 41 (Redshift), 31 (input-backend) and 4 (kheti) against this
-    instance. Auth is an API key (Metabase Admin > API Keys), passed via the
-    x-api-key header.
-    """
-
-    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
-        self.base_url = (base_url or os.environ.get("METABASE_URL", "")).rstrip("/")
-        self.api_key = api_key or os.environ.get("METABASE_API_KEY", "")
-
-    @property
-    def configured(self) -> bool:
-        return bool(self.base_url and self.api_key and requests is not None)
-
-    def execute_sql(self, database_id: int, sql: str) -> Table:
-        if not self.configured:
-            reason = "requests not installed" if requests is None else "METABASE_URL/METABASE_API_KEY not set"
-            raise MetabaseNotConfigured(f"Metabase source unavailable ({reason})")
-        resp = requests.post(
-            f"{self.base_url}/api/dataset",
-            headers={"x-api-key": self.api_key, "Content-Type": "application/json"},
-            json={"type": "native", "native": {"query": sql}, "database": database_id},
-            timeout=180,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        data = payload.get("data", {})
-        cols = [c["name"] for c in data.get("cols", [])]
-        return [dict(zip(cols, row)) for row in data.get("rows", [])]
-
-    def close(self) -> None:
-        """No persistent connection to release -- each execute_sql() is a standalone
-        HTTP request. No-op kept so callers can treat both client types identically."""
-        pass
-
-
 class RedshiftDirectClient:
     """Direct psycopg2 connection to the Redshift cluster behind Metabase's 'Redshift'
     (db_id 41) and 'input-backend' (db_id 31) sources -- bypasses Metabase's REST/MCP API
@@ -566,15 +527,20 @@ class RedshiftDirectClient:
         self._connections.clear()
 
 
-def get_client():
-    """Prefer a direct Redshift connection (REDSHIFT_HOST/USER/PASSWORD) over the Metabase
-    REST API (METABASE_URL/METABASE_API_KEY) when both could apply -- direct access needs
-    no Metabase API key and was confirmed working end-to-end 2026-08-04. Falls back to
-    MetabaseClient so existing METABASE_URL/METABASE_API_KEY setups keep working unchanged."""
-    redshift_client = RedshiftDirectClient()
-    if redshift_client.configured:
-        return redshift_client
-    return MetabaseClient()
+def get_client() -> "RedshiftDirectClient":
+    """Direct Redshift connection (REDSHIFT_HOST/REDSHIFT_USER/REDSHIFT_PASSWORD) --
+    confirmed working end-to-end 2026-08-04, the only live-data path this project has
+    ever actually used in practice (see planning.agent's own module docstring/2026-08-04
+    history). The Metabase REST API fallback this used to have (MetabaseClient,
+    METABASE_URL/METABASE_API_KEY) is removed 2026-09-18, explicit user request -- it
+    was never reachable in this project's real .env (no METABASE_URL/METABASE_API_KEY
+    ever set here), and every real caller already only ever received RedshiftDirectClient.
+    Callers still check `.configured` and handle MetabaseNotConfigured explicitly (see
+    RedshiftDirectClient.execute_sql) rather than this function silently choosing a
+    different, less-tested client -- an unconfigured environment now fails the same
+    honest way it always effectively did, just without a code path that could never
+    actually be exercised."""
+    return RedshiftDirectClient()
 
 
 # =====================================================================================
@@ -2426,7 +2392,7 @@ def dc_club_scheme_window_expired(as_of_date: str) -> bool:
     return as_of_date >= DC_CLUB_SCHEME_WINDOW_END
 
 
-def load_live_sources(client: MetabaseClient) -> Tuple[Dict[str, Table], Exceptions]:
+def load_live_sources(client: RedshiftDirectClient) -> Tuple[Dict[str, Table], Exceptions]:
     """Sources 1, 3, 4. Returns empty tables (with an Exceptions_Report entry) per query
     that couldn't run, instead of raising -- a local-only run should still complete."""
     exc = Exceptions(utc_now_iso())
@@ -5049,7 +5015,7 @@ def _llm_route_cache_key(
 
 def _call_anthropic_messages_api(prompt: str) -> Optional[str]:
     """Raw REST call to the Anthropic Messages API (no SDK dependency, same
-    thin-`requests`-wrapper convention as MetabaseClient/Google Maps elsewhere in this
+    thin-`requests`-wrapper convention as the Google Maps calls elsewhere in this
     module) -- temperature=0 for the most deterministic response the API allows (not a
     hard guarantee; the disk cache above is what actually pins a re-run to the same
     result). Returns the raw text content on success, None (never raises) on any

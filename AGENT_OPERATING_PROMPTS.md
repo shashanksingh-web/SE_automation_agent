@@ -240,6 +240,15 @@ generate_plan_for_scope() call.
 
 ## Prompt 4 — Live data access: direct Redshift, not the Metabase API
 
+**Update 2026-09-18**: the `MetabaseClient` fallback this prompt describes below was
+removed entirely, explicit user request ("remove metabase mcp fallback (redshift)") --
+it was never actually reachable in this project's real `.env` (no `METABASE_URL`/
+`METABASE_API_KEY` were ever set here), so `get_client()` now just returns
+`RedshiftDirectClient()` directly, no branching. The investigation/reasoning below for
+why direct Redshift was chosen over both Metabase paths in the first place is still
+accurate history -- kept as-is, just no longer a live fallback in the code. Also,
+`se_daily_plan_agent.py` below is now `planning/agent.py` (moved 2026-09-18).
+
 ```
 As of 2026-08-04, the real live-data path is a direct psycopg2 connection to the Redshift
 cluster (RedshiftDirectClient / get_client() in se_daily_plan_agent.py), NOT the Metabase

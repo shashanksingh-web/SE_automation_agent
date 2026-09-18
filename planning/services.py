@@ -1658,7 +1658,7 @@ def _node_centroids(dc_master: "agent.Table") -> Dict[str, Tuple[float, float]]:
 
 
 def _attach_nearby_product_recommendations(
-    client: "agent.MetabaseClient", dc_master: "agent.Table", needs_geo_fallback: List[str],
+    client: "agent.RedshiftDirectClient", dc_master: "agent.Table", needs_geo_fallback: List[str],
     extra_data_by_dc: Dict[str, ExtraDcContext], plan_date: str,
     result_key: str = "recommended_products", segment: Optional[str] = None,
 ) -> None:
@@ -1831,7 +1831,7 @@ def _sql_product_descriptions(product_names: List[str]) -> str:
     """
 
 
-def _attach_product_descriptions(client: "agent.MetabaseClient", extra_data_by_dc: Dict[str, ExtraDcContext]) -> Optional[str]:
+def _attach_product_descriptions(client: "agent.RedshiftDirectClient", extra_data_by_dc: Dict[str, ExtraDcContext]) -> Optional[str]:
     """Mutates every recommended_products entry in place, adding "description" (Hindi
     preferred since the pitch is Hindi, else English, else the untagged column; None
     when the template has none -- the AI prompt then says so explicitly rather than
@@ -1966,7 +1966,7 @@ def _sql_payment_outcomes(dc_ids: List[str], plan_date: str) -> str:
     """
 
 
-def _resolve_geo_mapping(client: "agent.MetabaseClient", geo_mapping_cache: Optional[Dict[str, agent.Table]] = None) -> agent.Table:
+def _resolve_geo_mapping(client: "agent.RedshiftDirectClient", geo_mapping_cache: Optional[Dict[str, agent.Table]] = None) -> agent.Table:
     """geo_mapping_cache, when passed, is a single-request cache shared with callers
     later in the same generate_plan_for_scope() run (e.g. the Pitching Agent's block
     resolution) -- Source 1c is a full-table pull with no filter args, so a second call
@@ -1985,7 +1985,7 @@ def _resolve_geo_mapping(client: "agent.MetabaseClient", geo_mapping_cache: Opti
 
 
 def resolve_scope_dcs(
-    scope_type: str, scope_value: str, dc_master: agent.Table, client: "agent.MetabaseClient",
+    scope_type: str, scope_value: str, dc_master: agent.Table, client: "agent.RedshiftDirectClient",
     geo_mapping_cache: Optional[Dict[str, agent.Table]] = None,
 ) -> agent.Table:
     scope_type = scope_type.upper()
