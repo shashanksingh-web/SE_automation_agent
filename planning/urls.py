@@ -13,13 +13,19 @@ urlpatterns = [
     path("admin/users/create/", auth_views.admin_users_create, name="admin_users_create"),
     path("admin/users/<int:user_id>/set-active/", auth_views.admin_users_set_active, name="admin_users_set_active"),
     path("admin/users/<int:user_id>/reset-password/", auth_views.admin_users_reset_password, name="admin_users_reset_password"),
-    path("se/<str:scope_value>/", views.se_plan, name="se_plan"),
-    path("abm/<str:scope_value>/", views.abm_plan, name="abm_plan"),
-    path("rbm/<str:scope_value>/", views.rbm_plan, name="rbm_plan"),
-    path("node/<str:scope_value>/", views.node_plan, name="node_plan"),
-    path("block/<str:scope_value>/", views.block_plan, name="block_plan"),
-    path("district/<str:scope_value>/", views.district_plan, name="district_plan"),
-    path("state/<str:scope_value>/", views.state_plan, name="state_plan"),
+    # Per-module version prefix (added 2026-09-18, explicit user request to modularize
+    # the 7 scope endpoints "in their respective API" -- each module's own /v1/ segment
+    # so SE's contract can move to /se/v2/ independently of ABM/District/etc. ever
+    # needing to, rather than one shared version number forcing every module to bump
+    # together. Same 7 view functions/shared _scope_view dispatch underneath -- this is
+    # a routing change only, no logic duplicated across modules.
+    path("se/v1/<str:scope_value>/", views.se_plan, name="se_plan"),
+    path("abm/v1/<str:scope_value>/", views.abm_plan, name="abm_plan"),
+    path("rbm/v1/<str:scope_value>/", views.rbm_plan, name="rbm_plan"),
+    path("node/v1/<str:scope_value>/", views.node_plan, name="node_plan"),
+    path("block/v1/<str:scope_value>/", views.block_plan, name="block_plan"),
+    path("district/v1/<str:scope_value>/", views.district_plan, name="district_plan"),
+    path("state/v1/<str:scope_value>/", views.state_plan, name="state_plan"),
     path("normalize/", views.normalize, name="normalize"),
     path("tuff/<str:scope_type>/<str:scope_value>/", views.tuff, name="tuff"),
     path("routes/<str:se>/<str:plan_date>/", views.route_plans, name="route_plans"),

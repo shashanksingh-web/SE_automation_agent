@@ -359,7 +359,7 @@ def _scope_view(request, scope_type: str, scope_value: str):
 
 @csrf_exempt
 def se_plan(request, scope_value: str):
-    """POST /api/planning/se/<se_email>/ -- body: {"date": "YYYY-MM-DD"} (moved from GET
+    """POST /api/planning/se/v1/<se_email>/ -- body: {"date": "YYYY-MM-DD"} (moved from GET
     2026-09-16, see _generate_and_respond's own docstring). csrf_exempt is repeated here
     (not just on _generate_and_respond) because CsrfViewMiddleware inspects the
     url-resolved callback -- this function, not whatever it calls internally -- so the
@@ -371,37 +371,37 @@ def se_plan(request, scope_value: str):
 
 @csrf_exempt
 def abm_plan(request, scope_value: str):
-    """POST /api/planning/abm/<abm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
+    """POST /api/planning/abm/v1/<abm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.ABM, scope_value)
 
 
 @csrf_exempt
 def rbm_plan(request, scope_value: str):
-    """POST /api/planning/rbm/<rbm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
+    """POST /api/planning/rbm/v1/<rbm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.RBM, scope_value)
 
 
 @csrf_exempt
 def node_plan(request, scope_value: str):
-    """POST /api/planning/node/<node_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
+    """POST /api/planning/node/v1/<node_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.NODE, scope_value)
 
 
 @csrf_exempt
 def block_plan(request, scope_value: str):
-    """POST /api/planning/block/<block_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
+    """POST /api/planning/block/v1/<block_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.BLOCK, scope_value)
 
 
 @csrf_exempt
 def district_plan(request, scope_value: str):
-    """POST /api/planning/district/<district_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
+    """POST /api/planning/district/v1/<district_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.DISTRICT, scope_value)
 
 
 @csrf_exempt
 def state_plan(request, scope_value: str):
-    """POST /api/planning/state/<state_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
+    """POST /api/planning/state/v1/<state_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.STATE, scope_value)
 
 
