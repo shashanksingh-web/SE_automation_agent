@@ -1,6 +1,4 @@
 import json
-import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -26,6 +24,7 @@ from .routing import (
 from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, load_dc_master, run_normalization_step
 from .services import _output_dir as _planning_output_dir
 from .services import agent  # se_daily_plan_agent, imported once there as a library
+from .tasks import run_all_states_tuff_task
 from .tracking import TrackingWindowError, compute_tracking_metrics
 
 
@@ -1158,20 +1157,25 @@ def plan_run_list(request):
 def admin_generate_all_states(request):
     """POST /api/planning/admin/generate-all-states/ -- explicit user request via the
     System Plan Runs page ("system run plan means it will generate the plan for all se
-    with eligible dc"). Launches planning.management.commands.run_all_states_tuff as a
-    DETACHED background subprocess and returns immediately (body: {"plan_date":
-    "YYYY-MM-DD"} optional, defaults to today inside the command; "actor" optional,
-    logged only) -- a full pass runs Data Normalization once plus the SE Daily Task
-    Agent for every STATE currently in DC_Master_Normalized (~11-12 states, each already
-    covering every SE under it), taking real minutes against live data sources. New
-    PlanRuns simply appear in GET /runs/ (System Plan Runs) as each state finishes --
-    this endpoint has no separate progress/status shape of its own, by design (explicit
-    user choice over building a dedicated progress view).
+    with eligible dc"). Dispatches planning.tasks.run_all_states_tuff_task as a Celery
+    task and returns immediately (body: {"plan_date": "YYYY-MM-DD"} optional, defaults
+    to today inside the command; "actor" optional, logged only) -- a full pass runs
+    Data Normalization once plus the SE Daily Task Agent for every STATE currently in
+    DC_Master_Normalized (~11-12 states, each already covering every SE under it),
+    taking real minutes against live data sources. New PlanRuns simply appear in
+    GET /runs/ (System Plan Runs) as each state finishes -- this endpoint has no
+    separate progress/status shape of its own, by design (explicit user choice over
+    building a dedicated progress view), unchanged by the move to Celery (added
+    2026-09-18, replacing this endpoint's own subprocess.Popen -- same fire-and-forget
+    contract, just a more robust launching mechanism, see planning/tasks.py's own
+    docstring).
 
-    stdout/stderr redirected to a timestamped file under logs/ so a run is inspectable
-    after the fact even though nothing streams it back to the request. No concurrency
-    guard against a second trigger overlapping a still-running one -- same accepted
-    posture as run_scheduled_tuff's own cron invocation, which has never had one either.
+    stdout/stderr still land in a timestamped file under logs/ (now via call_command's
+    own stdout/stderr kwargs inside the task, not a subprocess redirect) so a run is
+    inspectable after the fact even though nothing streams it back to the request. No
+    concurrency guard against a second trigger overlapping a still-running one -- same
+    accepted posture as run_scheduled_tuff's own cron/Celery-Beat invocation, which has
+    never had one either.
 
     csrf_exempt: same unauthenticated trust boundary as every other admin write in this
     file -- this app has no session/login system anywhere."""
@@ -1187,17 +1191,10 @@ def admin_generate_all_states(request):
     logs_dir.mkdir(exist_ok=True)
     log_path = logs_dir / f"generate_all_states_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-    cmd = [sys.executable, "manage.py", "run_all_states_tuff"]
-    if plan_date:
-        cmd += ["--date", plan_date]
-
     with open(log_path, "w") as log_file:
         log_file.write(f"# Triggered by {actor or 'unknown'} at {datetime.now().isoformat()}\n")
-        log_file.flush()
-        subprocess.Popen(
-            cmd, cwd=base_dir, stdout=log_file, stderr=subprocess.STDOUT,
-            start_new_session=True,  # detach -- must outlive this request/response
-        )
+
+    run_all_states_tuff_task.delay(plan_date=plan_date, log_path=str(log_path))
 
     return JsonResponse({
         "started": True,
