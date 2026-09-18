@@ -3585,9 +3585,12 @@ R1_1_FIELD_MINUTES_CAP = 420
 # read-only badge instead of the A/B/C picker for role==SE, same isScopeValueLockedToSelf
 # pattern already used for scope values) -- this app's RBAC has never been enforced
 # server-side (see rbac.ts's own docstring: "the API itself enforces nothing"), so this
-# constant is exposed via GET /admin/config/ for the frontend to read, not consulted by
-# any backend generation code itself. Admin/ZBM/RBM/ABM's own views are unaffected --
-# only an SE viewing their own scope is locked to this.
+# constant is exposed via GET /admin/config/ for the frontend to read. ALSO (2026-09-18,
+# "but in back end we generate") the default family for any backend generation that is
+# given no explicit choice -- see generate_plan_for_scope's resolved_routing_plan -- so
+# the scheduled/all-states passes produce the family the SE view will ask for.
+# Admin/ZBM/RBM/ABM's own views are unaffected -- only an SE viewing their own scope is
+# locked to this.
 SE_ROUTING_PLAN = "A"
 R1_2_MAX_TRAVEL_MINUTES = 180  # Admin Control Panel-overridable (planning.admin_config), see load_business_constants's own docstring.
 # Plan A round-trip distance ceiling (added 2026-09-09, explicit user request "include

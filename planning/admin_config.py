@@ -331,7 +331,7 @@ ADMIN_EDITABLE_FIELDS: List[Dict[str, Any]] = [
         "group": "Routing", "key": "se_routing_plan", "type": "choice",
         "label": "SE view's routing plan", "unit": "",
         "choices": ["A", "B", "C"],
-        "description": "Which Routing Agent plan family (A = Priority-Max/Distance-Min/Balanced, B = Beat Planning/Cluster-Based, C = AI-Reasoned) an SE sees when they open their OWN view. SE accounts cannot switch this themselves - it's fully admin-controlled. Does not affect Admin/ZBM/RBM/ABM's own ability to pick any plan when viewing any scope.",
+        "description": "Which Routing Agent plan family (A = Priority-Max/Distance-Min/Balanced, B = Beat Planning/Cluster-Based, C = AI-Reasoned) an SE sees when they open their OWN view, AND the family every backend generation uses when none is chosen explicitly - the daily 06:15 scheduled pass, 'Generate for all states', and activate_tuff without --routing-plan (so the plan the SE is shown actually exists). SE accounts cannot switch this themselves - it's fully admin-controlled. Does not affect Admin/ZBM/RBM/ABM's own ability to pick any plan when viewing any scope. Plan C makes 3 LLM calls per SE per run.",
         "target": "module", "module_attr": "SE_ROUTING_PLAN", "default": "A",
     },
     # Plan C decision style (added 2026-09-12, explicit user request -- "provide the
