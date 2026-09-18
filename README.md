@@ -15,7 +15,7 @@ pipeline described in `SE_DC_Data_Normalization_Agent_Prompt.docx`.
 Raw feeds -> normalized `output/*.json` + `Exceptions_Report.json`.
 
 - **Standalone CLI (primary entry point):**
-  `python se_daily_plan_agent.py [--output-dir OUTPUT_DIR] [--date YYYY-MM-DD] [-v]`
+  `python planning/agent.py [--output-dir OUTPUT_DIR] [--date YYYY-MM-DD] [-v]`
 - **Internal function:** the Section 1-8 pipeline in `se_daily_plan_agent.py`
 - **Also invoked as Step 1 of:** `activate_tuff`, `run_scheduled_tuff` (see Orchestration below)
 - **HTTP:** `GET /normalize/` -> `views.normalize` (planning/urls.py)

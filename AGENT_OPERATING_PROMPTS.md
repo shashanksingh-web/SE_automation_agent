@@ -103,7 +103,7 @@ Run the SE/DC Data Normalization Agent (se_daily_plan_agent.py) end to end.
 Command:
   cd /Users/dehaat/Desktop/SE_automation_server
   source venv/bin/activate
-  python se_daily_plan_agent.py --output-dir ./output --date YYYY-MM-DD -v
+  python planning/agent.py --output-dir ./output --date YYYY-MM-DD -v
 
 Output: normalized tables + Exceptions_Report.json + Run_Summary.json in ./output/.
 Read Run_Summary.json first — it states plainly what ran live vs. what was skipped.
@@ -224,7 +224,7 @@ a real punch-in point) -- noted in every PlanRun.note field, not hidden.
 
 STANDALONE COMMAND (no dev server needed) -- planning/management/commands/generate_se_plan.py
 wraps generate_plan_for_scope() as a Django management command, symmetric with the CLI
-Data Normalization Agent (`python se_daily_plan_agent.py`):
+Data Normalization Agent (`python planning/agent.py`):
 
   python manage.py generate_se_plan NODE Jaipur --date 2026-08-05
   python manage.py generate_se_plan SE mewa.garhwal@agrevolution.in

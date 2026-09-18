@@ -16,7 +16,6 @@ RoutePlan/RouteStop row directly.
 
 from __future__ import annotations
 
-import sys
 from datetime import date as _date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,10 +25,8 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
-sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
-import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
-
-from .data_cache import load_output_json  # noqa: E402
+from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
+from .data_cache import load_output_json
 from .models import BeatZoneAssignment, PlanRun, RouteDroppedDC, RoutePlan, RouteStop  # noqa: E402
 
 

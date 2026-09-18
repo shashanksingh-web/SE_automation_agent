@@ -55,15 +55,24 @@ try:
 except ImportError:  # pragma: no cover - degrade gracefully, see load_top_dc_allowlist
     openpyxl = None
 
+# Moved to planning/agent.py 2026-09-18 (restructure: "external script" folded into
+# the Django server, eliminating the sys.path.insert hack 11 planning/ files used to
+# reach this module) -- one extra .parent here since the file now sits one directory
+# deeper (planning/agent.py) than it used to (se_daily_plan_agent.py at the project
+# root). Computed via pure relative-path math, not Django settings, so the standalone
+# CLI below still needs zero Django dependency to run bare (see this module's own
+# docstring / README.md's "must run bare" guarantee) -- it only has to know its own
+# on-disk position, which is fixed by this move, not environment-dependent.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent / ".env")  # REDSHIFT_*/METABASE_* -- gitignored
+    load_dotenv(BASE_DIR / ".env")  # REDSHIFT_*/METABASE_* -- gitignored
 except ImportError:  # pragma: no cover - fine to run with plain env vars instead
     pass
 
 Table = List[Dict[str, Any]]
 
-BASE_DIR = Path(__file__).resolve().parent
 logger = logging.getLogger("se_daily_plan_agent")
 
 

@@ -3,15 +3,11 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from planning import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
 from planning.directory import list_states
 from planning.notify import send_alert
 from planning.services import PlanningError, generate_plan_for_scope
 from planning.services import _output_dir as _planning_output_dir
-
-import sys
-
-sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
-import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 
 class Command(BaseCommand):

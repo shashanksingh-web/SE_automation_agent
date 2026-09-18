@@ -59,8 +59,12 @@ INSTALLED_APPS = [
     'planning',
 ]
 
-# se_daily_plan_agent.py lives at the project root -- imported as a library by
-# planning/services.py rather than duplicated. See AGENT_OPERATING_PROMPTS.md.
+# The agent (planning/agent.py, moved here from a project-root standalone script
+# 2026-09-18) is now a normal package submodule, imported via `from . import agent` --
+# this setting no longer serves as a sys.path entry. Its remaining job is the shared
+# base for the pipeline's on-disk output/data files (output/, pitch_config/, etc.),
+# read directly off Django's own BASE_DIR by planning/services.py and others. See
+# AGENT_OPERATING_PROMPTS.md.
 SE_DAILY_PLAN_AGENT_PATH = BASE_DIR
 
 MIDDLEWARE = [

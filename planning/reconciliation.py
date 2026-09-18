@@ -32,19 +32,15 @@ are touched, so every entry point is idempotent and safe to call again any time.
 """
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from django.conf import settings
 from django.utils import timezone
 
+from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
 from .models import DailyTask, DCVisitStreak
 from .services import _sql_order_outcomes, _sql_payment_outcomes, _sql_visit_outcomes
-
-sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
-import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 # 3+ consecutive misses on the same (SE, DC) pair triggers an escalation note + a
 # priority_multiplier boost on the just-reconciled task -- a visible flag in the outcome

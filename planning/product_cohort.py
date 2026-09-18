@@ -22,15 +22,11 @@ not reshaped into a guessed structure.
 
 from __future__ import annotations
 
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
-from django.conf import settings
-
-sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
-import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
+from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
 
 
 def parse_week_range(value: Optional[str], opt_name: str) -> Optional[tuple]:

@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from django.utils import timezone
 
-import se_daily_plan_agent as agent
+from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
 
 from .models import ProgramDCSelection
 

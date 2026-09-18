@@ -1,16 +1,13 @@
-import sys
 from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from planning import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
 from planning.models import ScheduledScope
 from planning.notify import send_alert
 from planning.services import PlanningError, generate_plan_for_scope
-
-sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
-import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
 
 
 class Command(BaseCommand):

@@ -38,8 +38,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-sys.path.insert(0, str(settings.SE_DAILY_PLAN_AGENT_PATH))
-import se_daily_plan_agent as agent  # noqa: E402  -- project-root script, imported as a library
+from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
 
 from . import data_cache, dc_selection, product_cohort, routing
 from .admin_config import load_business_constants

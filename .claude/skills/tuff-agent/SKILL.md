@@ -147,7 +147,7 @@ python manage.py activate_tuff SE <email> [--routing-plan A|B] [--enable-rotatio
 GET /api/planning/tuff/SE/<email>/?routing_plan=B&rotation=true
 
 # Standalone normalization only (no Django, Step 1 alone)
-python se_daily_plan_agent.py [--date YYYY-MM-DD]
+python planning/agent.py [--date YYYY-MM-DD]
 
 # Cron entry point (every active ScheduledScope)
 python manage.py run_scheduled_tuff
