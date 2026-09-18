@@ -147,7 +147,10 @@ def _dc_display_name(candidate: Dict[str, Any]) -> str:
 def _enforce_distinct_routes(
     model_results: Dict[str, Dict[str, Any]], filtered: List[Dict[str, Any]], origin: Tuple[float, float],
 ) -> List[Tuple[str, str]]:
-    """Guarantee (added 2026-09-18, explicit user request -- "there always must be
+    """(notes, unresolved) -- notes: [(plan_type, plain-language note)] per route this
+    changed; unresolved: plan_types left duplicate because the whole ladder failed.
+
+    Guarantee (added 2026-09-18, explicit user request -- "there always must be
     distinct route plan like plan a/b/c") that no two of a family's 3 routes are the
     same route. Runs on every family (Plan A Models 1-3, Plan B's 3 routes, Plan C's 3
     LLM calls) right after the builders, BEFORE the Google Directions overlay / ROI
@@ -175,6 +178,7 @@ def _enforce_distinct_routes(
     speed = agent.R3_2_DEFAULT_AVG_SPEED_KMPH
     seen: List[Tuple[str, ...]] = []
     notes: List[Tuple[str, str]] = []
+    unresolved: List[str] = []
 
     def _try(order: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not order or tuple(c["dc"]["DC_ID"] for c in order) in seen:
@@ -246,6 +250,7 @@ def _enforce_distinct_routes(
                     )
         if chosen is None:
             seen.append(seq)  # genuinely impossible -- the GR-R7 note downstream reports it
+            unresolved.append(plan_type)
             continue
 
         metrics, note, removed, swapped_in, drop_reason = chosen
@@ -272,7 +277,7 @@ def _enforce_distinct_routes(
             result["llm_reasoning"] = head.rstrip() + " " + note + sep + tail
         seen.append(tuple(s["row"].DC_ID for s in result["stops"]))
         notes.append((plan_type, note))
-    return notes
+    return notes, unresolved
 
 
 def generate_route_plans_for_se(
@@ -514,7 +519,8 @@ def generate_route_plans_for_se(
 
     # Family-wide distinctness guarantee -- see _enforce_distinct_routes. Before the
     # Google overlay / ROI attach below so a changed route gets those for what's kept.
-    for plan_type, note in _enforce_distinct_routes(model_results, filtered, origin):
+    diversity_notes, diversity_unresolved = _enforce_distinct_routes(model_results, filtered, origin)
+    for plan_type, note in diversity_notes:
         exceptions.append({
             "source": "RoutingAgent", "reason_code": "Route_Diversity_Enforced",
             "detail": f"{who} @ {plan_date} ({plan_type}): {note}",
@@ -581,7 +587,21 @@ def generate_route_plans_for_se(
     # Plans_Converged; it now correctly falls through to the generic GR-R7 branch below.
     all_three_produced_stops = all(len(s) > 0 for s in stop_sets.values())
     plans_converged = pool_had_room_to_differ and len(non_empty_sets) == 1 and all_three_produced_stops
-    if plans_converged:
+    if plans_converged and diversity_unresolved:
+        # The pool had more candidates by COUNT, but _enforce_distinct_routes proved none
+        # of them yields a second within-caps route from this SE's start point (confirmed
+        # live 2026-09-18: dk.s, 17 eligible DCs, only one reachable inside the 100 km /
+        # 180 min day) -- that is a thin pool after the caps, not 3 models agreeing.
+        converged_note = None
+        exceptions.append({
+            "source": "RoutingAgent", "reason_code": "Insufficient_Candidates_For_3_Plans",
+            "detail": (
+                f"{who} @ {plan_date}: only 1 route is possible across {family} -- of {len(filtered)} eligible "
+                f"candidate(s), no other fits the day's distance/time caps from this SE's start point, "
+                "even after swapping, re-ordering and trimming"
+            ),
+        })
+    elif plans_converged:
         converged_note = (
             f"Plans_Converged (GR-R10): all 3 {family} independently produced the identical stop-set and "
             f"sequence despite {len(filtered)} eligible candidates being available ({max_stops_used} used) -- "
