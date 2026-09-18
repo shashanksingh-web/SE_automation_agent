@@ -2540,7 +2540,17 @@ def generate_plan_for_scope(
         )
 
     client = agent.get_client()
-    resolved_routing_plan = routing_plan_choice or (routing_plan_asker() if routing_plan_asker else None) or "A"
+    # Default family = the admin's "SE view's routing plan" (SE_ROUTING_PLAN, applied by
+    # load_business_constants above), not a hardcoded "A" (CHANGED 2026-09-18, explicit
+    # user request -- "but in back end we generate": the admin had set C, the SE views
+    # asked for C, but every backend generation with no explicit choice -- the 06:15
+    # Celery run_scheduled_tuff pass, "generate for all states", a bare activate_tuff --
+    # still produced Plan A, so 425 of 447 SEs had no Plan C to read). An explicit
+    # routing_plan_choice / interactive answer still wins, so Admin/ZBM/RBM/ABM picking
+    # a family on a view is unchanged.
+    resolved_routing_plan = (
+        routing_plan_choice or (routing_plan_asker() if routing_plan_asker else None) or agent.SE_ROUTING_PLAN or "A"
+    )
 
     geo_mapping_cache: Dict[str, agent.Table] = {}
     dc_master = load_dc_master()
