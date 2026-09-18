@@ -788,6 +788,86 @@ class DCFarmerMappingClient:
         return self._request("GET", "/sps/v1/fp/dc-product-recommendations", params={"dcId": dc_id, "radiusKm": radius_km, "sapPartnerId": sap_partner_id})
 
 
+# Discount Service (coupon-service.api.agrevolution.in) -- added 2026-09-18, a
+# SUPPLEMENT to planning.services._sql_scheme_description_cards(), not a replacement.
+# That SQL query already reads coupon_service.public.scheme directly via Redshift
+# cross-database federation (the same live database this REST API serves) plus joins in
+# T&C translations, booking-order status, and SKU/product-name resolution this REST API
+# does not expose at all -- confirmed by inspecting a live response before this client
+# was built. Replacing the SQL version with this would have been a real quality
+# regression, not an upgrade (explicit "Supplement, don't replace" decision, 2026-09-18).
+# See planning/discount_service.py for the orchestration built on top of this client.
+#
+# Auth: plain HTTP Basic (client_id, client_secret) issued directly for this
+# integration -- unlike ProductCohortClient/DCFarmerMappingClient, there's no human-
+# sign-in boundary here, these are real API credentials, not a borrowed session.
+DISCOUNT_SERVICE_BASE_URL = os.environ.get("DISCOUNT_SERVICE_BASE_URL", "https://coupon-service.api.agrevolution.in")
+
+
+class DiscountServiceNotConfigured(RuntimeError):
+    """Raised when a Discount Service API call is attempted but
+    DISCOUNT_SERVICE_CLIENT_ID/DISCOUNT_SERVICE_CLIENT_SECRET are unset."""
+
+
+class DiscountServiceClient:
+    """Thin wrapper over GET /v1/discounting-schemes -- confirmed live 2026-09-18 (HTTP
+    200; a bare JSON list, no pagination envelope; 616 active DC-facing schemes
+    company-wide fit in one limit=1000 call, no pagination loop needed for a full
+    refresh)."""
+
+    RETRY_BACKOFF_SECONDS = [2, 6]
+
+    def __init__(self, base_url: Optional[str] = None, client_id: Optional[str] = None, client_secret: Optional[str] = None):
+        self.base_url = (base_url or DISCOUNT_SERVICE_BASE_URL).rstrip("/")
+        self.client_id = client_id or os.environ.get("DISCOUNT_SERVICE_CLIENT_ID", "")
+        self.client_secret = client_secret or os.environ.get("DISCOUNT_SERVICE_CLIENT_SECRET", "")
+        self._session = requests.Session() if requests is not None else None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.client_id and self.client_secret and requests is not None)
+
+    def _request(self, method: str, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        if not self.configured:
+            reason = "requests not installed" if requests is None else "DISCOUNT_SERVICE_CLIENT_ID/DISCOUNT_SERVICE_CLIENT_SECRET not set"
+            raise DiscountServiceNotConfigured(f"Discount Service source unavailable ({reason})")
+        url = f"{self.base_url}{path}"
+        last_error: Optional[Exception] = None
+        for attempt, delay in enumerate([0] + self.RETRY_BACKOFF_SECONDS):
+            if delay:
+                logger.warning("Discount Service request to %s failed (attempt %d), retrying in %ds: %s", path, attempt, delay, last_error)
+                time.sleep(delay)
+            try:
+                resp = self._session.request(method, url, params=params, auth=(self.client_id, self.client_secret), timeout=60)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError as e:
+                # A 4xx (bad credentials, bad request) will fail identically on retry --
+                # only a 5xx (server-side, plausibly transient) is worth it.
+                if e.response is not None and e.response.status_code < 500:
+                    raise
+                last_error = e
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                last_error = e
+        raise last_error
+
+    def fetch_active_schemes(self, scheme_types: str = "ABS,CDS,TOD,CVR", limit: int = 1000) -> List[Dict[str, Any]]:
+        """All currently-active DC-facing schemes company-wide, in one call -- confirmed
+        live 2026-09-18 that limit=1000 returns the full set (616 rows) without needing a
+        pagination loop. Raises DiscountServiceNotConfigured if unset; propagates any HTTP
+        error after retries -- see planning.discount_service.get_active_discount_schemes
+        for how a caller folds that into an exceptions list instead of raising."""
+        rows = self._request("GET", "/v1/discounting-schemes", params={
+            "discountingSchemeType": scheme_types,
+            "status": "active",
+            "matchType": "partial",
+            "limit": limit,
+            "offset": 0,
+            "sort": "-schemeId",
+        })
+        return rows if isinstance(rows, list) else []
+
+
 # =====================================================================================
 # 2. SHARED NORMALIZATION HELPERS (Section 3 / 4 of the doc)
 # =====================================================================================
