@@ -6,3 +6,5 @@ psycopg2-binary==2.9.12
 python-dotenv==1.2.2
 ortools==9.15.6755
 openpyxl==3.1.5
+celery==5.6.3
+redis==8.1.0

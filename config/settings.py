@@ -209,3 +209,39 @@ LOGGING = {
         'level': 'INFO',
     },
 }
+
+
+# Celery -- added 2026-09-18 to replace this project's macOS-specific scheduling
+# (launchd plists, then plain crontab hardcoding an absolute venv path) with a
+# portable, in-app scheduler. See config/celery.py's own docstring for how to run the
+# worker/beat processes.
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+# No result backend -- both scheduled tasks are fire-and-forget side effects (they
+# write to the DB / log files themselves, same as the cron jobs they replace); nothing
+# in this app ever reads a task's return value, so there's no result store to
+# configure or clean up.
+CELERY_TASK_IGNORE_RESULT = True
+
+# Real-world clock these schedules fire on -- deliberately NOT the same as TIME_ZONE
+# above (UTC, which governs how Django stores/displays datetimes). The crontab entries
+# this replaces (`0 6 * * *` / `15 6 * * *`) ran in the machine's local time, which is
+# IST -- Celery Beat's crontab() schedules need their own explicit timezone to match
+# that real-world firing time, since Celery defaults to UTC otherwise.
+CELERY_TIMEZONE = "Asia/Kolkata"
+CELERY_ENABLE_UTC = False
+
+# Same two jobs, same times, as the crontab entries they replace:
+#   0 6 * * *   manage.py reconcile_outcomes --date <yesterday>
+#   15 6 * * *  manage.py run_scheduled_tuff
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {
+    "reconcile-outcomes-daily": {
+        "task": "planning.tasks.reconcile_outcomes_task",
+        "schedule": crontab(hour=6, minute=0),
+    },
+    "run-scheduled-tuff-daily": {
+        "task": "planning.tasks.run_scheduled_tuff_task",
+        "schedule": crontab(hour=6, minute=15),
+    },
+}

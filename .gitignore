@@ -9,3 +9,5 @@ output/google_distance_matrix_cache.json
 output/llm_route_cache.json
 output/ai_sales_forecast_cache.json
 output/scheme_description_cache.json
+celerybeat-schedule*
+celerybeat.pid
