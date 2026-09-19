@@ -57,6 +57,7 @@ urlpatterns = [
     path("admin/config/", views.admin_pipeline_config, name="admin_pipeline_config"),
     path("admin/tracking/", views.admin_tracking, name="admin_tracking"),
     path("admin/reconcile/", views.admin_reconcile, name="admin_reconcile"),
+    path("admin/discount-schemes/", views.admin_discount_schemes, name="admin_discount_schemes"),
     path("admin/dc-selection/", views.admin_dc_selection, name="admin_dc_selection"),
     path("admin/dc-selection/preview/", views.admin_dc_selection_preview, name="admin_dc_selection_preview"),
     path("admin/dc-selection/search/", views.admin_dc_selection_search, name="admin_dc_selection_search"),

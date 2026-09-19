@@ -40,7 +40,7 @@ from django.utils import timezone
 
 from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
 
-from . import data_cache, dc_selection, product_cohort, routing
+from . import data_cache, dc_selection, discount_service, product_cohort, routing
 from .admin_config import load_business_constants
 from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, PlanRun, RoutingScopeOverride
 from .pitch_context import ExtraDcContext
@@ -784,6 +784,35 @@ def _sql_scheme_description_cards(plan_date: str) -> str:
 
 _SCHEME_DESCRIPTION_CACHE_PATH = agent.BASE_DIR / "output" / "scheme_description_cache.json"
 _scheme_description_cache_store = agent.JsonFileCache(_SCHEME_DESCRIPTION_CACHE_PATH)
+
+# Discount Service live cross-check cache -- added 2026-09-19, same once-per-day-by-
+# plan_date convention as _SCHEME_DESCRIPTION_CACHE_PATH above, for the same reason
+# (this is a live external HTTP call; every plan generation that day should pay for it
+# once, not per generation). Used only to FLAG a name-matched scheme the live API no
+# longer shows as active (see discount_service.cross_check_active_status) -- never to
+# change what generated_description says, per the "supplement, don't replace" decision
+# (project_discount_service_supplement_20260918 memory).
+_DISCOUNT_SERVICE_LIVE_CACHE_PATH = agent.BASE_DIR / "output" / "discount_service_live_cache.json"
+_discount_service_live_cache_store = agent.JsonFileCache(_DISCOUNT_SERVICE_LIVE_CACHE_PATH)
+
+
+def _fetch_live_discount_schemes(plan_date: str) -> List[Dict[str, Any]]:
+    """Cached wrapper around discount_service.get_active_discount_schemes() -- mirrors
+    _fetch_scheme_description_cards' own caching exactly. Returns [] (not an exception)
+    on any failure INCLUDING "not configured" -- this is a best-effort cross-check, not
+    a required Source, so run_pipeline's caller is responsible for deciding whether an
+    empty result is worth flagging (see the try/except around this call site, which
+    only logs Discount_Service_Cross_Check_Failed on a genuine exception, not on a
+    quiet empty/not-configured result -- an operator who never set up the live API
+    credentials shouldn't see a spurious exception on every single run)."""
+    cache = _discount_service_live_cache_store.load()
+    if cache.get("date") == plan_date and "schemes" in cache:
+        return cache["schemes"]
+    result = discount_service.get_active_discount_schemes()
+    cache["date"] = plan_date
+    cache["schemes"] = json.loads(json.dumps(result.get("schemes", []), default=str))
+    _discount_service_live_cache_store.save()
+    return cache["schemes"]
 
 
 def _fetch_scheme_description_cards(client: Any, plan_date: str) -> List[Dict[str, Any]]:
@@ -3402,6 +3431,26 @@ def generate_plan_for_scope(
                             }
         except Exception as e:
             run_exceptions.append({"source": "coupon_service.scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
+
+        # Scheme recommendation (rank by value) + live-status cross-check -- added
+        # 2026-09-19, on top of the Discount Service REST API client (a "supplement,
+        # don't replace" building block -- see project_discount_service_supplement_
+        # 20260918 memory). Best-effort: a live-API outage/misconfiguration must never
+        # block plan generation, so this is wrapped the same way every optional live
+        # source in this pipeline is -- an exception here becomes a logged entry, never
+        # a raise. Ranking always runs (pure, local, no I/O); the live cross-check is
+        # additionally gated on discount_service.agent.DiscountServiceClient().configured
+        # so an operator who never set DISCOUNT_SERVICE_CLIENT_ID/SECRET doesn't pay for
+        # a doomed network call (or see a spurious exception) on every single run.
+        try:
+            for node, schemes in active_schemes_by_node.items():
+                active_schemes_by_node[node] = discount_service.rank_schemes_by_value(schemes)
+            if discount_service.agent.DiscountServiceClient().configured:
+                live_schemes = _fetch_live_discount_schemes(plan_date)
+                for node, schemes in active_schemes_by_node.items():
+                    active_schemes_by_node[node] = discount_service.cross_check_active_status(schemes, live_schemes)
+        except Exception as e:
+            run_exceptions.append({"source": "discount_service_live", "reason_code": "Discount_Service_Cross_Check_Failed", "detail": f"{type(e).__name__}: {e}"})
 
         try:
             for row in client.execute_sql(agent.INPUT_BACKEND_DB_ID, _sql_punch_in(uids, plan_date)):

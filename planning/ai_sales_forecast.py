@@ -317,7 +317,16 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
     category/brand triple. Falls back to the older per-material "description" field
     (scheme_details.description) when a scheme has no generated_description -- e.g. one
     this run's node/state eligibility check didn't confirm covers this DC's node (see
-    _sql_scheme_description_cards' call site in services.py)."""
+    _sql_scheme_description_cards' call site in services.py).
+
+    Schemes arrive already ranked best-value-first (planning.services wires
+    discount_service.rank_schemes_by_value into active_schemes_by_node before this
+    context is ever built), so the [:10] truncation below now favors the highest
+    max_discount_per_dc schemes for a node with more than 10, not an arbitrary DB
+    order. live_status_flag (planning.services' discount_service.cross_check_
+    active_status, added 2026-09-19) carries through unchanged when a scheme's own
+    live-API status disagrees with this SQL-sourced entry -- see _scheme_lines for how
+    it's rendered into the prompt."""
     schemes = ctx.get("active_schemes") or []
     return [
         {
@@ -327,6 +336,7 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
             # Structured profit facts (services.py attaches them from the scheme card)
             # -- what the fallback pointer is built from; see _ensure_scheme_pointers.
             "benefit": s.get("benefit"),
+            "live_status_flag": s.get("live_status_flag"),
         }
         for s in schemes[:10] if s.get("name")
     ]
@@ -338,7 +348,13 @@ def _scheme_lines(schemes: List[Dict[str, Any]]) -> List[str]:
     the generated_description field above, replacing the identical inline loop that used
     to live in each builder separately). Appends the fact-grounded description when one
     is available, rather than leaving the model to infer what the scheme actually offers
-    from just its name/category/brand."""
+    from just its name/category/brand.
+
+    live_status_flag (added 2026-09-19, see _active_schemes_context) is appended as an
+    explicit caution, not silently dropped or acted on -- the SQL-sourced description
+    stays authoritative (per the "supplement, don't replace" decision), this just tells
+    the model not to confidently push a scheme the live Discount Service API no longer
+    lists as active."""
     if not schemes:
         return []
     lines = ["Currently-active Sales/ABS Schemes available to this DC (a separate system from DC Club above):"]
@@ -346,6 +362,8 @@ def _scheme_lines(schemes: List[Dict[str, Any]]) -> List[str]:
         line = f"- {s['name']} | category={s.get('category')} | brand={s.get('brand')} | valid until {s.get('valid_until')}"
         if s.get("description"):
             line += f" | {s['description']}"
+        if s.get("live_status_flag"):
+            line += f" | CAUTION: {s['live_status_flag']} -- do not state this scheme is definitely still active"
         lines.append(line)
     lines.append("")
     return lines

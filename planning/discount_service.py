@@ -130,6 +130,73 @@ def build_generated_description(scheme: Dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def rank_schemes_by_value(schemes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sorts the SAME dict shape planning.services stores in active_schemes_by_node --
+    {"name", "description", "category", ..., "benefit": {"advance_per_unit", "slabs",
+    "slab_basis", "benefit_channel", "booking_end", "max_discount_per_dc"}} (the
+    "benefit" key is only present when a coupon_service.scheme row matched by name --
+    see planning/services.py's enrichment block) -- by best value first, and tags each
+    with a 1-based "rank". NOT scheme_id-keyed: this pipeline has no scheme_id on these
+    entries at all (schemes are matched to nodes by NAME, not id -- same reason
+    cross_check_active_status below also matches by name).
+
+    "Best value" = highest benefit.max_discount_per_dc (the one clean numeric field
+    both this pipeline's enriched entries and this module's own REST-API cards carry --
+    the underlying slab discount RATE is only ever available as pre-formatted text
+    (benefit.slabs / generated_description), not a number, on either source, so
+    ranking by a parsed rate would mean regex-parsing free-form text with no
+    machine-readable fallback -- max_discount_per_dc is the one honest numeric value
+    signal available without that risk). Un-enriched entries (no "benefit" key, e.g. an
+    abs_scheme row that never matched a coupon_service.scheme by name) sort last, not
+    dropped -- ranking is a reorder, never a filter.
+
+    Pure function, no I/O -- mutates and returns a NEW list (does not mutate the input
+    list's own ordering), safe to call on both a real active_schemes_by_node[node] list
+    and get_active_discount_schemes()'s own "schemes" list should a future caller want
+    to rank that instead (it has no "benefit" key, so every entry there sorts by the
+    "no benefit" fallback today -- ranking that shape meaningfully would need its own
+    max_discount_per_dc extraction, not attempted here since no caller needs it yet)."""
+    def _value_key(scheme: Dict[str, Any]) -> float:
+        max_discount = (scheme.get("benefit") or {}).get("max_discount_per_dc")
+        try:
+            return -float(max_discount)
+        except (TypeError, ValueError):
+            return float("inf")  # no/unparseable value -- sorts last
+
+    ranked = sorted(schemes, key=_value_key)
+    return [dict(s, rank=i + 1) for i, s in enumerate(ranked)]
+
+
+def cross_check_active_status(sql_schemes: List[Dict[str, Any]], live_schemes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """For each entry in sql_schemes (the active_schemes_by_node[node] shape -- see
+    rank_schemes_by_value's docstring), checks whether the same scheme NAME appears in
+    live_schemes (get_active_discount_schemes()'s "schemes" list, sourced from the live
+    Discount Service API). Matched by name, not scheme_id -- sql_schemes entries carry
+    no scheme_id at all (see rank_schemes_by_value's docstring); name is also what the
+    existing services.py enrichment block already matches on for the exact same reason,
+    so this doesn't introduce a new, weaker matching convention.
+
+    Tags (never drops or reorders) any sql_schemes entry whose name is NOT found live
+    with live_status_flag = "Not active per live Discount Service API" -- a flag for a
+    human/AI-prompt to see, never a silent override of what the SQL-sourced,
+    richer-joined data says is true (see the "supplement, don't replace" decision this
+    implements). An entry already missing "generated_description" (never matched a
+    coupon_service.scheme row at all -- see services.py's enrichment block) is left
+    alone; this function only flags a DISAGREEMENT between two sources that both claim
+    to know about the same named scheme, not schemes only one source ever knew about.
+
+    Pure function, no I/O -- returns a NEW list, does not mutate the inputs."""
+    live_names = {s.get("scheme_name") for s in live_schemes if s.get("scheme_name")}
+    out = []
+    for scheme in sql_schemes:
+        entry = dict(scheme)
+        name = entry.get("name")
+        if entry.get("generated_description") and name and name not in live_names:
+            entry["live_status_flag"] = "Not active per live Discount Service API"
+        out.append(entry)
+    return out
+
+
 def resolve_node_state_names(client: Any, node_ids: List[str], state_ids: List[str]) -> Dict[str, Dict[str, str]]:
     """Resolves this API's numeric node/state IDs (rules[].nodeIds / rules[].stateIds) to
     the Node/State NAMES this app's own DC data uses (DC_Master_Normalized carries Node/

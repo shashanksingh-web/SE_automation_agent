@@ -9,7 +9,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
-from . import admin_config, dc_selection
+from . import admin_config, dc_selection, discount_service
 from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
 from .models import (
@@ -1117,6 +1117,53 @@ def admin_reconcile(request):
         "Payment_Amount": sum(s["payment_amount"] for s in summaries),
         "Pull_Failures": [f for s in summaries for f in s["pull_failures"]],
         "Lines": [format_summary(s) for s in summaries if s["tasks"]],
+    }, json_dumps_params={"default": str})
+
+
+# 1 hour, not the pipeline's once-per-plan_date convention (_SCHEME_DESCRIPTION_CACHE_
+# PATH / _DISCOUNT_SERVICE_LIVE_CACHE_PATH in services.py) -- this endpoint's whole
+# purpose is "check live status now", so a day-long cache would defeat it, but an
+# unthrottled cache would mean every admin page load pays a live HTTP round trip.
+_ADMIN_DISCOUNT_SCHEMES_CACHE_PATH = agent.BASE_DIR / "output" / "admin_discount_schemes_cache.json"
+_admin_discount_schemes_cache_store = agent.JsonFileCache(_ADMIN_DISCOUNT_SCHEMES_CACHE_PATH)
+_ADMIN_DISCOUNT_SCHEMES_CACHE_TTL_SECONDS = 3600
+
+
+@require_GET
+def admin_discount_schemes(request):
+    """GET /api/planning/admin/discount-schemes/?refresh=true -- live "present status"
+    view over the Discount Service REST API (coupon-service.api.agrevolution.in),
+    independent of the once-a-day pipeline pull (planning.services._fetch_scheme_
+    description_cards / _fetch_live_discount_schemes). Read-only, ADMIN-only in the
+    frontend nav per this app's stated RBAC convention (enforced nowhere in the API
+    itself, same as the rest of the admin/ family).
+
+    Always resolve_names=True here (unlike the pipeline's own best-effort live cross-
+    check, which skips the Redshift round trip when it isn't needed) -- a human looking
+    at this page wants real node/state names, not raw IDs, and this endpoint is called
+    rarely enough (manual, admin-only) that the extra Redshift query is a non-issue.
+
+    Cached for _ADMIN_DISCOUNT_SCHEMES_CACHE_TTL_SECONDS (1 hour) by wall-clock, not
+    plan_date -- ?refresh=true bypasses the cache for a guaranteed-live pull. Does NOT
+    share a cache file with the pipeline's own _DISCOUNT_SERVICE_LIVE_CACHE_PATH
+    (services.py) -- that one is resolve_names=False and keyed by plan_date, a
+    different cache contract; keeping them separate avoids either one's TTL/shape
+    assumptions leaking into the other."""
+    cache = _admin_discount_schemes_cache_store.load()
+    now = timezone.now().timestamp()
+    fresh = cache.get("fetched_at") and (now - cache["fetched_at"]) < _ADMIN_DISCOUNT_SCHEMES_CACHE_TTL_SECONDS
+    if fresh and request.GET.get("refresh", "").lower() != "true":
+        result = cache["result"]
+    else:
+        result = discount_service.get_active_discount_schemes(resolve_names=True)
+        cache["fetched_at"] = now
+        cache["result"] = json.loads(json.dumps(result, default=str))
+        _admin_discount_schemes_cache_store.save()
+        result = cache["result"]
+    return JsonResponse({
+        "Fetched_At": datetime.fromtimestamp(cache["fetched_at"], tz=timezone.get_current_timezone()).isoformat(),
+        "Schemes": result["schemes"],
+        "Exceptions": result["exceptions"],
     }, json_dumps_params={"default": str})
 
 
