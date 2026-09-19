@@ -2383,6 +2383,10 @@ def run_pitching_and_dc_card_agents(
                     # shares the same list, deliberately (that's the real scope these
                     # schemes are defined at).
                     entry["active_schemes"] = active_schemes_by_node.get(node_by_dc.get(dc_id), [])
+                    # Carried alongside active_schemes (added 2026-09-19, "which scheme
+                    # is recomending in which [node] actually he is in") so the DC Card
+                    # can show which Node produced this DC's scheme list.
+                    entry["node"] = node
                     # YoY PL comparison (confirmed 2026-08-18) -- PL-specific, distinct
                     # from purchase_last_fy/purchase_ytd above (those are overall
                     # purchase, not PL-tagged). ytd_pl itself is already in DailyTaskRow

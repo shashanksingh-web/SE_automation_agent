@@ -112,6 +112,32 @@ def _serialize_club_detail(club_detail: dict):
     }
 
 
+def _serialize_active_schemes_detail(detail: dict):
+    """DCCard.active_schemes_detail (planning/models.py) -> the API's PascalCase shape.
+    None when this DC has no Node on record at all (planning.dc_card._active_schemes_
+    detail returns {} in that case) -- distinct from a real Node with zero currently
+    active schemes, which still returns {"Node": ..., "Schemes": []}.
+    Confirmed_Eligible on each scheme means services.py's coupon_service.scheme match
+    succeeded AND that scheme's own node/state rule covers this DC's Node -- Profit_
+    Hindi/Generated_Description are only meaningful when it's true; a false one is a
+    scheme this DC's Node has on file but this DC's own eligibility isn't confirmed."""
+    if not detail:
+        return None
+    return {
+        "Node": detail.get("node"),
+        "Schemes": [
+            {
+                "Name": s.get("name"),
+                "Valid_Until": s.get("valid_until"),
+                "Confirmed_Eligible": s.get("confirmed_eligible", False),
+                "Generated_Description": s.get("generated_description"),
+                "Profit_Hindi": s.get("profit_hindi"),
+            }
+            for s in (detail.get("schemes") or [])
+        ],
+    }
+
+
 def _serialize_task(t: DailyTask) -> dict:
     return {
         # The DailyTask row's own DB id -- needed by the frontend to call
@@ -830,6 +856,11 @@ def dc_card(request, daily_task_id: int):
         # Structured form of Who_Section's "Scheme Standing" bullet - same shape/meaning
         # as DailyTask.Club_Detail (see _serialize_club_detail).
         "Club_Detail": _serialize_club_detail(card.club_detail),
+        # Structured form of the new "4. सक्रिय स्कीमें" block (added 2026-09-19,
+        # planning.dc_card._active_schemes_detail) - null when this DC has no Node on
+        # record at all, distinct from a real {"node": ..., "schemes": []} for a Node
+        # with zero currently-active schemes.
+        "Active_Schemes_Detail": _serialize_active_schemes_detail(card.active_schemes_detail),
         "Data_Sources_Used": card.data_sources_used,
         "Data_Sources_Skipped": card.data_sources_skipped,
         "Generated_At": card.generated_at,
