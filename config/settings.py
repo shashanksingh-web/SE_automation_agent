@@ -112,7 +112,20 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        # SQLITE_DB_PATH (added 2026-09-19): overridden in docker-compose.yml to a path
+        # inside the `sqlite_data` named volume, /app/db_data/db.sqlite3 -- NOT the
+        # default BASE_DIR/db.sqlite3 bind-mount path used before. Real incident: SQLite
+        # WAL mode needs reliable mmap/shared-memory semantics between every process
+        # touching the file, which Docker Desktop/Colima's bind-mount bridge (virtiofs/
+        # gRPC-FUSE) between macOS and the Linux VM does not reliably provide -- this
+        # corrupted the database twice in one session (once from a host-side write,
+        # once from a plain host-side read, both merely concurrent with the container's
+        # own write, no host-side write required the second time). A named volume lives
+        # natively inside the Linux VM, with no macOS-side path at all, making that
+        # whole class of corruption structurally impossible. Local non-Docker dev is
+        # unaffected -- SQLITE_DB_PATH is unset there, so this still defaults to
+        # BASE_DIR/db.sqlite3 exactly as before.
+        'NAME': os.environ.get('SQLITE_DB_PATH') or (BASE_DIR / 'db.sqlite3'),
         # Django's sqlite3 default connect timeout is 5s. The frontend fires
         # routing_plan=B and routing_plan=C as two concurrent requests for the same SE,
         # each independently reading DC/order data then writing a full PlanRun.

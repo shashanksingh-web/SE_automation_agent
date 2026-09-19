@@ -65,9 +65,15 @@ COPY --chown=appuser:appuser . .
 # /app, which broke celery beat (it writes its celerybeat-schedule dbm file to the
 # current working directory): `PermissionError: [Errno 13] Permission denied:
 # 'celerybeat-schedule'`.
-RUN mkdir -p /app/output /app/logs && \
+# /app/db_data (added 2026-09-19): the sqlite_data named volume's mount point (see
+# docker-compose.yml's own comment on why db.sqlite3 moved off a bind mount). Docker
+# initializes a fresh named volume by copying in whatever the image already has at that
+# path, ownership included -- creating it here with the right owner BEFORE the volume
+# attaches means the volume itself comes up appuser-writable from the very first mount,
+# same reasoning as the /app chown fix below for celery_beat's schedule file.
+RUN mkdir -p /app/output /app/logs /app/db_data && \
     chown appuser:appuser /app && \
-    chown -R appuser:appuser /app/output /app/logs && \
+    chown -R appuser:appuser /app/output /app/logs /app/db_data && \
     chmod +x docker-entrypoint.sh
 
 USER appuser

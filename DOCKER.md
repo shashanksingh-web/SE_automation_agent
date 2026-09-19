@@ -1,9 +1,9 @@
 # Docker setup
 
 Backend only (this repo). The frontend ("New Lead gen model") is a separate project,
-deployed independently, same as today. Not live-verified against an actual Docker
-build (Docker wasn't installed in the environment this was written in) -- read the
-"What to check before trusting this" section below before relying on it.
+deployed independently, same as today. Live-verified end to end, including a real
+corruption incident and fix -- see "The database (named volume, not a bind mount)"
+below before assuming db.sqlite3 works like a normal file on disk.
 
 ## Services
 
@@ -15,34 +15,63 @@ build (Docker wasn't installed in the environment this was written in) -- read t
   did (6:00 AM reconcile, 6:15 AM tuff -- see `config/settings.py`'s
   `CELERY_BEAT_SCHEDULE`).
 
+## The database (named volume, not a bind mount)
+
+`db.sqlite3` lives in the `sqlite_data` **named Docker volume**, mounted at
+`/app/db_data` inside the containers -- it has **no path on the host filesystem at
+all**. This is deliberate, not an oversight: the database corrupted twice in one
+session (2026-09-19) when it was a bind mount (`./db.sqlite3:/app/db.sqlite3`).
+SQLite's WAL mode needs reliable shared-memory (mmap) semantics between every process
+touching the file; Docker Desktop/Colima's bind-mount bridge (virtiofs/gRPC-FUSE)
+between macOS and the Linux VM does not reliably provide that -- the second corruption
+happened from a plain host-side `sqlite3 -readonly db.sqlite3 ...` **read**, merely
+concurrent with the container's own write, no host-side write involved at all. A named
+volume avoids the bridge entirely for this one file.
+
+**Consequence: never run `sqlite3`, a local Python process, or any other host-native
+tool directly against a `db.sqlite3` path for this project again -- there isn't one.**
+To inspect or query the live database:
+
+```
+# one-off query (the image has no sqlite3 CLI -- use Python's stdlib module)
+docker exec <web container> python -c "
+import sqlite3
+conn = sqlite3.connect('file:/app/db_data/db.sqlite3?mode=ro', uri=True)
+print(conn.execute('PRAGMA integrity_check;').fetchone())
+"
+
+# interactive
+docker exec -it <web container> python manage.py dbshell
+```
+
+To seed a fresh volume (first-ever run, or restoring from a recovered/backup copy),
+copy the file in via a throwaway container -- the named volume must already exist
+(`docker volume create <project>_sqlite_data`) and the directory + file both need
+`chown 1000:1000` (the `appuser` the app containers run as) or WAL's `-wal`/`-shm`
+companion files can't be created:
+
+```
+docker run --rm -v <project>_sqlite_data:/data -v /path/to/seed.sqlite3:/seed.sqlite3:ro \
+  alpine sh -c "cp /seed.sqlite3 /data/db.sqlite3 && chown -R 1000:1000 /data && chmod 775 /data && chmod 664 /data/db.sqlite3"
+```
+
+A first-ever `docker compose up` with no volume seeded at all also works fine --
+`manage.py migrate` creates a schema-only database automatically, same as any fresh
+Django install; seeding only matters when you're carrying forward real data.
+
 ## One-time setup before the first `docker compose up`
 
 1. `cp .env.docker.example .env` and fill in real values -- at minimum `SECRET_KEY`,
    `DEBUG=False`, `REDSHIFT_*`, and whichever LLM provider(s) you're using. See that
    file's own comments for what's required vs. optional.
 
-2. **Create the SQLite files on the host before first run.** Docker bind-mounts a
-   path that doesn't exist yet as a *directory*, not a file -- if `db.sqlite3` etc.
-   don't already exist on the host, the containers will find a directory where they
-   expect a file and fail to start Django at all.
-
-   ```
-   touch db.sqlite3 db.sqlite3-wal db.sqlite3-shm
-   chmod 666 db.sqlite3 db.sqlite3-wal db.sqlite3-shm
-   ```
-
-   The `chmod` matters too, not just the `touch`: bind-mounted files keep whatever
-   ownership/permissions they have on the host -- the container runs as a non-root
-   user (`appuser`, uid 1000) for security, which very likely won't match your host
-   user's uid, so without this the app can read the database but fail to write to it.
-   Same reasoning applies to `output/` and `logs/` if you hit permission errors there
-   too (`chmod -R 777 output logs`, or match ownership to uid 1000 directly if you'd
-   rather not open permissions that wide).
-
-3. Make sure `DC_RAnk.csv`, `config and parameter /`, `Niyojan Q2-FY_26_27 Dashboard -
+2. Make sure `DC_RAnk.csv`, `config and parameter /`, `Niyojan Q2-FY_26_27 Dashboard -
    Planning.csv`, and `pitch_config/` already exist at the project root (they should,
    if you're running this from a normal checkout that's already been used locally) --
-   these are bind-mounted in as-is, not created automatically.
+   these are still bind-mounted in as-is (unlike db.sqlite3, they're plain files/CSVs
+   with no WAL-mode concurrency concerns), not created automatically. If you hit
+   permission errors on `output/`/`logs/` (also still bind-mounted), `chmod -R 777
+   output logs`, or match ownership to uid 1000 directly.
 
 ## Running it
 
@@ -79,21 +108,26 @@ The app is then reachable at `http://localhost:8000/`, same URLs as local dev
   the same issue -- solo just hasn't been tested against removing it here, and this
   app's task volume is low enough that solo costs nothing real either way.
 
-## What to check before trusting this in production
+## Live-verification history
 
-This was built by careful review of the app's actual settings/URLs/task code, but
-**Docker itself was not installed in the environment this was written in, so none of
-it has been built or run.** Before relying on it:
+All 4 of the checks below have actually been done, not just planned -- keeping the
+list as a record of what "live-verified" means here, and as the checklist to re-run
+after any future infra change to this stack:
 
-1. `docker compose build` -- confirm the image actually builds (dependency
-   resolution, no missing system libs).
-2. `docker compose up` -- confirm all 4 containers start and `web`'s healthcheck goes
-   green; watch `celery_worker`/`celery_beat` logs for both tasks registering
-   correctly (matching what's documented in `planning/tasks.py`).
-3. Hit a real endpoint (`curl http://localhost:8000/api/planning/se/v1/<a real SE
-   email>/?date=<today>`) and confirm it reaches the real Redshift/database
-   correctly, the same way every change in this project was live-verified locally.
-4. Confirm a Celery task actually runs end-to-end inside the container (e.g. trigger
-   `admin_generate_all_states` and watch `celery_worker`'s logs) -- the `--pool=solo`
-   choice in particular is carried over from a macOS-specific bug and deserves a real
-   check on whatever platform this actually gets deployed to.
+1. `docker compose build` -- image builds clean, no missing system libs.
+2. `docker compose up` -- all 4 containers start, `web`'s healthcheck goes green,
+   `celery_worker`/`celery_beat` register `reconcile_outcomes_task`/
+   `run_scheduled_tuff_task`/`run_all_states_tuff_task` correctly.
+3. Real endpoints hit successfully against real Redshift/database data (state/node/SE
+   directory listings, plan-run listings), confirmed serving the actual frontend
+   (`localhost:5173`) traffic, not just curl.
+4. A Celery task (`admin_generate_all_states`) run end-to-end inside the container,
+   including a full network-wide generation -- `--pool=solo` confirmed working on this
+   image's Python 3.12/Linux base, not just carried over untested from the macOS bug
+   that originally required it.
+
+Additionally, as of 2026-09-19: a real database corruption incident (see "The
+database" section above) was recovered from twice (`sqlite3 .recover`) and the
+underlying bind-mount root cause fixed with the named-volume migration -- confirmed
+`PRAGMA integrity_check` stays `ok` even while a real write (a live plan generation)
+is actively in progress against the volume-backed database.

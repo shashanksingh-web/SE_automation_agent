@@ -6,11 +6,27 @@
 # via env_file. Copy .env.docker.example to .env and fill in real values before
 # `docker compose up`; see that file for what's required vs optional.
 #
-# Data persistence: db.sqlite3, output/, logs/, and the operator-managed CSV/config
-# files (DC_RAnk.csv, "config and parameter /", the AOP CSV, pitch_config/) are bind
-# mounts back to the host, not baked into the image -- a rebuild or container restart
-# never loses them, and the admin CSV-upload endpoints keep writing to the same real
-# files an operator can inspect directly on the host.
+# Data persistence: output/, logs/, and the operator-managed CSV/config files
+# (DC_RAnk.csv, "config and parameter /", the AOP CSV, pitch_config/) are bind mounts
+# back to the host, not baked into the image -- a rebuild or container restart never
+# loses them, and the admin CSV-upload endpoints keep writing to the same real files an
+# operator can inspect directly on the host.
+#
+# db.sqlite3 is DELIBERATELY NOT a bind mount (changed 2026-09-19, real incident) -- it
+# lives in the `sqlite_data` named volume instead. SQLite's WAL mode requires reliable
+# shared-memory (mmap) semantics between every process touching the file; Docker
+# Desktop/Colima's bind-mount bridge (virtiofs/gRPC-FUSE) between macOS and the Linux
+# VM does not reliably provide that. Confirmed live: real database corruption happened
+# TWICE in one session from this exact setup -- once from a host-side Python process
+# writing to the bind-mounted file while the container also had it open, and again from
+# a plain host-side `sqlite3 -readonly` READ while the container was mid-write -- so
+# this isn't a "don't write from the host" discipline problem, it's the bind mount
+# itself being unsafe for concurrent access of ANY kind while a WAL-mode SQLite file
+# sits on it. A named volume lives natively inside the Linux VM's own filesystem, with
+# no macOS-side path at all, which makes that whole class of corruption structurally
+# impossible rather than something to remember not to do. Tradeoff: `sqlite3
+# db.sqlite3` from the host no longer works for ad-hoc inspection -- use `docker exec
+# <web container> sqlite3 /app/db_data/db.sqlite3 ...` instead (see DOCKER.md).
 
 services:
   redis:
@@ -34,20 +50,15 @@ services:
       - .env
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
+      # Read by config/settings.py -- overrides the default BASE_DIR/db.sqlite3 path
+      # (which stays the default for local non-Docker dev) so the DB lives in the
+      # sqlite_data named volume below instead of a bind mount. See this file's own
+      # top comment for why.
+      SQLITE_DB_PATH: /app/db_data/db.sqlite3
     ports:
       - "8000:8000"
     volumes: &app_data_volumes
-      # Bind mount, not a named volume -- must land at the EXACT path Django's
-      # settings.py expects (BASE_DIR / 'db.sqlite3', i.e. /app/db.sqlite3), and WAL
-      # mode's -wal/-shm companion files need to sit on the same real filesystem as
-      # the main file, which a bind mount guarantees for free (they're all just files
-      # in the same host directory) in a way a separate named volume wouldn't. Docker
-      # gotcha: if ./db.sqlite3 doesn't already exist on the host before the first
-      # `docker compose up`, Docker creates it as a DIRECTORY instead of an empty
-      # file -- run `touch db.sqlite3` on the host first (see DOCKER.md).
-      - ./db.sqlite3:/app/db.sqlite3
-      - ./db.sqlite3-wal:/app/db.sqlite3-wal
-      - ./db.sqlite3-shm:/app/db.sqlite3-shm
+      - sqlite_data:/app/db_data
       - ./output:/app/output
       - ./logs:/app/logs
       - ./DC_RAnk.csv:/app/DC_RAnk.csv
@@ -71,6 +82,7 @@ services:
       - .env
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
+      SQLITE_DB_PATH: /app/db_data/db.sqlite3
     volumes: *app_data_volumes
     # --pool=solo: see Dockerfile's own comment -- a real, confirmed billiard/Python
     # 3.14/macOS bug this project hit locally; kept as the safe default here too since
@@ -96,8 +108,10 @@ services:
       - .env
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
+      SQLITE_DB_PATH: /app/db_data/db.sqlite3
     volumes: *app_data_volumes
     command: ["celery", "-A", "config", "beat", "--loglevel=info"]
 
 volumes:
   redis_data:
+  sqlite_data:
