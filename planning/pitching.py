@@ -45,6 +45,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import discount_service
 from .ai_sales_forecast import build_ai_pitch
 from .models import DailyTask, PitchScript, PlanRun
 from .pitch_config_loader import get_pitch_config
@@ -325,11 +326,31 @@ def _tp_active_schemes(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     until now the template mentioned none, only the DC Card did). Each line carries
     the scheme's profit from its card facts (scheme_pointer_hindi). Multi-line so
     _tell_lines splits it into one bullet per scheme, same convention as
-    _format_product_list. None when no scheme is active."""
+    _format_product_list. None when no scheme is active.
+
+    The single best-value scheme (discount_service.best_scheme, added 2026-09-20,
+    explicit user request - "add the Recommended part scheme portion and logic") leads
+    as its own "अनुशंसित योजना" line, ahead of every other eligible scheme under "अन्य
+    पात्र योजनाएं" - the same distinguished-top-pick concept services.py's own
+    recommended_products already applies to products (an algorithmically-ranked #1,
+    not just an ordered list), now applied to schemes too, since nothing before this
+    ever called out which of several matched schemes was actually the best one to
+    lead with. None when no scheme has a confirmed value to recommend (every match is
+    merely Node-listed) - falls back to listing every scheme as equally eligible,
+    exactly as before, rather than inventing a "best" one."""
     schemes = [s for s in (ctx.get("active_schemes") or []) if s.get("name")]
     if not schemes:
         return None
-    return "\n".join(f"- {scheme_pointer_hindi(s)}" for s in schemes[:10]), "Schemes"
+    recommended = discount_service.best_scheme(schemes)
+    others = [s for s in schemes if s is not recommended][:10]
+    lines: List[str] = []
+    if recommended:
+        lines.append(f"अनुशंसित योजना (Recommended): {scheme_pointer_hindi(recommended)}")
+    if others:
+        if recommended:
+            lines.append("अन्य पात्र योजनाएं (Other eligible schemes):")
+        lines.extend(f"- {scheme_pointer_hindi(s)}" for s in others)
+    return "\n".join(lines), "Schemes"
 
 
 def _format_product_list(products: List[Dict[str, Any]]) -> str:

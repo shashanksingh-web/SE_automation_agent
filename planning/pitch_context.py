@@ -55,6 +55,11 @@ class ExtraDcContext(TypedDict, total=False):
     business_area_strength_prior_year: Optional[List[Dict[str, Any]]]
     club: Optional[Dict[str, Any]]  # raw normalize_dc_club() row
     active_schemes: List[Dict[str, Any]]  # Node-scoped, added 2026-09-12
+    # This DC's own Node (added 2026-09-19, explicit user request -- "if i want to
+    # check which scheme is recomending in which [node] actually he is in") -- carried
+    # alongside active_schemes so the DC Card can show WHY a Node-scoped scheme is
+    # listed for this specific DC, rather than leaving that association implicit.
+    node: Optional[str]
 
     # YoY PL comparison (Source 3d), confirmed 2026-08-18 -- distinct from
     # purchase_last_fy/purchase_ytd above (those are overall purchase, not PL-tagged).

@@ -2160,6 +2160,16 @@ def run_pitching_and_dc_card_agents(
     if client.configured and total_tasks > 0:
         try:
             task_dc_ids = list(plan_run.tasks.exclude(dc_id__isnull=True).values_list("dc_id", flat=True).distinct())
+            # Purpose_Of_Visit per dc_id (added 2026-09-20, explicit user request --
+            # "for all se sale pitcg only for focused private label") -- one DailyTask
+            # row per dc_id per plan_run (same assumption task_dc_ids' own .distinct()
+            # already makes), so a plain dict is safe. Used below to restrict S1's
+            # recommended-product ranking to PRIVATE LABEL for any task whose bundled
+            # Purpose_Of_Visit includes Sale (e.g. "Promise To Pay / Collection + Sale"),
+            # not just a task whose ENTIRE purpose is Sale alone.
+            purpose_by_dc: Dict[str, str] = dict(
+                plan_run.tasks.exclude(dc_id__isnull=True).values_list("dc_id", "purpose_of_visit")
+            )
             if task_dc_ids:
                 # Block resolution -- unconditional now (previously only pulled for
                 # ABM/BLOCK/DISTRICT scopes). Unfiltered pull, matched to dc_ids in
@@ -2348,16 +2358,35 @@ def run_pitching_and_dc_card_agents(
                     block_ids = [p for p in peer_dc_ids if block and block_by_dc.get(p) == block]
                     node_ids = [p for p in node_peer_dc_ids if node and node_by_dc.get(p) == node]
 
-                    if dominant_category:
-                        stats, scope = _peer_stats(block_ids), "block"
+                    def _block_then_node(segment: Optional[str]) -> Tuple[Optional[Dict[str, Any]], str]:
                         # Block yielded nothing usable (no peers, or peers with zero
                         # purchase in this category) -- widen to node-level peers. Only
                         # this direction: block is the more locally-relevant comparison
                         # when it has real data, so it's never overridden by node.
-                        if not stats or not stats["avg"]:
-                            node_stats = _peer_stats(node_ids)
-                            if node_stats and node_stats["avg"]:
-                                stats, scope = node_stats, "node"
+                        s, sc = _peer_stats(block_ids, segment), "block"
+                        if not s or not s["avg"]:
+                            node_s = _peer_stats(node_ids, segment)
+                            if node_s and node_s["avg"]:
+                                s, sc = node_s, "node"
+                        return s, sc
+
+                    if dominant_category:
+                        # Sale-purpose Private Label preference (added 2026-09-20,
+                        # explicit user request -- "for all se sale pitcg only for
+                        # focused private label"): "sale" anywhere in this DC's bundled
+                        # Purpose_Of_Visit (e.g. "Promise To Pay / Collection + Sale"),
+                        # not only a task whose entire purpose is Sale alone.
+                        want_pl_only = "sale" in (purpose_by_dc.get(dc_id) or "").lower()
+                        stats, scope = _block_then_node("PRIVATE LABEL" if want_pl_only else None)
+                        # Peers had real purchase data in this category (stats["avg"] is
+                        # the whole-category average regardless of segment, per
+                        # _peer_stats' own docstring), but none of it was Private Label --
+                        # fall back to the unrestricted (any-segment) result rather than
+                        # recommending nothing, per explicit user request ("fall back to
+                        # Branded"). Genuinely no candidate_ids/no category purchase at
+                        # all is unaffected -- stats stays None/empty either way.
+                        if want_pl_only and stats and not stats["top_products"]:
+                            stats, scope = _block_then_node(None)
                         if stats and stats["avg"]:
                             entry["block_category_avg"] = stats["avg"]
                             entry["peer_comparison_scope"] = scope
@@ -2383,6 +2412,10 @@ def run_pitching_and_dc_card_agents(
                     # shares the same list, deliberately (that's the real scope these
                     # schemes are defined at).
                     entry["active_schemes"] = active_schemes_by_node.get(node_by_dc.get(dc_id), [])
+                    # Carried alongside active_schemes (added 2026-09-19, "which scheme
+                    # is recomending in which [node] actually he is in") so the DC Card
+                    # can show which Node produced this DC's scheme list.
+                    entry["node"] = node
                     # YoY PL comparison (confirmed 2026-08-18) -- PL-specific, distinct
                     # from purchase_last_fy/purchase_ytd above (those are overall
                     # purchase, not PL-tagged). ytd_pl itself is already in DailyTaskRow
@@ -2400,9 +2433,31 @@ def run_pitching_and_dc_card_agents(
                         needs_geo_fallback.append(dc_id)
 
                 if needs_geo_fallback:
-                    _attach_nearby_product_recommendations(
-                        client, dc_master, needs_geo_fallback, extra_data_by_dc, plan_date, result_key="recommended_products",
-                    )
+                    # Same Sale-purpose Private Label preference as the block/node tier
+                    # above (added 2026-09-20), applied to the geo-radius/nearest-Node
+                    # fallback tier too -- a Sale-purpose DC whose own block+node peers
+                    # had zero purchase data at all still reaches this tier and should
+                    # get the same PL-first treatment, not silently drop back to
+                    # unrestricted just because it needed the wider fallback.
+                    sale_pl_ids = [d for d in needs_geo_fallback if "sale" in (purpose_by_dc.get(d) or "").lower()]
+                    other_ids = [d for d in needs_geo_fallback if d not in sale_pl_ids]
+                    if sale_pl_ids:
+                        _attach_nearby_product_recommendations(
+                            client, dc_master, sale_pl_ids, extra_data_by_dc, plan_date,
+                            result_key="recommended_products", segment="PRIVATE LABEL",
+                        )
+                        # No Private Label product found nearby even at this wider tier
+                        # -- fall back to the unrestricted search rather than leaving
+                        # these DCs with no recommendation at all.
+                        still_empty = [d for d in sale_pl_ids if not extra_data_by_dc.get(d, {}).get("recommended_products")]
+                        if still_empty:
+                            _attach_nearby_product_recommendations(
+                                client, dc_master, still_empty, extra_data_by_dc, plan_date, result_key="recommended_products",
+                            )
+                    if other_ids:
+                        _attach_nearby_product_recommendations(
+                            client, dc_master, other_ids, extra_data_by_dc, plan_date, result_key="recommended_products",
+                        )
                 # Benefit text for whatever ended up recommended (both tiers above),
                 # for the AI pitch's per-product pointers -- see _attach_product_descriptions.
                 description_failure = _attach_product_descriptions(client, extra_data_by_dc)

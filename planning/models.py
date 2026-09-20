@@ -436,6 +436,18 @@ class DCCard(models.Model):
     health_score_section = models.TextField(blank=True, default="")
     health_score_detail = models.JSONField(default=dict, blank=True)
 
+    # Section 4 -- Active Schemes Eligibility (added 2026-09-19, explicit user request
+    # -- "if i want to check which scheme is recomending in which [node] actually he is
+    # in" / "in which scheme actually running and elligible"). Node-scoped Active
+    # Sales/ABS Schemes (services.py's active_schemes_by_node) were already folded into
+    # the pitch's "Schemes" pointer, but nothing showed WHICH Node produced the list or
+    # which of those schemes actually had confirmed eligibility numbers (a "benefit"
+    # match against coupon_service.scheme) versus being merely Node-listed. See
+    # planning.dc_card._active_schemes_eligibility/_active_schemes_detail. {} when this
+    # DC has no Node on record at all.
+    active_schemes_section = models.TextField(blank=True, default="")
+    active_schemes_detail = models.JSONField(default=dict, blank=True)
+
     data_sources_used = models.JSONField(default=list, blank=True)
     data_sources_skipped = models.JSONField(default=list, blank=True)
     generated_at = models.DateTimeField(auto_now_add=True)

@@ -49,9 +49,11 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
+from . import discount_service
 
 from .models import DailyTask, DCCard, PlanRun
 from .pitch_context import ExtraDcContext
+from .pitching import hindi_date, scheme_profit_hindi
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +240,83 @@ def _scheme_standing(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return ", ".join(bits) + "।", "Scheme_Standing"
 
 
+def _active_schemes_eligibility(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """New section (added 2026-09-19, explicit user request -- "if i want to check
+    which scheme is recomending in which [node] actually he is in" / "in which scheme
+    actually running and elligible") -- makes the Active Sales/ABS Schemes match
+    auditable per-DC, which nothing in this app exposed before (see _tp_active_schemes
+    in pitching.py: it lists every scheme, folded straight into pitch prose, with no
+    trace of the Node it matched on or which schemes are only loosely matched).
+
+    Two different confidence levels, and this section says which is which rather than
+    presenting all of them the same way:
+      - CONFIRMED: entry.get("benefit") was attached (services.py's coupon_service.
+        scheme match succeeded AND that scheme's own node/state rule covers this DC's
+        Node) -- profit numbers are real, this is what the pitch also quotes.
+      - Node-listed only: this DC's Node has an active abs_scheme/scheme_details row
+        for this scheme, but the richer coupon_service join either didn't find a
+        matching row (schemes.py's own is_active/booking-window filter excluded it) or
+        found one whose own node/state rule does NOT include this DC's Node -- i.e. the
+        scheme fires for the Node in general but this specific DC may not actually
+        qualify. Never silently upgraded to CONFIRMED and never hidden -- same
+        never-resolve-ambiguity-silently posture as the rest of this pipeline.
+
+    The single best-value scheme (discount_service.best_scheme, added 2026-09-20,
+    explicit user request -- "add the Recommended part scheme portion and logic") is
+    marked "⭐ अनुशंसित" so an admin/ABM scanning the card sees at a glance which of
+    several matched schemes is actually the best one, same distinguished-top-pick
+    concept the pitch's own "अनुशंसित योजना" line and the AI prompt's RECOMMENDED tag
+    now share (all three read the same rank/value data, so they always agree)."""
+    node = ctx.get("node")
+    schemes = [s for s in (ctx.get("active_schemes") or []) if s.get("name")]
+    if not schemes:
+        return (f"{node} Node में अभी कोई सक्रिय Sales/ABS स्कीम नहीं है।" if node
+                else "इस DC के लिए Node की जानकारी नहीं है, इसलिए स्कीम मैच नहीं दिखाया जा सकता।"), "Active_Schemes_Eligibility"
+    top_name = (discount_service.best_scheme(schemes) or {}).get("name")
+    lines = [f"{node or '(Node अज्ञात)'} Node के लिए {len(schemes)} सक्रिय स्कीम:"]
+    for s in schemes:
+        name = (s.get("name") or "").strip()
+        until = hindi_date(s.get("valid_until"))
+        validity = f" ({until} तक)" if until else ""
+        profit = scheme_profit_hindi(s)
+        star = "⭐ अनुशंसित -- " if top_name and name == top_name else ""
+        if profit:
+            lines.append(f"- {star}'{name}'{validity} -- CONFIRMED एलिजिबल: {profit}")
+        else:
+            lines.append(f"- {star}'{name}'{validity} -- Node पर लिस्टेड, लेकिन इस DC के लिए एलिजिबिलिटी नंबर कन्फर्म नहीं (booking window बंद हो सकती है या scheme rule इस Node/State को कवर नहीं करता)")
+    return "\n".join(lines), "Active_Schemes_Eligibility"
+
+
+def _active_schemes_detail(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Structured form of _active_schemes_eligibility, for the frontend to render as
+    badges/cards instead of re-parsing the Hindi text -- same pattern as
+    _business_area_detail/_turnover_detail. {} when this DC has no Node on record at
+    all (distinct from "Node has zero active schemes", which still returns a real dict
+    with node set and schemes=[]). is_recommended (added 2026-09-20, see
+    _active_schemes_eligibility) marks at most one scheme -- the same one the pitch
+    and the AI prompt call out, all three sourced from the same discount_service.
+    best_scheme call."""
+    node = ctx.get("node")
+    if not node:
+        return {}
+    schemes = [s for s in (ctx.get("active_schemes") or []) if s.get("name")]
+    top_name = (discount_service.best_scheme(schemes) or {}).get("name")
+    return {
+        "node": node,
+        "schemes": [
+            {
+                "name": s.get("name"),
+                "valid_until": s.get("valid_until"),
+                "confirmed_eligible": bool(s.get("benefit")),
+                "generated_description": s.get("generated_description"),
+                "profit_hindi": scheme_profit_hindi(s),
+                "is_recommended": bool(top_name) and s.get("name") == top_name,
+            }
+            for s in schemes
+        ],
+    }
+
+
 def _upcoming_to_sell_proxy(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """PROXY only, not a real crop-calendar answer -- same last-year-purchase + current
     Block-trend combination the CSV itself describes, with the same honesty gap it
@@ -390,11 +469,24 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
         used.append(code)
         health_score_section = text
 
+    # Section 4 -- Active Schemes Eligibility (added 2026-09-19, see
+    # _active_schemes_eligibility's own docstring). Multi-line (one line per scheme), so
+    # built directly rather than through the run()/"- label: text" single-bullet
+    # helper above -- same reason Health Score just above bypasses it too.
+    active_schemes_result = _active_schemes_eligibility(ctx)
+    if active_schemes_result is None:
+        skipped.append("Active Schemes Eligibility (no data available this run)")
+        active_schemes_section = "(कोई डेटा उपलब्ध नहीं इस रन में)"
+    else:
+        active_schemes_section, code = active_schemes_result
+        used.append(code)
+
     card_hindi = "\n\n".join([
         f"{dc_name} -- Dehaat Center Ko Jaano",
         "1. कौन (Who)\n" + who_section,
         "2. DC कहां खड़ा है (Where DC Stands)\n" + where_dc_stands_section,
         "3. Health Score\n" + health_score_section,
+        "4. सक्रिय स्कीमें (Active Schemes)\n" + active_schemes_section,
     ])
 
     # Old Section 3 (प्राइवेट लेबल / Private Label) removed 2026-09-03, per direct
@@ -413,6 +505,8 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
         "private_label_section": "",
         "health_score_section": health_score_section,
         "health_score_detail": _health_score_detail(task),
+        "active_schemes_section": active_schemes_section,
+        "active_schemes_detail": _active_schemes_detail(ctx),
         "card_hindi": card_hindi,
         "data_sources_used": used,
         "data_sources_skipped": skipped,
