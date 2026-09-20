@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
+from . import discount_service
 
 logger = logging.getLogger(__name__)
 
@@ -326,8 +327,25 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
     order. live_status_flag (planning.services' discount_service.cross_check_
     active_status, added 2026-09-19) carries through unchanged when a scheme's own
     live-API status disagrees with this SQL-sourced entry -- see _scheme_lines for how
-    it's rendered into the prompt."""
+    it's rendered into the prompt.
+
+    is_recommended (added 2026-09-20, explicit user request -- "add the Recommended
+    part scheme portion and logic") flags the single scheme discount_service.
+    best_scheme picks out of this list -- rank-1 AND a real, confirmed
+    benefit.max_discount_per_dc, never just "first in an already-sorted list" (a rank-1
+    entry with no confirmed value at all isn't a real recommendation, see best_scheme's
+    own docstring). At most one True per DC; every entry False when no scheme has a
+    confirmed value to recommend. _scheme_lines renders it as an explicit RECOMMENDED
+    tag so the model doesn't have to infer "best" purely from list order."""
     schemes = ctx.get("active_schemes") or []
+    # Matched by name, not object identity -- best_scheme calls rank_schemes_by_value
+    # internally when its input isn't already rank-tagged, which returns NEW dict
+    # copies (dict(s, rank=i+1)), so an `is` comparison against schemes[:10]'s own
+    # objects would silently never match whenever this DC's schemes hadn't already
+    # been ranked upstream (services.py only wires that ranking in when
+    # DiscountServiceClient is configured). Name is also what the rest of this
+    # pipeline already matches schemes on (see cross_check_active_status).
+    top_name = (discount_service.best_scheme(schemes[:10]) or {}).get("name")
     return [
         {
             "name": s.get("name"), "category": s.get("category"), "brand": s.get("brand"),
@@ -337,6 +355,7 @@ def _active_schemes_context(ctx: Dict[str, Any]) -> List[Dict[str, Optional[str]
             # -- what the fallback pointer is built from; see _ensure_scheme_pointers.
             "benefit": s.get("benefit"),
             "live_status_flag": s.get("live_status_flag"),
+            "is_recommended": top_name is not None and s.get("name") == top_name,
         }
         for s in schemes[:10] if s.get("name")
     ]
@@ -354,12 +373,18 @@ def _scheme_lines(schemes: List[Dict[str, Any]]) -> List[str]:
     explicit caution, not silently dropped or acted on -- the SQL-sourced description
     stays authoritative (per the "supplement, don't replace" decision), this just tells
     the model not to confidently push a scheme the live Discount Service API no longer
-    lists as active."""
+    lists as active.
+
+    is_recommended (added 2026-09-20, see _active_schemes_context) gets an explicit
+    "RECOMMENDED" tag rather than leaving the model to infer "best" purely from list
+    order -- same "add the Recommended part scheme portion and logic" request the
+    templated fallback's own अनुशंसित योजना line implements."""
     if not schemes:
         return []
     lines = ["Currently-active Sales/ABS Schemes available to this DC (a separate system from DC Club above):"]
     for s in schemes:
-        line = f"- {s['name']} | category={s.get('category')} | brand={s.get('brand')} | valid until {s.get('valid_until')}"
+        tag = "RECOMMENDED | " if s.get("is_recommended") else ""
+        line = f"- {tag}{s['name']} | category={s.get('category')} | brand={s.get('brand')} | valid until {s.get('valid_until')}"
         if s.get("description"):
             line += f" | {s['description']}"
         if s.get("live_status_flag"):
@@ -381,7 +406,7 @@ def _scheme_rule(schemes: List[Dict[str, Any]]) -> str:
     if not schemes:
         return ""
     names = ", ".join(f"'{s['name']}'" for s in schemes)
-    return (
+    rule = (
         f"Active schemes: write ONE SEPARATE pointer for EACH of the {len(schemes)} scheme(s) listed above "
         f"({names}) -- every one of them, none skipped, never two schemes in one pointer. Each "
         "pointer names the scheme by its exact name as given (in English, in quotes) so the DC "
@@ -391,6 +416,14 @@ def _scheme_rule(schemes: List[Dict[str, Any]]) -> str:
         "pointer that gives only the name and validity is NOT acceptable -- the discount is the "
         "reason to book."
     )
+    # Recommended-scheme lead (added 2026-09-20, "add the Recommended part scheme
+    # portion and logic") -- every scheme still gets its own pointer (the explicit
+    # "all eligible scheme should in batana part" request above is unchanged), this
+    # only asks for ORDER: the RECOMMENDED-tagged scheme's pointer goes first.
+    recommended = next((s["name"] for s in schemes if s.get("is_recommended")), None)
+    if recommended:
+        rule += f" Write the pointer for the RECOMMENDED-tagged scheme ('{recommended}') FIRST, before the others."
+    return rule
 
 
 def _norm(text: str) -> str:

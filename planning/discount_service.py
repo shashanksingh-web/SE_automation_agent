@@ -167,6 +167,39 @@ def rank_schemes_by_value(schemes: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return [dict(s, rank=i + 1) for i, s in enumerate(ranked)]
 
 
+def best_scheme(schemes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Single "Recommended Scheme" pick (added 2026-09-20, explicit user request --
+    "add the Recommended part scheme portion and logic", mirroring how Recommended
+    Products already singles out a top pick rather than presenting every eligible
+    scheme as an undifferentiated list). rank_schemes_by_value already sorts best-
+    value-first, but "first in the list" isn't safely "the recommended one" on its
+    own -- an entry with no confirmed benefit.max_discount_per_dc (never matched the
+    richer coupon_service feed, or matched a rule that doesn't cover this DC's Node --
+    see planning.services' own enrichment block) sorts LAST there, but if EVERY scheme
+    is unenriched, rank 1 would just be an arbitrary first entry with nothing to
+    actually recommend.
+
+    Returns the rank-1 scheme only when it carries a real, parseable, positive
+    benefit.max_discount_per_dc -- i.e. only when there is a genuinely confirmed best
+    scheme to recommend. None when every scheme is merely Node-listed with no
+    confirmed value (same "never invent a fact" posture as the rest of this module) --
+    callers should fall back to listing every scheme as equally eligible in that case,
+    not silently pick one. Does not require the input to already be rank_schemes_by_
+    value's own output -- ranks internally, so a caller with only active_schemes_by_
+    node[node] (unranked) can call this directly."""
+    if not schemes:
+        return None
+    ranked = rank_schemes_by_value(schemes) if not all("rank" in s for s in schemes) else schemes
+    top = min(ranked, key=lambda s: s.get("rank", len(ranked) + 1))
+    max_discount = (top.get("benefit") or {}).get("max_discount_per_dc")
+    try:
+        if max_discount is None or float(max_discount) <= 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return top
+
+
 def cross_check_active_status(sql_schemes: List[Dict[str, Any]], live_schemes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """For each entry in sql_schemes (the active_schemes_by_node[node] shape -- see
     rank_schemes_by_value's docstring), checks whether the same scheme NAME appears in

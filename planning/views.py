@@ -120,7 +120,11 @@ def _serialize_active_schemes_detail(detail: dict):
     Confirmed_Eligible on each scheme means services.py's coupon_service.scheme match
     succeeded AND that scheme's own node/state rule covers this DC's Node -- Profit_
     Hindi/Generated_Description are only meaningful when it's true; a false one is a
-    scheme this DC's Node has on file but this DC's own eligibility isn't confirmed."""
+    scheme this DC's Node has on file but this DC's own eligibility isn't confirmed.
+    Is_Recommended (added 2026-09-20, planning.dc_card._active_schemes_detail) marks
+    at most one scheme per DC -- discount_service.best_scheme's single top pick, the
+    same one the pitch's own "अनुशंसित योजना" line and the AI prompt's RECOMMENDED tag
+    call out."""
     if not detail:
         return None
     return {
@@ -132,6 +136,7 @@ def _serialize_active_schemes_detail(detail: dict):
                 "Confirmed_Eligible": s.get("confirmed_eligible", False),
                 "Generated_Description": s.get("generated_description"),
                 "Profit_Hindi": s.get("profit_hindi"),
+                "Is_Recommended": s.get("is_recommended", False),
             }
             for s in (detail.get("schemes") or [])
         ],
