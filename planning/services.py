@@ -3764,10 +3764,13 @@ def generate_plan_for_scope(
 
         # Routing Agent hookup (R0.4 Origin_Point): prefer the previous working day's
         # punch-in; fall back to plan_date's own punch-in (punch_in_coords, already
-        # fetched above) only if no prior-day one exists; defer entirely (None) if
-        # neither does, per R0.4's "waits for today's real punch-in instead of
-        # guessing" rule -- planning.routing.generate_route_plans_for_se() honors that
-        # by producing no RoutePlan/DailyTask rows for this SE this run.
+        # fetched above) if no prior-day one exists; fall back further to the centroid
+        # of this SE's own in-scope DC candidates (added 2026-09-21, explicit user
+        # request -- SE Daily Plans must not depend on same-day punch-in) when NEITHER
+        # real punch-in source exists; only defers entirely (None) in the genuine
+        # can't-route case (no punch-in history AND no DC coordinates) --
+        # planning.routing.generate_route_plans_for_se() honors that last case by
+        # producing no RoutePlan/DailyTask rows for this SE this run.
         def _route_selector(candidates, se_id_str, plan_date_, punch_in_coords, constants_, dc_by_id_, _uid=uid, _email=email):
             prev = prev_punch_in_by_se.get(_uid)
             if prev is not None:
@@ -3775,7 +3778,8 @@ def generate_plan_for_scope(
             elif punch_in_coords is not None:
                 origin, origin_basis = punch_in_coords, "today_punch_in"
             else:
-                origin, origin_basis = None, "waiting_for_today"
+                centroid = agent.dc_portfolio_centroid(candidates)
+                origin, origin_basis = (centroid, "dc_portfolio_centroid") if centroid else (None, "waiting_for_today")
             result = routing.generate_route_plans_for_se(
                 plan_run, str(_uid), _email, plan_date_, candidates, origin, origin_basis, constants_,
                 plan_choice=resolved_routing_plan, enable_rotation=enable_rotation,

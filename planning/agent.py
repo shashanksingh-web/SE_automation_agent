@@ -3836,6 +3836,31 @@ def resolve_typical_origin(points: List[Tuple[float, float, str]], buffer_km: fl
     }
 
 
+def dc_portfolio_centroid(candidates: List[Dict[str, Any]]) -> Optional[Tuple[float, float]]:
+    """R0.4's third and final Origin_Point fallback (added 2026-09-21, explicit user
+    request -- "se daily planning not depend on se punch in that day, it should be
+    created for all se"), used only when an SE has neither today's punch-in nor a
+    resolve_typical_origin() 30-day history -- previously the point route generation
+    simply gave up (see planning.routing.generate_route_plans_for_se's own
+    Origin_Point_Unresolved deferral). Plain mean of Latitude/Longitude across this
+    SE's own in-scope DC candidates (already populated per DC from Geo_Mapping, see
+    this file's own DC_Master enrichment ~line 2873) -- a real, already-available
+    anchor point grounded in where this SE actually works, not an arbitrary guess, and
+    the same "plain mean of known points" math resolve_typical_origin uses, just over
+    DC locations instead of punch-in history. None when zero candidates have usable
+    coordinates -- the genuine can't-route case (which then correctly still defers, no
+    change needed there)."""
+    points = []
+    for c in candidates:
+        dc = c.get("dc") if isinstance(c, dict) else None
+        lat, lon = (dc.get("Latitude"), dc.get("Longitude")) if isinstance(dc, dict) else (None, None)
+        if lat is not None and lon is not None and not is_zero_coord(lat, lon):
+            points.append((lat, lon))
+    if not points:
+        return None
+    return (sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points))
+
+
 def circuity_distance_km(lat1: Optional[float], lon1: Optional[float], lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
     """R3.1, FINAL: Distance_Leg(i,j) = Haversine(i,j) x 1.4. Same None-propagation
     convention as haversine_km() -- an incomplete point yields an incomplete distance,
@@ -6270,12 +6295,13 @@ def generate_se_daily_plan(
         "Total_Capacity_Minutes": constants.total_capacity_min,
     }
 
-    if attendance_gate_ok is False:
-        return {
-            **header, "Tasks": [],
-            "Skipped_Reason": "No punch-in recorded for this SE today (Section 3a gating signal)",
-            "Data_Confidence": "Live",
-        }
+    # Same-day attendance no longer blocks plan generation (removed 2026-09-21,
+    # explicit user request -- "se daily planning not depend on se punch in that day,
+    # it should be created for all se"). attendance_gate_ok is still computed and
+    # still feeds Data_Confidence below (Live vs Provisional_No_Attendance_Gate), so a
+    # caller can still see whether today's attendance was confirmed -- it just no
+    # longer withholds the plan entirely the way the removed early-return here used to
+    # (Section 3a gating signal, "No punch-in recorded for this SE today").
 
     # Layer 0/1 (8.11) -- farmer-meeting day exclusivity. Layer 0's FM_Urgency (monthly
     # meeting pacing) needs a Farmer_Meetings data source that doesn't exist anywhere in
