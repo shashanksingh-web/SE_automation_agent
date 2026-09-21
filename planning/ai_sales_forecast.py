@@ -104,7 +104,13 @@ AI_PITCH_CACHE_PATH = Path(
 #     reward when the Club standing gave one (_club_summary brought to parity with the
 #     template's own _tp_club_standing) -- a v8 script may say "clear it, join Club
 #     Tier" with no tier/figure named even when a real one was known.
-CACHE_SCHEMA_VERSION = "v9"
+#   v10 (2026-09-21): every non-combo Purpose (not just the Sale+Collection combo) now
+#     gets club_tell/scheme_tell as their own JSON fields and labeled script sections,
+#     same as _build_ai_pitch_combo already did -- a v9 script on any other Purpose
+#     (e.g. plain Promise To Pay / Collection) mixes a Club-tier point into the same
+#     flat [बताना] list as product pointers with no separation ("collection, club and
+#     scheme recomendation not align").
+CACHE_SCHEMA_VERSION = "v10"
 
 _pitch_cache_store = agent.JsonFileCache(AI_PITCH_CACHE_PATH)
 
@@ -239,17 +245,31 @@ def _parse_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
     treated as an empty response."""
     parsed, parse_notes = _parse_json_object(text)
     if parsed is None:
-        return {"tell": [], "products": [], "reasoning": "", "notes": parse_notes}
+        return {
+            "tell": [], "club_tell": [], "scheme_tell": [],
+            "products": [], "reasoning": "", "notes": parse_notes,
+        }
 
     tell = _tell_pointers(parsed.get("tell", parsed.get("script_hindi")))
+    # club_tell/scheme_tell (added 2026-09-21, widened from the Sale+Collection combo's
+    # own _parse_combo_pitch_response to every Purpose -- explicit user request, after
+    # a Collection-only pitch mixed a Club-tier point into the same flat list as
+    # product pointers: "collection, club and scheme recomendation not align"). Same
+    # shape/meaning as that combo parser's own fields -- kept separate from `tell` here
+    # too so build_ai_pitch can give each its own labeled section regardless of Purpose.
+    club_tell = _tell_pointers(parsed.get("club_tell"))
+    scheme_tell = _tell_pointers(parsed.get("scheme_tell"))
     reasoning = (parsed.get("reasoning") if isinstance(parsed.get("reasoning"), str) else "") or ""
 
     notes: List[str] = []
-    if not tell:
+    if not (tell or club_tell or scheme_tell):
         notes.append("Response had no non-empty 'tell'")
     validated, product_notes = _validate_products(parsed.get("products"), valid_names)
     notes.extend(product_notes)
-    return {"tell": tell, "products": validated, "reasoning": reasoning, "notes": notes}
+    return {
+        "tell": tell, "club_tell": club_tell, "scheme_tell": scheme_tell,
+        "products": validated, "reasoning": reasoning, "notes": notes,
+    }
 
 
 def _parse_combo_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
@@ -790,7 +810,7 @@ def build_ai_pitch(
     if not agent.LLM_ROUTING_ENABLED:
         return {}
 
-    from .pitching import _ASK_HINDI, _WISH_HINDI, _tell_lines, is_sale_ptp_combo  # local
+    from .pitching import _ASK_HINDI, _WISH_HINDI, _CLUB_HEADER, _SCHEME_HEADER, _tell_lines, is_sale_ptp_combo  # local
     # import -- avoids a circular import, since planning.pitching already imports
     # build_ai_pitch at module level.
     ask_texts = [_ASK_HINDI[p] for p in (purposes or [purpose_label]) if p in _ASK_HINDI]
@@ -865,24 +885,47 @@ def build_ai_pitch(
         "This pitch script always follows a fixed 3-part structure: [पूछना] (Ask) opens "
         "the conversation, [बताना] (Tell) is the persuasive data-driven pitch, [विश/क्लोज़] "
         "(Wish/Close) asks for the commitment. The Ask and Wish/Close lines are ALREADY "
-        "fixed -- do not write them, they are added separately after your response. Your "
-        f"ONLY job is the [बताना]/Tell section: write 2-{5 + len(schemes)} short pointers for the next "
-        f"{window_days} days' worth of business, as a JSON array -- every pointer is ONE "
-        "complete persuasive Hindi sentence about ONE thing (one product, one scheme, one "
-        "benefit), written to be read aloud as a bullet, never a paragraph. Depending on "
-        "which real facts exist above, cover: the benefit of clearing outstanding/overdue now "
-        "(e.g. club tier eligibility, avoiding further aging), one pointer per featured "
-        "candidate product (up to 3), one pointer per active Scheme (tied to a real "
-        "product where possible), and this DC's Club standing and what acting today could "
-        "earn it.",
-        _PRODUCT_BENEFIT_RULE,
-        _scheme_rule(schemes),
-        "Also separately list which of the candidate products (if any) you featured.",
+        "fixed -- do not write them, they are added separately after your response.",
         "",
-        'Respond with ONLY this JSON, no other text: {"tell": ["<one [बताना]/Tell pointer>", '
-        '...], "products": [{"name": "...", "reason": "..."}, ...], "reasoning": "1 sentence '
-        'in English summarizing your approach"}. No greeting and no [पूछना]/[विश] labels '
-        "anywhere in the pointers.",
+        # Widened 2026-09-21 from the Sale+Collection combo's own three-way split
+        # (_build_ai_pitch_combo) to every Purpose -- explicit user request, after a
+        # Collection-only pitch mixed a Club-tier-eligibility point into the same flat
+        # list as product pointers with no separation: "collection, club and scheme
+        # recomendation not align". tell/club_tell/scheme_tell mirror that combo
+        # prompt's own fields exactly (same wording, same _ensure_scheme_pointers
+        # fallback below) so the two prompts never drift on how Club/Scheme are asked
+        # for -- only collection_tell+sales_tell being split into one combined `tell`
+        # differs, since a non-combo Purpose has no Sale/Collection bifurcation to keep.
+        "This visit covers several distinct topics that must stay in SEPARATE pieces of "
+        "text, never merged into one paragraph or list: the core purpose of this visit "
+        "(outstanding/overdue and any candidate products), this DC's Club (loyalty-tier) "
+        "standing, and any active Scheme recommendation. Return each as its own separate "
+        "JSON field so the app can keep them in their own labeled sections of the script.",
+        "",
+        f"Write SEPARATE Tell contents, each as a JSON array of short pointers -- every "
+        f"pointer is ONE complete persuasive Hindi sentence about ONE thing, written to be "
+        f"read aloud as a bullet, never a paragraph, for the next {window_days} days' worth "
+        "of business:",
+        "- tell: 1-4 pointers about the core purpose of this visit ONLY -- the benefit of "
+        "clearing outstanding/overdue now (e.g. avoiding further aging, NOT club tier "
+        "eligibility -- that belongs only in club_tell) and one pointer per featured "
+        "candidate product (up to 3). Never mention Club or any Scheme here.",
+        _PRODUCT_BENEFIT_RULE,
+        "- club_tell: 0-1 pointer ONLY about this DC's Club (loyalty-tier) standing. If the "
+        "Club standing above names a specific eligible tier (or a current one) with a TOD%/"
+        "reward figure, you MUST state that exact tier name and figure in the pointer -- "
+        "never a vague 'you can join the Club Tier' with no tier named when a real one was "
+        "given above. Empty array if no real Club data was given above -- never invent a "
+        "tier or reward that isn't stated there.",
+        "- scheme_tell: one pointer per active Scheme listed above, and nothing else -- no "
+        "products, no Club content here.",
+        _scheme_rule(schemes),
+        "Also separately list which of the candidate products (if any) you featured in tell.",
+        "",
+        'Respond with ONLY this JSON, no other text: {"tell": ["...", ...], "club_tell": '
+        '["...", ...], "scheme_tell": ["...", ...], "products": [{"name": "...", "reason": '
+        '"..."}, ...], "reasoning": "1 sentence in English summarizing your approach"}. No '
+        "greeting and no [पूछना]/[विश] labels anywhere in the pointers.",
     ]
     prompt = "\n".join(lines)
 
@@ -902,22 +945,36 @@ def build_ai_pitch(
     notes = parsed["notes"]
     if len(attempted_providers) > 1:
         notes = [f"Routed via {attempted_providers[-1]} after {', '.join(attempted_providers[:-1])} failed"] + notes
-    if not parsed["tell"]:
+    # Same required-piece rule _build_ai_pitch_combo enforces (widened 2026-09-21,
+    # see this prompt's own comment above): a DC can genuinely have zero purpose-
+    # specific tell content but real Club/Scheme data alone, so `tell` alone is no
+    # longer required -- only ALL THREE being empty means there was truly nothing to
+    # say.
+    if not (parsed["tell"] or parsed["club_tell"] or parsed["scheme_tell"]):
         return {}
-    if "Sale" in (purposes or [purpose_label]):
-        parsed["tell"] = _ensure_scheme_pointers(parsed["tell"], schemes, notes, valid_names)
+    parsed["scheme_tell"] = _ensure_scheme_pointers(parsed["scheme_tell"], schemes, notes, valid_names)
 
     # Assemble the full Ask/Tell/Wish script -- same structure/spacing
     # planning.pitching._compose() builds, greeting + fixed [पूछना] + the model's own
-    # [बताना] pointers (parsed["tell"], ONLY the Tell content per the prompt above,
-    # laid out by the same _tell_lines the template uses: one inline, 2+ as bullets)
-    # + fixed [विश/क्लोज़].
+    # [बताना] pointers (parsed["tell"], ONLY the purpose-specific Tell content per the
+    # prompt above, laid out by the same _tell_lines the template uses: one inline, 2+
+    # as bullets) + Club/Scheme as their own labeled sections (widened 2026-09-21 from
+    # the Sale+Collection combo's own _optional_section pattern to every Purpose --
+    # explicit user request, "collection, club and scheme recomendation not align") +
+    # fixed [विश/क्लोज़].
+    def _optional_section(header: str, pointers: List[str]) -> List[str]:
+        if not pointers:
+            return []
+        return ["", header, *_tell_lines(pointers)]
+
     greeting = f"नमस्ते {(dc_name or '').strip() or 'जी'}! कैसे हैं आप, दुकान का हाल-चाल बताइए?"
     script_lines = [greeting, ""]
     if ask_texts:
         script_lines.append("[पूछना] " + " ".join(ask_texts))
         script_lines.append("")
     script_lines.extend(_tell_lines(parsed["tell"]))
+    script_lines += _optional_section(_CLUB_HEADER, parsed["club_tell"])
+    script_lines += _optional_section(_SCHEME_HEADER, parsed["scheme_tell"])
     script_lines.append("")
     if wish_texts:
         script_lines.append("[विश/क्लोज़] " + " ".join(wish_texts))

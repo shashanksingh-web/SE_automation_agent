@@ -557,6 +557,19 @@ def _tell_lines(sentences: List[str]) -> List[str]:
     return ["[बताना]"] + [p if p.startswith("- ") else f"- {p}" for p in points]
 
 
+# Club/Scheme Recommendation section headers (added 2026-09-21, extended 2026-09-21
+# to every Purpose -- explicit user request, after seeing an AI-generated Collection-
+# only pitch mix a Club-tier-eligibility point into the same flat list as product
+# pointers with no separation: "collection, club and scheme recomendation not align").
+# Originally combo-only literals inside ptp_sale_combo_fixed_lines below; pulled out
+# here so _compose()'s own generic (non-combo) path and ai_sales_forecast.build_ai_
+# pitch's non-combo branch can share the exact same header text instead of
+# redeclaring it, now that every Purpose (not just the Sale+Collection combo) gets
+# these as their own labeled sections whenever real Club/Scheme data exists.
+_CLUB_HEADER = "— क्लब (Club) —"
+_SCHEME_HEADER = "— स्कीम अनुशंसा (Scheme Recommendation) —"
+
+
 def ptp_sale_combo_fixed_lines(dc_name: str, overdue: float, outstanding: Optional[float], aging: Optional[str]) -> Dict[str, str]:
     """The Sale + Promise To Pay / Collection combo's fixed (never-model-written)
     greeting/Ask/Wish/header lines, per the DC Visit Pitch (Multi-Purpose) sheet's own
@@ -591,8 +604,8 @@ def ptp_sale_combo_fixed_lines(dc_name: str, overdue: float, outstanding: Option
         # section" structural rule this combo already applies to Collection vs Sales.
         # No [पूछना]/[विश] pair -- these are informational asides on top of the sales
         # ask already made above, not their own separate commitment to extract.
-        "club_header": "— क्लब (Club) —",
-        "scheme_header": "— स्कीम अनुशंसा (Scheme Recommendation) —",
+        "club_header": _CLUB_HEADER,
+        "scheme_header": _SCHEME_HEADER,
         "billing_header": "— बिलिंग हिस्सा (सेल के बाद) —",
         "ask_billing": (
             f"[पूछना] वैसे अभी का जो ₹{outstanding:,.0f} है, उसकी बिलिंग किस टाइम तक हो जाएगी?" if outstanding else ""
@@ -723,12 +736,6 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     applicable = _applicable_sources(purposes)
     ordered = _order_for_purposes(purposes, ctx)
     ordered_codes = [c for c in ordered if c in applicable] + [c for c in applicable if c not in ordered]
-    # Club, added 2026-09-07 -- not in pitch_config's own Applicable Sources (`applicable`
-    # above is CSV-driven), so never reachable through the two list comprehensions above;
-    # appended directly, last, only for a standalone Sale purpose (see _tp_club_standing's
-    # docstring for why Sale specifically, not Promise To Pay / Collection).
-    if "Sale" in purposes:
-        ordered_codes = ordered_codes + ["Schemes", "Club"]
 
     cfg = get_pitch_config()
     used, skipped, tell_sentences = [], [], []
@@ -772,6 +779,31 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     # where it was never relevant, and duplicated the loop's own message on ones where
     # it was).
 
+    # Club/Scheme Recommendation (widened 2026-09-21 from Sale-only to every Purpose,
+    # explicit user request -- an AI-generated Collection-only pitch was mixing a
+    # Club-tier-eligibility point into the same flat list as product pointers with no
+    # separation: "collection, club and scheme recomendation not align"; the eligible-
+    # tier "clear your dues to unlock X" framing reads at least as naturally on a
+    # Collection visit as a Sale one, so it's no longer gated to Sale at all). Computed
+    # here rather than folded into ordered_codes/tell_sentences above so each always
+    # gets its OWN labeled section below, same "one topic, one section" rule
+    # _compose_sale_ptp_combo already applies -- never mixed into the flat Tell list
+    # regardless of Purpose.
+    club_sentence = None
+    scheme_sentence = None
+    for code in ("Club", "Schemes"):
+        label = cfg.data_source_labels.get(code) or _EXTRA_LABELS.get(code, code)
+        result = _TALKING_POINTS[code](ctx)
+        if result is None:
+            skipped.append(f"{code} {label} (no data available this run)")
+            continue
+        sentence, _ = result
+        used.append(f"{code} {label}")
+        if code == "Club":
+            club_sentence = sentence
+        else:
+            scheme_sentence = sentence
+
     dc_name = (task.dc_name or "").strip() or "जी"
     ask_texts = [_ASK_HINDI[p] for p in purposes if p in _ASK_HINDI]
     wish_texts = [_WISH_HINDI[p] for p in purposes if p in _WISH_HINDI]
@@ -782,6 +814,14 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
         lines.append("")
     if tell_sentences:
         lines.extend(_tell_lines(tell_sentences))
+        lines.append("")
+    if club_sentence:
+        lines.append(_CLUB_HEADER)
+        lines.extend(_tell_lines([club_sentence]))
+        lines.append("")
+    if scheme_sentence:
+        lines.append(_SCHEME_HEADER)
+        lines.extend(_tell_lines([scheme_sentence]))
         lines.append("")
     if wish_texts:
         lines.append("[विश/क्लोज़] " + " ".join(wish_texts))
