@@ -100,7 +100,11 @@ AI_PITCH_CACHE_PATH = Path(
 #     seperate part for scheme recomendation"); the Recommended scheme's pointer also
 #     gained a fact-grounded WHY -- a v7 script folds Club/Scheme into the सेल्स हिस्सा's
 #     flat bullet list with no separate headers and no WHY sentence.
-CACHE_SCHEMA_VERSION = "v8"
+#   v9 (2026-09-21): club_tell's eligible-tier case now must name the tier AND its TOD%/
+#     reward when the Club standing gave one (_club_summary brought to parity with the
+#     template's own _tp_club_standing) -- a v8 script may say "clear it, join Club
+#     Tier" with no tier/figure named even when a real one was known.
+CACHE_SCHEMA_VERSION = "v9"
 
 _pitch_cache_store = agent.JsonFileCache(AI_PITCH_CACHE_PATH)
 
@@ -292,7 +296,16 @@ def _club_summary(ctx: Dict[str, Any]) -> Optional[str]:
     correction -- "dc club and scheme are different in the system"): this function was
     always describing DC Club (dc_mapping_club_scheme/dc_club_slabs), a loyalty-tier
     program, NOT the separate Scheme system (scheme_details/abs_scheme -- see
-    _active_schemes_context below) -- the original name conflated the two."""
+    _active_schemes_context below) -- the original name conflated the two.
+
+    FIXED 2026-09-21 (explicit user question, on a real AI-generated club_tell that
+    said only "clear the outstanding to become part of Club Tier" with no tier named --
+    "is this if clear which scheme elligible added in pitch"): the "would qualify"
+    branch used to name the eligible tier but drop its own TOD%/reward figures --
+    planning.pitching._tp_club_standing's identical branch (the templated fallback)
+    already includes both, so the AI was working from a strictly poorer summary of the
+    exact same data than the template ever was. Now includes them here too, so the two
+    paths never diverge on how much a DC is told it stands to gain."""
     club = ctx.get("club")
     if not club:
         return None
@@ -309,9 +322,15 @@ def _club_summary(ctx: Dict[str, Any]) -> Optional[str]:
     if club.get("Outstanding_Cleared") is False:
         eligible = club.get("Eligible_Tier_If_Outstanding_Cleared")
         if eligible:
+            benefit_bits = []
+            if club.get("Eligible_Tier_TOD_Percent_If_Cleared") is not None:
+                benefit_bits.append(f"{club['Eligible_Tier_TOD_Percent_If_Cleared']:.2f}% TOD")
+            if club.get("Eligible_Tier_Reward_If_Cleared"):
+                benefit_bits.append(club["Eligible_Tier_Reward_If_Cleared"])
+            benefit_note = f" ({', '.join(benefit_bits)})" if benefit_bits else ""
             return (
                 f"No current Club Tier (outstanding not yet cleared) -- would qualify for "
-                f"Tier '{eligible}' as soon as outstanding is cleared."
+                f"Tier '{eligible}'{benefit_note} as soon as outstanding is cleared."
             )
         return "No current Club Tier (outstanding not yet cleared)."
     turnover = club.get("Qualifying_Turnover")
@@ -642,10 +661,12 @@ def _build_ai_pitch_combo(
         "overdue/outstanding payment, Club, or any Scheme in this field -- those belong only in "
         "collection_tell/club_tell/scheme_tell.",
         _PRODUCT_BENEFIT_RULE,
-        "- club_tell: 0-1 pointer ONLY about this DC's Club (loyalty-tier) standing and what "
-        "acting today could earn it (e.g. reaching the next tier, a TOD%/reward already listed "
-        "above). Empty array if no real Club data was given above -- never invent a tier or "
-        "reward.",
+        "- club_tell: 0-1 pointer ONLY about this DC's Club (loyalty-tier) standing. If the Club "
+        "standing above names a specific eligible tier (or a current one) with a TOD%/reward "
+        "figure, you MUST state that exact tier name and figure in the pointer -- never a vague "
+        "'you can join the Club Tier' with no tier named when a real one was given above. Empty "
+        "array if no real Club data was given above -- never invent a tier or reward that isn't "
+        "stated there.",
         "- scheme_tell: one pointer per active Scheme listed above, and nothing else -- no "
         "products, no Club content here.",
         _scheme_rule(schemes),
