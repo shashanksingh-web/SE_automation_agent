@@ -95,7 +95,12 @@ AI_PITCH_CACHE_PATH = Path(
 #     _ensure_scheme_pointers) -- a v5 script names only one of several schemes.
 #   v7 (2026-09-17): every scheme pointer must state the scheme's profit (advance,
 #     discount slabs, payment channel, cap) -- a v6 script may give name + validity only.
-CACHE_SCHEMA_VERSION = "v7"
+#   v8 (2026-09-21): Club and Scheme moved out of the combo's sales_tell into their own
+#     club_tell/scheme_tell fields and labeled script sections ("add the club part /
+#     seperate part for scheme recomendation"); the Recommended scheme's pointer also
+#     gained a fact-grounded WHY -- a v7 script folds Club/Scheme into the सेल्स हिस्सा's
+#     flat bullet list with no separate headers and no WHY sentence.
+CACHE_SCHEMA_VERSION = "v8"
 
 _pitch_cache_store = agent.JsonFileCache(AI_PITCH_CACHE_PATH)
 
@@ -246,21 +251,33 @@ def _parse_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
 def _parse_combo_pitch_response(text: str, valid_names: set) -> Dict[str, Any]:
     """Sale + Promise To Pay / Collection combo variant of _parse_pitch_response (added
     2026-09-15, explicit user request - "bifurcate the sales and promise to pay ... all
-    pointers in batana part") - expects collection_tell/sales_tell as two SEPARATE Tell
-    contents instead of one script_hindi, matching build_ai_pitch's own combo prompt.
-    Either piece can legitimately be empty (a DC with no real outstanding has nothing
-    genuine for collection_tell; the caller decides which piece(s) it actually needs
-    based on ctx, same as the deterministic template's own overdue>0 branch)."""
+    pointers in batana part") - expects collection_tell/sales_tell/club_tell/scheme_tell
+    as FOUR SEPARATE Tell contents instead of one script_hindi, matching build_ai_pitch's
+    own combo prompt. club_tell/scheme_tell added 2026-09-21 (explicit user request --
+    "sales pitch is different add the club part / seperate part for scheme
+    recomendation") -- previously folded into sales_tell's own flat pointer list. Any
+    piece can legitimately be empty (a DC with no real outstanding has nothing genuine
+    for collection_tell, one with no active scheme has nothing for scheme_tell; the
+    caller decides which piece(s) it actually needs based on ctx, same as the
+    deterministic template's own branching)."""
     parsed, parse_notes = _parse_json_object(text)
     if parsed is None:
-        return {"collection_tell": [], "sales_tell": [], "products": [], "reasoning": "", "notes": parse_notes}
+        return {
+            "collection_tell": [], "sales_tell": [], "club_tell": [], "scheme_tell": [],
+            "products": [], "reasoning": "", "notes": parse_notes,
+        }
 
     collection_tell = _tell_pointers(parsed.get("collection_tell"))
     sales_tell = _tell_pointers(parsed.get("sales_tell"))
+    club_tell = _tell_pointers(parsed.get("club_tell"))
+    scheme_tell = _tell_pointers(parsed.get("scheme_tell"))
     reasoning = (parsed.get("reasoning") if isinstance(parsed.get("reasoning"), str) else "") or ""
 
     validated, notes = _validate_products(parsed.get("products"), valid_names)
-    return {"collection_tell": collection_tell, "sales_tell": sales_tell, "products": validated, "reasoning": reasoning, "notes": notes}
+    return {
+        "collection_tell": collection_tell, "sales_tell": sales_tell, "club_tell": club_tell,
+        "scheme_tell": scheme_tell, "products": validated, "reasoning": reasoning, "notes": notes,
+    }
 
 
 def _club_summary(ctx: Dict[str, Any]) -> Optional[str]:
@@ -422,7 +439,15 @@ def _scheme_rule(schemes: List[Dict[str, Any]]) -> str:
     # only asks for ORDER: the RECOMMENDED-tagged scheme's pointer goes first.
     recommended = next((s["name"] for s in schemes if s.get("is_recommended")), None)
     if recommended:
-        rule += f" Write the pointer for the RECOMMENDED-tagged scheme ('{recommended}') FIRST, before the others."
+        rule += (
+            f" Write the pointer for the RECOMMENDED-tagged scheme ('{recommended}') FIRST, before the others, "
+            "and after its profit figures ALSO state WHY the DC should act on it now -- using ONLY real facts "
+            "already given above: its own booking-window closing date if one is listed, or whether it matches "
+            "this DC's own dominant purchase category (see the DC's own purchase profile below) if it does. "
+            "If neither real fact applies, say it is the single most valuable scheme currently available to "
+            "this DC -- never invent a reason (e.g. never claim urgency, a limited quota, or a business "
+            "rationale for why the scheme itself exists that isn't stated above)."
+        )
     return rule
 
 
@@ -538,15 +563,23 @@ def _build_ai_pitch_combo(
     2026-09-15, explicit user request -- "bifurcate the sales and promise to pay ...
     all pointers in batana part"). Without this branch, build_ai_pitch's normal single
     free-form [बताना] block was silently collapsing planning.pitching._compose_sale_
-    ptp_combo's carefully-sequenced two-section structure (found live: a real pitch
-    mixed a ₹1,94,068 overdue figure and a ₹12,69,300 YTD sales figure into one
-    undifferentiated paragraph) -- a structural rule the DC Visit Pitch (Multi-Purpose)
-    sheet itself specifies (see planning.pitching's own module docstring), not
-    optional flavor text. Asks the model for TWO separate Tell contents instead of one,
-    then assembles them into the EXACT same greeting/header/Ask/Wish skeleton
-    ptp_sale_combo_fixed_lines gives the deterministic template, so an SE sees the
-    identical structure regardless of which path produced the pitch -- only the
-    persuasive sentences inside each section differ."""
+    ptp_combo's carefully-sequenced section structure (found live: a real pitch mixed a
+    ₹1,94,068 overdue figure and a ₹12,69,300 YTD sales figure into one undifferentiated
+    paragraph) -- a structural rule the DC Visit Pitch (Multi-Purpose) sheet itself
+    specifies (see planning.pitching's own module docstring), not optional flavor text.
+    Asks the model for separate Tell contents instead of one, then assembles them into
+    the EXACT same greeting/header/Ask/Wish skeleton ptp_sale_combo_fixed_lines gives
+    the deterministic template, so an SE sees the identical structure regardless of
+    which path produced the pitch -- only the persuasive sentences inside each section
+    differ.
+
+    club_tell/scheme_tell (added 2026-09-21, explicit user request -- "sales pitch is
+    different add the club part / seperate part for scheme recomendation") split what
+    used to be folded into sales_tell's own flat pointer list into their own sections --
+    sales_tell is product-only now. scheme_tell also carries a real, fact-grounded WHY
+    for the Recommended scheme (see _scheme_rule), matching planning.pitching's own
+    templated _scheme_why_hindi -- the two paths never invent a different kind of
+    justification from each other, both are limited to the same real facts."""
     from .pitching import _tell_lines, ptp_sale_combo_fixed_lines
 
     overdue = ctx.get("present_overdue") or 0
@@ -563,9 +596,10 @@ def _build_ai_pitch_combo(
         "benefit that isn't explicitly stated here. Skip any topic below that has no real data "
         "-- never fabricate to fill a gap.",
         "",
-        "This visit covers TWO distinct topics that must stay in TWO SEPARATE pieces of text, "
-        "never merged into one paragraph: collecting an overdue/outstanding payment, and "
-        "pitching new sales. Return them as two separate JSON fields (see the exact shape "
+        "This visit covers several distinct topics that must stay in SEPARATE pieces of text, "
+        "never merged into one paragraph: collecting an overdue/outstanding payment, pitching "
+        "new PRODUCTS, this DC's Club (loyalty-tier) standing, and any active Scheme "
+        "recommendation. Return each as its own separate JSON field (see the exact shape "
         "below) so the app can keep them in their own labeled sections of the script.",
         "",
     ]
@@ -596,24 +630,30 @@ def _build_ai_pitch_combo(
     lines += _candidate_lines(candidates, ctx)
 
     lines += [
-        "Write TWO SEPARATE Tell contents, each as a JSON array of short pointers -- every "
-        "pointer is ONE complete persuasive Hindi sentence about ONE thing (one product, one "
-        "scheme, one benefit), written to be read aloud as a bullet, never a paragraph:",
+        "Write SEPARATE Tell contents, each as a JSON array of short pointers -- every pointer "
+        "is ONE complete persuasive Hindi sentence about ONE thing (one product, one scheme, "
+        "one benefit), written to be read aloud as a bullet, never a paragraph:",
         '- collection_tell: 1-2 pointers ONLY about the overdue/outstanding payment and the '
         'benefit of clearing it now (e.g. club tier eligibility, avoiding further aging). Leave '
         'this as an empty array if there is no real overdue/outstanding figure above -- never '
         'invent one.',
-        f"- sales_tell: 2-{4 + len(schemes)} pointers ONLY about products/scheme/Club benefit for the next "
-        f"{window_days} days' worth of business: one pointer per featured candidate product (up "
-        "to 3), then one pointer per active Scheme (tied to a real product where possible), "
-        "and this DC's Club standing and what acting today could earn it. Never mention the "
-        "overdue/outstanding payment in this field -- that belongs only in collection_tell.",
+        f"- sales_tell: 1-3 pointers ONLY about PRODUCTS for the next {window_days} days' worth "
+        "of business, one pointer per featured candidate product (up to 3). Never mention the "
+        "overdue/outstanding payment, Club, or any Scheme in this field -- those belong only in "
+        "collection_tell/club_tell/scheme_tell.",
         _PRODUCT_BENEFIT_RULE,
+        "- club_tell: 0-1 pointer ONLY about this DC's Club (loyalty-tier) standing and what "
+        "acting today could earn it (e.g. reaching the next tier, a TOD%/reward already listed "
+        "above). Empty array if no real Club data was given above -- never invent a tier or "
+        "reward.",
+        "- scheme_tell: one pointer per active Scheme listed above, and nothing else -- no "
+        "products, no Club content here.",
         _scheme_rule(schemes),
         "Also separately list which of the candidate products (if any) you featured in sales_tell.",
         "",
         'Respond with ONLY this JSON, no other text: {"collection_tell": ["...", ...], '
-        '"sales_tell": ["...", ...], "products": [{"name": "...", "reason": "..."}, ...], '
+        '"sales_tell": ["...", ...], "club_tell": ["...", ...], "scheme_tell": ["...", ...], '
+        '"products": [{"name": "...", "reason": "..."}, ...], '
         '"reasoning": "1 sentence in English summarizing your approach"}.',
     ]
     prompt = "\n".join(lines)
@@ -631,18 +671,29 @@ def _build_ai_pitch_combo(
 
     # Same required-piece rule the deterministic template enforces: a genuine overdue
     # needs a real collection_tell (empty would silently drop the whole collection ask
-    # this combo exists to raise, leaving a header with nothing under it); missing
-    # either required piece falls back to the template entirely rather than shipping a
-    # visibly broken half-script.
+    # this combo exists to raise, leaving a header with nothing under it); missing that
+    # falls back to the template entirely rather than shipping a visibly broken
+    # half-script. sales_tell alone is no longer required (CHANGED 2026-09-21 -- it's
+    # product-only now that club_tell/scheme_tell exist as their own fields, and a DC
+    # can genuinely have zero candidate products but real Club/Scheme content) -- the
+    # response only needs to have SOMETHING to say overall.
     if overdue > 0 and not parsed["collection_tell"]:
         return {}
-    if not parsed["sales_tell"]:
+    if not (parsed["sales_tell"] or parsed["club_tell"] or parsed["scheme_tell"]):
         return {}
-    parsed["sales_tell"] = _ensure_scheme_pointers(parsed["sales_tell"], schemes, notes, valid_names)
+    parsed["scheme_tell"] = _ensure_scheme_pointers(parsed["scheme_tell"], schemes, notes, valid_names)
 
     # Tell pointers go through the same _tell_lines the templated script uses -- one
     # inline sentence stays on the [बताना] line, 2+ become "- " bullets under it, which
     # is the one shape PitchPanel.tsx's parseScript renders as a list.
+    def _optional_section(header_key: str, pointers: List[str]) -> List[str]:
+        # Shared by both branches below (added 2026-09-21) so Club/Scheme can never
+        # drift between the overdue-led and sales-led paths, same reasoning as
+        # planning.pitching._compose_sale_ptp_combo's own _club_and_scheme_lines.
+        if not pointers:
+            return []
+        return ["", fixed[header_key], *_tell_lines(pointers)]
+
     lines_out: List[str] = []
     if overdue > 0:
         lines_out += [fixed["greeting_collection_led"], "", fixed["collection_header"], fixed["ask_collection"]]
@@ -650,10 +701,14 @@ def _build_ai_pitch_combo(
         lines_out += [fixed["wish_collection"], "", fixed["sales_header_after_collection"], fixed["ask_sales_after_collection"]]
         lines_out += _tell_lines(parsed["sales_tell"])
         lines_out.append(fixed["wish_sales_after_collection"])
+        lines_out += _optional_section("club_header", parsed["club_tell"])
+        lines_out += _optional_section("scheme_header", parsed["scheme_tell"])
     else:
         lines_out += [fixed["greeting_sales_led"], "", fixed["sales_header_led"], fixed["ask_sales_led"]]
         lines_out += _tell_lines(parsed["sales_tell"])
         lines_out.append(fixed["wish_sales_led"])
+        lines_out += _optional_section("club_header", parsed["club_tell"])
+        lines_out += _optional_section("scheme_header", parsed["scheme_tell"])
         if outstanding:
             lines_out.append("")
             lines_out.append(fixed["billing_header"])

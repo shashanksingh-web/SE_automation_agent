@@ -319,6 +319,29 @@ def scheme_pointer_hindi(scheme: Dict[str, Any]) -> str:
     return f"'{name}' योजना अभी सक्रिय है{validity} -- इसके तहत आज ही एडवांस बुकिंग दर्ज कराएं।"
 
 
+def _scheme_why_hindi(scheme: Dict[str, Any], ctx: Dict[str, Any]) -> str:
+    """A fact-grounded "why act on THIS scheme now" sentence for the Recommended pick
+    (added 2026-09-21, explicit user request -- "seperate part for scheme recomendation
+    which why we offer this scheme"). Never a fabricated sales rationale -- every reason
+    here is a real, already-known fact: the scheme's own booking deadline (benefit.
+    booking_end), a real category match against this DC's own dominant_category, or --
+    when neither applies -- the one fact that's always true of the pick itself
+    (discount_service.best_scheme already means "highest confirmed value currently
+    active for this DC"), never an invented urgency or a business reason this pipeline
+    has no actual visibility into (e.g. why DeHaat chose to run the scheme at all)."""
+    reasons = []
+    booking_end = (scheme.get("benefit") or {}).get("booking_end")
+    until = hindi_date(booking_end)
+    if until:
+        reasons.append(f"इसकी बुकिंग विंडो {until} को बंद हो रही है")
+    category, dominant = scheme.get("category"), ctx.get("dominant_category")
+    if category and dominant and category == dominant:
+        reasons.append(f"यह आपकी मुख्य बिज़नेस केटेगरी ({category}) से सीधे जुड़ी है")
+    if not reasons:
+        return "यह अभी आपके लिए उपलब्ध योजनाओं में सबसे ज़्यादा फायदे वाली है, इसलिए इसे प्राथमिकता दें।"
+    return "इसे प्राथमिकता देने की वजह: " + " और ".join(reasons) + "।"
+
+
 def _tp_active_schemes(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """One "- " line per currently-active Sales/ABS Scheme for this DC's Node (added
     2026-09-17, explicit user request on the AI pitch - "all eligible scheme should in
@@ -345,7 +368,7 @@ def _tp_active_schemes(ctx: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     others = [s for s in schemes if s is not recommended][:10]
     lines: List[str] = []
     if recommended:
-        lines.append(f"अनुशंसित योजना (Recommended): {scheme_pointer_hindi(recommended)}")
+        lines.append(f"अनुशंसित योजना (Recommended): {scheme_pointer_hindi(recommended)} {_scheme_why_hindi(recommended, ctx)}")
     if others:
         if recommended:
             lines.append("अन्य पात्र योजनाएं (Other eligible schemes):")
@@ -561,6 +584,15 @@ def ptp_sale_combo_fixed_lines(dc_name: str, overdue: float, outstanding: Option
         "sales_header_led": "— सेल्स हिस्सा —",
         "ask_sales_led": "[पूछना] इस सीजन में किस चीज़ की डिमांड सबसे ज़्यादा आ रही है?",
         "wish_sales_led": "[विश] चलिए आज एक ऑर्डर बुक कर लेते हैं।",
+        # Club and Scheme Recommendation (added 2026-09-21, explicit user request --
+        # "sales pitch is different add the club part / seperate part for scheme
+        # recomendation") -- were previously just more bullets inside the सेल्स हिस्सा's
+        # own flat [बताना] list; now their own labeled sections, same "one topic, one
+        # section" structural rule this combo already applies to Collection vs Sales.
+        # No [पूछना]/[विश] pair -- these are informational asides on top of the sales
+        # ask already made above, not their own separate commitment to extract.
+        "club_header": "— क्लब (Club) —",
+        "scheme_header": "— स्कीम अनुशंसा (Scheme Recommendation) —",
         "billing_header": "— बिलिंग हिस्सा (सेल के बाद) —",
         "ask_billing": (
             f"[पूछना] वैसे अभी का जो ₹{outstanding:,.0f} है, उसकी बिलिंग किस टाइम तक हो जाएगी?" if outstanding else ""
@@ -574,8 +606,12 @@ def ptp_sale_combo_fixed_lines(dc_name: str, overdue: float, outstanding: Option
 
 def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
     """DC Visit Pitch (Multi-Purpose) sheet's own "Promise To Pay / Collection + Sale"
-    worked example, structurally: two section-labeled segments, sequenced by whether a
-    real overdue amount exists. See module docstring for the sheet's stated rationale."""
+    worked example: Collection and Sales as two section-labeled segments, sequenced by
+    whether a real overdue amount exists (see module docstring for the sheet's stated
+    rationale), plus two more optional section-labeled segments (Club, Scheme
+    Recommendation -- added 2026-09-21) appended after Sales whenever real data exists
+    for them, on the same "one topic, one section" principle rather than folding them
+    into Sales' own flat bullet list."""
     cfg = get_pitch_config()
     dc_name = (task.dc_name or "").strip() or "जी"
     overdue = ctx.get("present_overdue") or 0
@@ -599,11 +635,26 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
 
     # Sales talking points -- same reachable sources as the generic composer, in the
     # sheet's own worked-example order (block/peer comparison, suggested discount on
-    # that same product, historical purchase trend, then YTD-vs-target). S2b wired
+    # that same product, historical purchase trend, then YTD-vs-target).  S2b wired
     # 2026-08-24, right after S1 since it's a discount ON the product S1 just named.
-    # Club wired 2026-09-07, last -- a motivational closer once the product ask and
-    # numbers are already on the table, not competing with them for attention.
-    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S2b", "S3", "S8", "Schemes", "Club")) if s]
+    # Club and Schemes CHANGED 2026-09-21, explicit user request ("sales pitch is
+    # different add the club part / seperate part for scheme recomendation") -- were
+    # folded into this same flat list (Club wired 2026-09-07, Schemes 2026-09-17);
+    # both now get their own labeled section below instead, same "one topic, one
+    # section" rule Collection/Sales already follow.
+    sales_sentences = [s for s in (sentence_for(c) for c in ("S1", "S2b", "S3", "S8")) if s]
+    club_sentence = sentence_for("Club")
+    scheme_sentence = sentence_for("Schemes")
+
+    def _club_and_scheme_lines() -> List[str]:
+        # Shared by both branches below so the two new sections can never drift
+        # between the overdue-led and sales-led paths.
+        extra: List[str] = []
+        if club_sentence:
+            extra += ["", fixed["club_header"], *_tell_lines([club_sentence])]
+        if scheme_sentence:
+            extra += ["", fixed["scheme_header"], *_tell_lines([scheme_sentence])]
+        return extra
 
     skipped.append("S4 Current Inventory (no DC-level data source exists anywhere in this system)")
 
@@ -625,6 +676,7 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
         lines.append(fixed["ask_sales_after_collection"])
         lines.extend(_tell_lines(sales_sentences))
         lines.append(fixed["wish_sales_after_collection"])
+        lines.extend(_club_and_scheme_lines())
     else:
         # Sales-led, no urgency to open with -- same structural idea as the sheet's
         # "Sale + Promise To Bill (P2B)" row: value first, billing folded in after.
@@ -634,6 +686,7 @@ def _compose_sale_ptp_combo(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, 
         lines.append(fixed["ask_sales_led"])
         lines.extend(_tell_lines(sales_sentences))
         lines.append(fixed["wish_sales_led"])
+        lines.extend(_club_and_scheme_lines())
         if outstanding:
             billing_sentence = sentence_for("S5")
             lines.append("")
