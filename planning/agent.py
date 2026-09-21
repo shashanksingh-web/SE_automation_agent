@@ -497,6 +497,23 @@ class RedshiftDirectClient:
                 # back (the transaction is aborted) and propagate immediately, unretried.
                 conn.rollback()
                 raise
+            except psycopg2.errors.InternalError_ as e:
+                # ADDED 2026-09-21 (confirmed live, 2 real occurrences same day):
+                # "could not open relation with OID <n>" -- NOT a dead connection or a
+                # bad query, this is what an external Redshift ETL job rebuilding/
+                # swapping the underlying table (dc_datamart, confirmed both times)
+                # mid-query looks like: the query planner resolved an OID that no
+                # longer points at a live object by the time the query actually ran.
+                # Genuinely transient (the table reappears once the rebuild finishes),
+                # unlike the rest of InternalError_'s SQLSTATE XX000 class this except
+                # would otherwise fall through to the generic unretried branch below --
+                # retrying is exactly right here, same backoff as a dead connection.
+                # Previously unretried: a Rajasthan run needed 3 manual re-runs the same
+                # day it was found before one happened to land outside the rebuild
+                # window.
+                last_error = e
+                logger.warning("Redshift query on %s hit a transient internal error (external table rebuild?): %s", dbname, e)
+                conn.rollback()
             except psycopg2.OperationalError as e:
                 last_error = e
                 logger.warning("Redshift connection to %s died mid-run", dbname)
