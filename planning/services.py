@@ -3450,16 +3450,32 @@ def generate_plan_for_scope(
             run_exceptions.append({"source": "abs_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
         # Scheme Description Cards (added 2026-09-16, explicit user request) -- enriches
-        # (does not replace) the node-scoped abs_scheme/scheme_details pull just above
-        # with a genuinely richer source, coupon_service.public.scheme +
-        # discounting_scheme_slab/scheme_rules/scheme_translations, see
-        # _sql_scheme_description_cards' own docstring. Fetched once for the whole run
-        # (not per-node -- it's already a full live-scheme scan), then attached by
-        # scheme-name match ONLY to nodes this scheme's own rules actually cover:
-        # scheme_rules stores node/state as ids, not names, so node_names_raw/
-        # state_names_raw (also not in the user's original query -- see that function's
-        # own docstring for why they were added) are what make this checkable here,
-        # rather than trusting a name-string match alone regardless of location.
+        # the node-scoped abs_scheme/scheme_details pull just above with a genuinely
+        # richer source, coupon_service.public.scheme + discounting_scheme_slab/
+        # scheme_rules/scheme_translations, see _sql_scheme_description_cards' own
+        # docstring. Fetched once for the whole run (not per-node -- it's already a
+        # full live-scheme scan), then attached to every node this scheme's own rules
+        # actually cover: scheme_rules stores node/state as ids, not names, so
+        # node_names_raw/state_names_raw (also not in the user's original query -- see
+        # that function's own docstring for why they were added) are what make this
+        # checkable here, rather than trusting a name-string match alone regardless of
+        # location.
+        #
+        # CHANGED 2026-09-21 (confirmed live -- "in rajasthan and uttar pradesh" the
+        # scheme recommendation was completely missing): this used to only ENRICH an
+        # entry abs_scheme had already created (`for node, schemes in active_schemes_
+        # by_node.items()`), silently doing nothing for a state abs_scheme/scheme_
+        # details has zero rows for at all. Confirmed live: Rajasthan and Uttar Pradesh
+        # both have 0 abs_scheme rows for every one of their nodes, yet 18 real,
+        # active_rules=1 Cash Discount Schemes on the coupon_service feed genuinely
+        # cover them (Cash Discount Scheme Insecticide RJ NF H1 2026, etc.) -- abs_
+        # scheme and coupon_service turn out to be two independently-populated scheme
+        # catalogs, covering different states, not one superset of the other; nothing
+        # here previously created a fresh entry for a node abs_scheme never mentioned,
+        # so every one of those 18 schemes was silently invisible to every SE in both
+        # states. Now creates one when no abs_scheme-sourced entry exists to enrich --
+        # coupon_service becomes this node's ONLY source for that scheme, not merely a
+        # supplement, exactly when abs_scheme has nothing to supplement.
         try:
             state_by_node: Dict[str, Optional[str]] = {}
             for d in scoped_dcs:
@@ -3472,18 +3488,31 @@ def generate_plan_for_scope(
                 node_names = {n.strip() for n in (row.get("node_names_raw") or "").split(",") if n.strip()}
                 state_names = {n.strip() for n in (row.get("state_names_raw") or "").split(",") if n.strip()}
                 no_location_limit = not node_names and not state_names
-                for node, schemes in active_schemes_by_node.items():
+                for node in state_by_node:  # every node actually in scope for this run
                     state = state_by_node.get(node)
                     if not (no_location_limit or node in node_names or (state and state in state_names)):
                         continue
-                    for entry in schemes:
-                        if entry.get("name") == scheme_name:
-                            entry["generated_description"] = row.get("generated_description")
-                            entry["benefit"] = {
-                                "advance_per_unit": row.get("advance_per_unit"), "slabs": row.get("slabs_short"),
-                                "slab_basis": row.get("slab_basis"), "benefit_channel": row.get("benefit_channel"),
-                                "booking_end": row.get("booking_end"), "max_discount_per_dc": row.get("max_discount_per_dc"),
-                            }
+                    schemes = active_schemes_by_node.setdefault(node, [])
+                    entry = next((e for e in schemes if e.get("name") == scheme_name), None)
+                    if entry is None:
+                        # abs_scheme never had this scheme for this node -- coupon_
+                        # service is this node's only source for it. booking_end is a
+                        # different concept from abs_scheme's own scheme_end_date
+                        # (booking window vs overall scheme validity), but it's the one
+                        # date this source has -- an honest best-available stand-in,
+                        # not a fabricated figure.
+                        entry = {
+                            "name": scheme_name, "description": row.get("generated_description"),
+                            "category": None, "sub_category": None, "brand": None, "material_name": None,
+                            "valid_until": row.get("booking_end"),
+                        }
+                        schemes.append(entry)
+                    entry["generated_description"] = row.get("generated_description")
+                    entry["benefit"] = {
+                        "advance_per_unit": row.get("advance_per_unit"), "slabs": row.get("slabs_short"),
+                        "slab_basis": row.get("slab_basis"), "benefit_channel": row.get("benefit_channel"),
+                        "booking_end": row.get("booking_end"), "max_discount_per_dc": row.get("max_discount_per_dc"),
+                    }
         except Exception as e:
             run_exceptions.append({"source": "coupon_service.scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
