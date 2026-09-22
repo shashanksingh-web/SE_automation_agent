@@ -3446,6 +3446,30 @@ def generate_plan_for_scope(
                         "brand": row.get("brand_name"), "material_name": row.get("material_name"),
                         "valid_until": str(row["scheme_end_date"]) if row.get("scheme_end_date") else None,
                     })
+                # Live_Pull_Silently_Incomplete (added 2026-09-22, found live -- a
+                # Maharashtra run gave 0/6 Pune-node DCs any scheme_context while every
+                # other node in the SAME run correctly got its schemes, even though
+                # Pune genuinely has one live since 2026-07-25 the same query returns
+                # correctly moments later): a multi-node join can apparently come back
+                # missing an entire node's rows without Redshift raising anything --
+                # no exception here at all, so this gap was invisible until traced
+                # DC-by-DC by hand. This can't tell a real "no active scheme anywhere"
+                # empty from that failure mode, so it only flags a node that got NOTHING
+                # while at least one sibling node in the SAME query DID get real rows --
+                # never on a run where every node is legitimately empty (e.g. a state
+                # with genuinely no live schemes right now).
+                empty_nodes = [n for n in dc_nodes if not active_schemes_by_node.get(n)]
+                if empty_nodes and any(active_schemes_by_node.get(n) for n in dc_nodes):
+                    run_exceptions.append({
+                        "source": "abs_scheme", "reason_code": "Live_Pull_Silently_Incomplete",
+                        "detail": (
+                            f"{len(empty_nodes)} of {len(dc_nodes)} node(s) got zero active schemes while "
+                            f"sibling nodes in the same query got real ones -- possibly a genuine "
+                            f"zero-schemes node, possibly the same node dropped from an incomplete "
+                            f"multi-node join; re-check before trusting a DC in {', '.join(empty_nodes[:10])} "
+                            f"has no scheme to offer: {empty_nodes}"
+                        ),
+                    })
         except Exception as e:
             run_exceptions.append({"source": "abs_scheme", "reason_code": "Live_Pull_Failed", "detail": f"{type(e).__name__}: {e}"})
 
