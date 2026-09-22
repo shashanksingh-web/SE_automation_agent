@@ -5,13 +5,18 @@ Two families of endpoint here:
 - /auth/* -- login/logout/me/change-password. Anyone can call these (that's the point
   of a login endpoint); "me" and "change-password" require an existing session.
 - /admin/users/* -- user account management. Every one of these requires an
-  authenticated ADMIN (see require_admin below) -- unlike the rest of this app's
-  /admin/* endpoints (routing overrides, DC selection, pipeline config), which
-  pre-date real auth and are deliberately left open for now (see this session's own
-  scoping: "full real login now" was chosen, but retrofitting every existing admin
-  endpoint is a separate, larger change not requested here). Creating accounts and
-  setting passwords is the one part of "admin" that must not be left wide open even
-  while the rest of the admin surface still is.
+  authenticated ADMIN (see require_admin below).
+
+require_admin/login_required_json (2026-09-22): every other view in this app --
+including the rest of /admin/* (routing overrides, DC selection, pipeline config,
+tracking, reconcile, discount-schemes, generate-all-states) and every SE/ABM/.../
+State-scoped business view in planning.views -- was left deliberately unauthenticated
+when real login shipped 2026-09-14 ("retrofitting every existing admin endpoint is a
+separate, larger change not requested here"). That gap is what this date closes:
+planning.views now imports and applies require_admin to every admin-surface view and
+login_required_json (defined below, same 401-JSON-on-unauthenticated shape as
+require_admin, just without the ADMIN-role check) to every other one. See
+planning.views' own module docstring for the endpoint-by-endpoint breakdown.
 """
 from __future__ import annotations
 
@@ -54,6 +59,22 @@ def require_admin(view_func):
         profile = getattr(request.user, "profile", None)
         if profile is None or profile.role != UserProfile.Role.ADMIN:
             return JsonResponse({"error": "Admin role required"}, status=403)
+        return view_func(request, *args, **kwargs)
+    return wrapper
+
+
+def login_required_json(view_func):
+    """401 JSON (never Django's default redirect-to-LOGIN_URL, which this API-only app
+    has no HTML login page to redirect to) if not logged in -- no role check beyond
+    that, unlike require_admin above. Added 2026-09-22 alongside require_admin being
+    applied to the rest of /admin/*, to close the same gap for every non-admin business
+    view (SE/ABM/.../State plans, routes, pitch, dc-card, directory listings, etc.) --
+    those need "is this a real logged-in user" (any of the 6 UserProfile.Role values),
+    not "is this specifically an ADMIN"."""
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return JsonResponse({"error": "Authentication required"}, status=401)
         return view_func(request, *args, **kwargs)
     return wrapper
 
