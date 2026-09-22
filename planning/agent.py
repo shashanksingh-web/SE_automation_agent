@@ -105,16 +105,23 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GOOGLE_MAPS_ROUTE_ACCURACY_ENABLED = bool(GOOGLE_MAPS_API_KEY) and requests is not None
 
 
-def _redact_google_key(text: str) -> str:
-    """Strips a live GOOGLE_MAPS_API_KEY out of a string before it reaches any logger
-    (2026-09-16, after a leaked key was found in a committed log file). The leak came
-    from requests.exceptions.HTTPError's own str() -- it embeds the full failed
-    request URL, query string (key= param included) and all, whenever
-    resp.raise_for_status() fires. Call this on any exception string derived from a
-    Google Maps request before logging it, since logs/*.log are committed as
-    pipeline-run snapshots in this repo."""
-    if GOOGLE_MAPS_API_KEY and GOOGLE_MAPS_API_KEY in text:
-        return text.replace(GOOGLE_MAPS_API_KEY, "***REDACTED***")
+def _redact_api_keys(text: str) -> str:
+    """Strips any live provider API key out of a string before it reaches any logger
+    (2026-09-16, after a GOOGLE_MAPS_API_KEY was found leaked in a committed log file
+    -- requests.exceptions.HTTPError's own str() embeds the full failed request URL,
+    query string and all, whenever resp.raise_for_status() fires on a request that
+    passed its key as a query param, e.g. Google Maps and Gemini both do). Widened
+    2026-09-22 (the exact same class of leak recurred for GEMINI_API_KEY -- the
+    original fix only covered Google Maps' own two call sites, not Gemini's identical
+    ?key=... pattern) to check every provider key this module holds, not just Google's
+    -- OpenRouter/Anthropic pass their key via an Authorization header rather than the
+    URL, so raise_for_status()'s string can't leak those today, but redacting them too
+    costs nothing and removes the need to reason about it call-site by call-site.
+    Call this on any exception string derived from an outbound request before logging
+    it, since logs/*.log have been committed as pipeline-run snapshots in this repo."""
+    for key in (GOOGLE_MAPS_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY):
+        if key and key in text:
+            text = text.replace(key, "***REDACTED***")
     return text
 # Persistent (SE, ordered-stop-sequence) -> per-leg [distance_km, duration_min] cache --
 # road distances don't change day to day, and this session's own verification workflow
@@ -3949,7 +3956,7 @@ def _fetch_distance_matrix_chunk(
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        logger.warning("Google Distance Matrix API call failed (%s: %s) -- falling back to Haversine x 1.4 for this chunk.", type(e).__name__, _redact_google_key(str(e)))
+        logger.warning("Google Distance Matrix API call failed (%s: %s) -- falling back to Haversine x 1.4 for this chunk.", type(e).__name__, _redact_api_keys(str(e)))
         return None
     if data.get("status") != "OK":
         logger.warning("Google Distance Matrix API returned status=%s -- falling back to Haversine x 1.4 for this chunk.", data.get("status"))
@@ -4189,7 +4196,7 @@ def google_directions_route_legs(
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        logger.warning("Google Directions API call failed (%s: %s) -- falling back to Haversine x 1.4 for this route.", type(e).__name__, _redact_google_key(str(e)))
+        logger.warning("Google Directions API call failed (%s: %s) -- falling back to Haversine x 1.4 for this route.", type(e).__name__, _redact_api_keys(str(e)))
         return None
 
     if data.get("status") != "OK" or not data.get("routes"):
@@ -5120,7 +5127,7 @@ def _call_anthropic_messages_api(prompt: str) -> Optional[str]:
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
         return text or None
     except Exception as e:
-        logger.warning("Anthropic Messages API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, e)
+        logger.warning("Anthropic Messages API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, _redact_api_keys(str(e)))
         return None
 
 
@@ -5157,7 +5164,7 @@ def _call_openrouter_chat_api(prompt: str) -> Optional[str]:
         text = (choices[0].get("message") or {}).get("content")
         return text or None
     except Exception as e:
-        logger.warning("OpenRouter chat API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, e)
+        logger.warning("OpenRouter chat API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, _redact_api_keys(str(e)))
         return None
 
 
@@ -5187,7 +5194,7 @@ def _call_gemini_api(prompt: str) -> Optional[str]:
         text = "".join(p.get("text", "") for p in parts)
         return text or None
     except Exception as e:
-        logger.warning("Gemini API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, e)
+        logger.warning("Gemini API call failed (%s: %s) -- Plan C route unavailable this run.", type(e).__name__, _redact_api_keys(str(e)))
         return None
 
 
