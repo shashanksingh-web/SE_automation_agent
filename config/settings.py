@@ -55,6 +55,21 @@ ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver'] + [
     h.strip() for h in os.environ.get('ALLOWED_HOSTS_EXTRA', '').split(',') if h.strip()
 ]
 
+# Production-only security hardening (2026-09-22, closing 4 of the 5 warnings
+# `manage.py check --deploy` reports today: W004/W008/W012/W016 -- the 5th, W018
+# "DEBUG should not be True in deployment", is DEBUG's own job above, not this block's).
+# Gated on `not DEBUG` rather than a separate env flag -- a real deployment already
+# must set DEBUG=False (see .env.docker.example), and every one of these assumes the
+# site is served over real HTTPS, which is never true for local dev (`runserver`/this
+# Docker Compose setup on localhost) but should always be true once DEBUG=False.
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year, the standard HSTS starting point
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
 
 # Application definition
 
