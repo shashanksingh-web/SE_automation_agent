@@ -6,10 +6,15 @@ db.sqlite3-shm
 db.sqlite3-wal
 .env
 .DS_Store
-output/google_route_cache.json
-output/google_distance_matrix_cache.json
-output/llm_route_cache.json
-output/ai_sales_forecast_cache.json
-output/scheme_description_cache.json
 celerybeat-schedule*
 celerybeat.pid
+
+# Generated pipeline artifacts, not source -- every run overwrites these, and a Google
+# Maps/Gemini API-call failure embeds the live key in its own error text (see
+# planning.agent._redact_api_keys), so a committed log/output snapshot is a live
+# credential leak waiting to happen (confirmed 2026-09-22: both GOOGLE_API_KEY and
+# GEMINI_API_KEY were found leaked in the then-tracked logs/tuff.log, matching the
+# .env values active at the time -- those keys need rotating). Untracked from git the
+# same day; still written to disk exactly as before, just no longer part of the repo.
+output/
+logs/
