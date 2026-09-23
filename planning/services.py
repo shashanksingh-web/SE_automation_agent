@@ -53,6 +53,42 @@ class PlanningError(RuntimeError):
     without live Metabase access."""
 
 
+# Reason codes this pipeline writes to run_exceptions/ExceptionRecord as ROUTINE,
+# BY-DESIGN bookkeeping for a completely normal, expected outcome -- never a live-data
+# failure or a data-quality problem. Added 2026-09-23 (see generate_plan_for_scope's own
+# 10%-threshold alert comment for the full investigation) to stop these from being
+# counted toward that alert, which they had been inflating to 100%+ on every state,
+# every day, since the alert was first written -- rendering it permanently meaningless.
+# Each entry below is the reason_code exactly as written at its own exc.flag()/
+# run_exceptions.append() call site in planning.agent/planning.routing; see that call
+# site's own comment for why it's written on every occurrence, not just on failure.
+_ROUTINE_EXCEPTION_REASON_CODES = frozenset({
+    # DC selection/eligibility -- written for EVERY DC an admin rule or dc_datamart's own
+    # is_active flag routinely excludes, not a failure of anything.
+    "DC_Not_In_Program_Selection",       # excluded by the Admin Control Panel's Program DC Selection rule
+    "DC_Not_Active",                     # dc_datamart query succeeded; this DC is genuinely is_active=false
+    "DC_Datamart_Inactive_Outstanding_Unavailable",  # same is_active=false signal, financials leg
+    # GR-28 / Health Score overrides -- explicitly flagged so a deliberate override is
+    # visible in the audit trail, per direct instruction ("flag that 60 day eligibility
+    # condition") -- the override itself is the intended behavior, not a problem.
+    "GR28_Bypassed_60Day_Eligibility",
+    # Provisional/estimate markers -- informational caveats on an otherwise-real value,
+    # not something that failed to compute.
+    "FM_Urgency_Provisional",
+    "SE_AOP_PL_Target_Estimate",
+    # Routing Agent outcomes -- real, working decisions the algorithm makes under its own
+    # documented constraints (a route hit the travel/distance ceiling, 3 independently-
+    # generated plans converged to the same stops, diversity/outlier rules kicked in) --
+    # not evidence anything is broken.
+    "Travel_Ceiling_Exceeded", "Distance_Ceiling_Exceeded", "Exceptional_DC_Single_DC_Fallback",
+    "Plans_Converged", "Route_Diversity_Enforced", "Origin_Point_Outlier_Overridden",
+    "Insufficient_Candidates_For_3_Plans",
+    # Documented, permanent data-model limitations flagged on every DC they apply to (see
+    # each field's own docstring for why no better source exists) -- not a live failure.
+    "Club_Enrollment_Flag_Unconfirmed", "Club_Turnover_Partial_Exclusion",
+})
+
+
 def _dc_master_path() -> Path:
     return Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output" / "DC_Master_Normalized.json"
 
@@ -3960,15 +3996,39 @@ def generate_plan_for_scope(
 
     persist_exceptions(plan_run, run_exceptions)
 
-    # GR-17-style escalation alert -- more than 10% of in-scope DCs producing an
+    # GR-17-style escalation alert -- more than 10% of in-scope DCs producing a REAL
     # exception (live-pull failures, referential-integrity issues, etc.) is a signal the
     # underlying data/connection quality degraded for this run, not just isolated
     # one-off records; surface it rather than letting it sit unnoticed in ExceptionRecord.
-    if scoped_dcs and (len(run_exceptions) / len(scoped_dcs)) > 0.10:
+    #
+    # FIXED 2026-09-23 (root-caused after this alert fired on all 11 states 2 days
+    # running, at 114-192% -- investigated rather than just re-flagged): the ratio used
+    # to be len(run_exceptions)/len(scoped_dcs) with NO filtering at all, so it counted
+    # every entry in run_exceptions, including the routine, BY-DESIGN, one-or-more-per-
+    # excluded-or-flagged-DC bookkeeping records this pipeline deliberately writes for
+    # completely normal, expected outcomes (a DC the admin's Program DC Selection rule
+    # excluded, a DC dc_datamart itself marks inactive, a GR-28 override, a routing
+    # constraint like Travel_Ceiling_Exceeded or Route_Diversity_Enforced, etc.) -- see
+    # each reason_code's own exc.flag()/run_exceptions.append() call site for why it's
+    # written on every occurrence, not just failures. Verified live across 4 real
+    # PlanRuns (2026-09-22/23, #2191/#2192/#2193/#2208): genuine failure-type exceptions
+    # (Live_Pull_Failed, *_Unresolved, *_Query_Failed) were consistently under 1% of DC
+    # count in every one, while the routine bookkeeping alone was 114-192% -- meaning
+    # this alert had never once reflected an actual data-quality problem since it was
+    # added; it was mathematically guaranteed to fire on any state with enough excluded/
+    # inactive DCs, which is every state, every day. _ROUTINE_EXCEPTION_REASON_CODES
+    # below is deliberately a DENYLIST, not an allowlist of "real" codes -- a new
+    # exception type nobody remembers to add here just causes an occasional false-
+    # positive alert (annoying, not dangerous), whereas an allowlist missing a genuinely
+    # new failure type would mean that failure class silently NEVER alerts, the far
+    # worse failure mode for anything alert-shaped.
+    real_exceptions = [e for e in run_exceptions if e.get("reason_code") not in _ROUTINE_EXCEPTION_REASON_CODES]
+    if scoped_dcs and (len(real_exceptions) / len(scoped_dcs)) > 0.10:
         send_alert(
             f"PlanRun #{plan_run.id} ({scope_type}={scope_value} @ {plan_date}): "
-            f"{len(run_exceptions)} exceptions across {len(scoped_dcs)} DCs "
-            f"({len(run_exceptions) / len(scoped_dcs):.0%}) -- exceeds 10% threshold.",
+            f"{len(real_exceptions)} real exceptions across {len(scoped_dcs)} DCs "
+            f"({len(real_exceptions) / len(scoped_dcs):.0%}) -- exceeds 10% threshold "
+            f"({len(run_exceptions)} total exception records, {len(run_exceptions) - len(real_exceptions)} routine/informational).",
             severity="warning",
         )
 
