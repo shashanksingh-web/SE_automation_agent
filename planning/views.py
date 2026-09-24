@@ -15,7 +15,7 @@ session or permission check at all."""
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
@@ -28,8 +28,8 @@ from .auth_views import login_required_json, require_admin
 from .directory import list_abms, list_blocks, list_dcs, list_districts, list_nodes, list_rbms, list_ses, list_states, list_zbms
 from .headcount import compute_active_headcount_bifurcation
 from .models import (
-    DailyTask, DCCard, DCVisitStreak, ObjectiveCompletionStats, PitchScript, PlanRun, RoutePlan, RoutingScopeOverride,
-    ScheduledScope,
+    DailyTask, DCCard, DCVisitStreak, ExceptionRecord, ObjectiveCompletionStats, PitchScript, PlanRun, RoutePlan,
+    RoutingScopeOverride, ScheduledScope,
 )
 from .product_cohort import ProductCohortError, build_season_weeks, split_csv
 from .routing import (
@@ -362,6 +362,113 @@ def _latest_finished_run(scope_type: str, scope_value: str, plan_date: str, rout
     return chosen, se_filter, family_by_run.get(chosen.id)
 
 
+def _node_state_map() -> Dict[str, str]:
+    """Node name -> State name, off the same DC_Master_Normalized.json every other
+    scope-resolution helper here already reads (load_dc_master) -- no new data source."""
+    return {d["Node"]: d["State"] for d in load_dc_master() if d.get("Node") and d.get("State")}
+
+
+def _latest_node_runs_for_state(scope_value: str, plan_date: str) -> List[PlanRun]:
+    """Every Node-scope finished run for this State/date, one per distinct Node (the
+    latest, on the rare day run_scheduled_tuff produces two for the same Node/date --
+    seen live, not yet root-caused, harmless here since only the newest is used).
+
+    Added 2026-09-24, explicit user report ("all data created on backend why sawing on
+    frontend"): the daily scheduled scan (run_scheduled_tuff, one call per active
+    ScheduledScope) has only ever produced Node-scope PlanRuns -- it does not, and was
+    never asked to, also produce a State-scope run. _latest_finished_run's exact-
+    scope-type match (scope_type=STATE) can therefore never find today's data even
+    though every DC in the state has a real, finished plan sitting in the DB under its
+    own Node -- the State page fell back silently to the last real State-scope run
+    (a manual Create/Refresh or "Generate for all states"), which can be a day or more
+    stale, with nothing on screen explaining why. This combines today's real Node runs
+    into the same response shape instead of requiring a State-scope run to exist at
+    all; _serialize_aggregated_state_run makes the substitution visible via
+    Aggregated_From_Nodes rather than quietly pretending it's one real PlanRun -- the
+    same "never resolve ambiguity silently" rule every other gap in this pipeline
+    already follows."""
+    state_by_node = _node_state_map()
+    nodes = sorted({n for n, s in state_by_node.items() if s.lower() == scope_value.lower()})
+    if not nodes:
+        return []
+    runs = list(
+        PlanRun.objects.filter(
+            scope_type=PlanRun.ScopeType.NODE, scope_value__in=nodes,
+            plan_date=plan_date, finished_at__isnull=False,
+        ).order_by("scope_value", "-run_timestamp")
+    )
+    latest_by_node: Dict[str, PlanRun] = {}
+    for r in runs:
+        latest_by_node.setdefault(r.scope_value, r)  # already newest-first per node
+    return list(latest_by_node.values())
+
+
+def _serialize_aggregated_state_run(scope_value: str, plan_date: str, node_runs: List[PlanRun]) -> dict:
+    """Same response shape _serialize_plan_run gives a real single PlanRun, built
+    instead by combining every run in node_runs -- see _latest_node_runs_for_state for
+    why this exists. PlanRun_ID is a synthetic string (the frontend already types this
+    field as a string, never assumed numeric) since no single real PlanRun row backs
+    this response."""
+    run_ids = [r.id for r in node_runs]
+    tasks_by_se: Dict[str, Dict[str, Any]] = {}
+    task_list = list(DailyTask.objects.filter(plan_run_id__in=run_ids))
+    for t in task_list:
+        tasks_by_se.setdefault(t.se_id, {"SE_ID": t.se_id, "SE_Name": t.se_name, "Tasks": []})
+        tasks_by_se[t.se_id]["Tasks"].append(_serialize_task(t))
+
+    exceptions = ExceptionRecord.objects.filter(plan_run_id__in=run_ids)
+    skipped: List[Dict[str, Any]] = []
+    for r in node_runs:
+        skipped.extend(r.skipped_ses or [])
+
+    routes = RoutePlan.objects.filter(plan_run_id__in=run_ids)
+    family_counts: Dict[str, int] = {}
+    for plan_type in routes.values_list("plan_type", flat=True):
+        fam = _PLAN_FAMILY.get(plan_type)
+        if fam:
+            family_counts[fam] = family_counts.get(fam, 0) + 1
+    family = max(family_counts, key=family_counts.get) if family_counts else None
+
+    started_ats = [r.started_at for r in node_runs if r.started_at]
+    finished_ats = [r.finished_at for r in node_runs if r.finished_at]
+
+    return {
+        "PlanRun_ID": f"AGGREGATED:{PlanRun.ScopeType.STATE}:{scope_value}:{plan_date}",
+        "Scope_Type": PlanRun.ScopeType.STATE,
+        "Scope_Value": scope_value,
+        "Plan_Date": plan_date,
+        "Run_Timestamp": max(r.run_timestamp for r in node_runs),
+        "Metabase_Configured": any(r.metabase_configured for r in node_runs),
+        "Served_From": None,
+        "Routing_Plan": family,
+        "SE_Count": len(tasks_by_se),
+        "DC_Count": sum(r.dc_count for r in node_runs),
+        "Task_Count": len(task_list),
+        "Dynamic_Parameters_Resolved": {},
+        "Note": None,
+        "Skipped_SEs": skipped,
+        "Status": PlanRun.Status.PENDING_REVIEW,
+        "Reviewed_By": None,
+        "Reviewed_At": None,
+        "Error_Message": None,
+        "Started_At": min(started_ats) if started_ats else None,
+        "Finished_At": max(finished_ats) if len(finished_ats) == len(node_runs) else None,
+        "Plans": list(tasks_by_se.values()),
+        "Exceptions_Report": [
+            {
+                "Record_ID": e.record_id, "Source": e.source, "Reason_Code": e.reason_code,
+                "Detail": e.detail, "Run_Timestamp": e.run_timestamp,
+            }
+            for e in exceptions
+        ],
+        "Focus_Product_Targets": [],
+        # Never present on a real PlanRun -- the one signal the frontend needs to tell
+        # "one real State-scope run" from "assembled from today's Node runs, no State-
+        # scope run exists yet" (see _latest_node_runs_for_state's own docstring).
+        "Aggregated_From_Nodes": {"Count": len(node_runs), "Node_Names": sorted(r.scope_value for r in node_runs)},
+    }
+
+
 def _read_latest_and_respond(request, scope_type: str, scope_value: str):
     """GET on a scope endpoint (added 2026-09-17, explicit user request: "if backend
     complete all process why its again run for frontend - only data will capture").
@@ -379,6 +486,15 @@ def _read_latest_and_respond(request, scope_type: str, scope_value: str):
         return JsonResponse({"error": "routing_plan must be A, B or C"}, status=400)
     plan_run, se_filter, family = _latest_finished_run(scope_type, scope_value, plan_date, routing_plan)
     if plan_run is None:
+        # No State-scope run exists for this date -- before giving up, check whether
+        # today's real data exists anyway under individual Node runs (the daily
+        # scheduled scan's only output shape). See _latest_node_runs_for_state's own
+        # docstring for the full story.
+        if scope_type == PlanRun.ScopeType.STATE:
+            node_runs = _latest_node_runs_for_state(scope_value, plan_date)
+            if node_runs:
+                payload = _serialize_aggregated_state_run(scope_value, plan_date, node_runs)
+                return JsonResponse(payload, safe=False, json_dumps_params={"default": str})
         return JsonResponse(
             {"error": f"No plan has been generated for {scope_type} '{scope_value}' on {plan_date} yet.", "code": "NO_PLAN"},
             status=404,
