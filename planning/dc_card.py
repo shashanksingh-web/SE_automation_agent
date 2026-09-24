@@ -46,7 +46,7 @@ unverified parity gap with Pitching."""
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
 from . import discount_service
@@ -513,16 +513,26 @@ def build_dc_card(task: DailyTask, ctx: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def generate_dc_cards_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, ExtraDcContext]) -> Tuple[int, List[Dict[str, str]]]:
+def generate_dc_cards_for_plan_run(
+    plan_run: PlanRun, extra_data_by_dc: Dict[str, ExtraDcContext], task_ids: Optional[Iterable[int]] = None,
+) -> Tuple[int, List[Dict[str, str]]]:
     """Called automatically from generate_plan_for_scope() right after
     generate_pitches_for_plan_run() -- same context dict, same DC-tied-tasks-only filter
     (Farmer Meeting tasks have no DC, no card to show). Returns (created_count, failures)
     -- each task isolated in its own try/except (same reasoning as
     pitching.generate_pitches_for_plan_run: one bad DC's data previously aborted every
-    other task's card in the same run, not just that one task's)."""
+    other task's card in the same run, not just that one task's).
+
+    task_ids: same real-time-per-SE-visibility parameter as
+    pitching.generate_pitches_for_plan_run's own task_ids -- see that function's docstring
+    for the full rationale. None (default, every caller before 2026-09-24) means every
+    task on plan_run, unchanged behavior."""
     created = 0
     failures: List[Dict[str, str]] = []
-    for task in plan_run.tasks.filter(dc_id__isnull=False):
+    task_qs = plan_run.tasks.filter(dc_id__isnull=False)
+    if task_ids is not None:
+        task_qs = task_qs.filter(id__in=task_ids)
+    for task in task_qs:
         try:
             ctx = dict(extra_data_by_dc.get(task.dc_id, {}))
             fields = build_dc_card(task, ctx)

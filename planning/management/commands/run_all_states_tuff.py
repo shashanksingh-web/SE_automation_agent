@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from django.conf import settings
@@ -6,7 +5,9 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 
 from planning import agent  # moved from a sys.path-inserted top-level script to planning/agent.py 2026-09-18
+from planning.concurrency import run_scopes_concurrently
 from planning.directory import list_states
+from planning.locking import LockContendedError, orchestration_lock
 from planning.notify import send_alert
 from planning.services import PlanningError, generate_plan_for_scope
 from planning.services import _output_dir as _planning_output_dir
@@ -39,24 +40,34 @@ class Command(BaseCommand):
 
     Does NOT touch or replace ScheduledScope/run_scheduled_tuff -- that cron job keeps
     running exactly as before; this is a separate, on-demand, manually-triggered path.
+    They DO now share one orchestration_lock (see below), so the two can never run
+    concurrently with each other either -- a real incident, 2026-09-24: a manual
+    run_scheduled_tuff invocation and celery_worker's own scheduled copy of the same
+    command ran at the same time, causing real data loss (DNS resolution failures from
+    the resource contention, and DailyTask rows that silently ended up with zero
+    PitchScript). See planning.locking's own module docstring for the full incident and
+    the two-tier lock design.
 
     Step 2 runs up to MAX_CONCURRENT_STATES states concurrently (added 2026-09-19,
     explicit user request to parallelize -- states are fully independent of each
-    other, nothing about the previous strict sequencing was required by the data).
-    Uses real OS threads (concurrent.futures.ThreadPoolExecutor), not Celery's own
-    worker pool -- this task already runs under Celery's --pool=solo (kept for an
-    unrelated macOS/Python 3.14 prefork bug, deliberately not revisited here), and
-    generate_plan_for_scope's live-data-pull-then-write shape is I/O bound enough
-    that plain threads are sufficient without needing process-level parallelism.
-    Confirmed safe against this app's SQLite setup the same day this was written:
-    concurrent generate_plan_for_scope calls across different states, run via
-    separate docker exec processes, produced no corruption once db.sqlite3 moved off
-    the bind mount onto a named volume (see config/settings.py's WAL + IMMEDIATE +
-    300s-busy-timeout DATABASES config, built for exactly this). Each worker thread
-    gets its own Django DB connection automatically (thread-local by default);
-    close_old_connections() at the end of each thread's work prevents those from
-    accumulating across repeated runs in this long-lived Celery worker process,
-    since nothing outside a request cycle closes them otherwise."""
+    other, nothing about the previous strict sequencing was required by the data), via
+    the shared planning.concurrency.run_scopes_concurrently helper (extracted
+    2026-09-24 when run_scheduled_tuff.py was parallelized to match this command,
+    instead of duplicating the same ThreadPoolExecutor/as_completed boilerplate twice).
+    Uses real OS threads, not Celery's own worker pool -- this task already runs under
+    Celery's --pool=solo (kept for an unrelated macOS/Python 3.14 prefork bug,
+    deliberately not revisited here), and generate_plan_for_scope's live-data-pull-
+    then-write shape is I/O bound enough that plain threads are sufficient without
+    needing process-level parallelism. Confirmed safe against this app's SQLite setup
+    the same day this was written: concurrent generate_plan_for_scope calls across
+    different states, run via separate docker exec processes, produced no corruption
+    once db.sqlite3 moved off the bind mount onto a named volume (see config/
+    settings.py's WAL + IMMEDIATE + 300s-busy-timeout DATABASES config, built for
+    exactly this). Each worker thread gets its own Django DB connection automatically
+    (thread-local by default); close_old_connections() at the end of each thread's
+    work prevents those from accumulating across repeated runs in this long-lived
+    Celery worker process, since nothing outside a request cycle closes them
+    otherwise."""
 
     help = "Run Agent TUFF for every STATE in DC_Master_Normalized (on-demand 'generate for everyone')."
 
@@ -72,15 +83,23 @@ class Command(BaseCommand):
         per state)."""
         try:
             plan_run = generate_plan_for_scope("STATE", state, plan_date)
-            return state, ("ok", plan_run)
+            return "ok", plan_run
         except PlanningError as e:
-            return state, ("planning_error", e)
+            return "planning_error", e
         except Exception as e:
-            return state, ("crashed", e)
+            return "crashed", e
         finally:
             close_old_connections()
 
     def handle(self, *args, **options):
+        try:
+            with orchestration_lock():
+                self._run(options)
+        except LockContendedError as e:
+            self.stderr.write(self.style.WARNING(f"run_all_states_tuff: {e}"))
+            send_alert(f"run_all_states_tuff: {e}", severity="warning")
+
+    def _run(self, options):
         output_dir = Path(settings.SE_DAILY_PLAN_AGENT_PATH) / "output"
         self.stdout.write(self.style.SUCCESS("=== run_all_states_tuff Step 1: Data Normalization Agent ==="))
         try:
@@ -111,24 +130,24 @@ class Command(BaseCommand):
             f"({len(states)} state(s), up to {MAX_CONCURRENT_STATES} concurrent) ==="
         ))
         succeeded, failed = 0, 0
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_STATES) as pool:
-            futures = {pool.submit(self._generate_one_state, state, options["date"]): state for state in states}
-            for future in as_completed(futures):
-                state, (outcome, payload) = future.result()
-                if outcome == "ok":
-                    succeeded += 1
-                    plan_run = payload
-                    self.stdout.write(self.style.SUCCESS(
-                        f"  STATE={state}: PlanRun #{plan_run.id}, {plan_run.se_count} SEs, {plan_run.task_count} tasks"
-                    ))
-                elif outcome == "planning_error":
-                    failed += 1
-                    self.stderr.write(self.style.ERROR(f"  STATE={state}: {payload}"))
-                    send_alert(f"run_all_states_tuff: state {state} failed: {payload}", severity="error")
-                else:
-                    failed += 1
-                    self.stderr.write(self.style.ERROR(f"  STATE={state}: unexpected {type(payload).__name__}: {payload}"))
-                    send_alert(f"run_all_states_tuff: state {state} crashed: {type(payload).__name__}: {payload}", severity="error")
+        results = run_scopes_concurrently(
+            states, lambda state: self._generate_one_state(state, options["date"]), MAX_CONCURRENT_STATES,
+        )
+        for state, outcome, payload in results:
+            if outcome == "ok":
+                succeeded += 1
+                plan_run = payload
+                self.stdout.write(self.style.SUCCESS(
+                    f"  STATE={state}: PlanRun #{plan_run.id}, {plan_run.se_count} SEs, {plan_run.task_count} tasks"
+                ))
+            elif outcome == "planning_error":
+                failed += 1
+                self.stderr.write(self.style.ERROR(f"  STATE={state}: {payload}"))
+                send_alert(f"run_all_states_tuff: state {state} failed: {payload}", severity="error")
+            else:
+                failed += 1
+                self.stderr.write(self.style.ERROR(f"  STATE={state}: unexpected {type(payload).__name__}: {payload}"))
+                send_alert(f"run_all_states_tuff: state {state} crashed: {type(payload).__name__}: {payload}", severity="error")
 
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS(f"=== Done: {succeeded} succeeded, {failed} failed, {len(states)} total states ==="))

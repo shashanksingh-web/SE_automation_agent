@@ -43,7 +43,7 @@ import logging
 import re
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import discount_service
 from .ai_sales_forecast import build_ai_pitch
@@ -829,7 +829,9 @@ def _compose(task: DailyTask, ctx: Dict[str, Any]) -> Tuple[str, List[str], List
     return "\n".join(lines).strip(), used, skipped
 
 
-def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str, ExtraDcContext]) -> Tuple[int, List[Dict[str, str]]]:
+def generate_pitches_for_plan_run(
+    plan_run: PlanRun, extra_data_by_dc: Dict[str, ExtraDcContext], task_ids: Optional[Iterable[int]] = None,
+) -> Tuple[int, List[Dict[str, str]]]:
     """Called automatically from generate_plan_for_scope() right after DailyTask rows
     exist for this run. extra_data_by_dc carries the newly-wired sources (S1/S2/S3/S6/S7)
     keyed by dc_id -- S5 (Outstanding) and S8 (YTD PL) are read directly off DailyTask's
@@ -837,7 +839,18 @@ def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str,
     -- each task is isolated in its own try/except so one bad DC's data can't blank out
     every other task's pitch in the same run (previously a single unhandled exception
     here aborted the whole loop, silently leaving every task after it with no PitchScript
-    at all); failures is a list the caller can fold into its own run_exceptions."""
+    at all); failures is a list the caller can fold into its own run_exceptions.
+
+    task_ids (added 2026-09-24, real-time per-SE visibility): restricts the pitch run to
+    just these DailyTask ids instead of every task currently on plan_run -- generate_plan_
+    for_scope's per-SE loop passes one SE's own just-created task ids here right after
+    writing them, so pitches for an already-processed SE appear immediately instead of
+    only once the whole scope's SEs are all done. None (every caller before this date,
+    and planning.routing's route-switch resync path) means "every task on plan_run,"
+    unchanged behavior. Without this, calling this function once per SE unmodified would
+    silently re-process every PREVIOUS SE's tasks too on each subsequent call (this
+    function has no "already pitched" filter -- see PitchScript.objects.update_or_create
+    below, idempotent by design), an O(N^2) cost across a scope's SE count."""
     created = 0
     failures: List[Dict[str, str]] = []
 
@@ -846,7 +859,10 @@ def generate_pitches_for_plan_run(plan_run: PlanRun, extra_data_by_dc: Dict[str,
     # parallelizing, and _compose must run before build_ai_pitch regardless (its
     # purposes/matched_key feed straight into that call).
     prepared: List[Dict[str, Any]] = []
-    for task in plan_run.tasks.filter(dc_id__isnull=False):  # Farmer Meeting tasks have no DC -- no pitch to generate
+    task_qs = plan_run.tasks.filter(dc_id__isnull=False)  # Farmer Meeting tasks have no DC -- no pitch to generate
+    if task_ids is not None:
+        task_qs = task_qs.filter(id__in=task_ids)
+    for task in task_qs:
         try:
             ctx = dict(extra_data_by_dc.get(task.dc_id, {}))
             ctx["present_outstanding"] = task.present_outstanding

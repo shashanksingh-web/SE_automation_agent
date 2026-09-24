@@ -93,6 +93,14 @@ SE_DAILY_PLAN_AGENT_PATH = BASE_DIR
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # CorsMiddleware (added 2026-09-24, real incident -- "not visible on frontend",
+    # root-caused to this backend never sending Access-Control-Allow-Origin at all)
+    # -- placed early, right after SecurityMiddleware, so it can short-circuit a CORS
+    # preflight OPTIONS request before CommonMiddleware/CsrfViewMiddleware or any
+    # view's own @require_http_methods gets a chance to reject it. See config/cors.py
+    # for the full incident writeup and why this is a hand-rolled allowlist rather
+    # than django-cors-headers or a wildcard origin.
+    'config.cors.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
