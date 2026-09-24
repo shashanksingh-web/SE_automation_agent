@@ -32,7 +32,7 @@ import sys
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from django.conf import settings
 from django.db import transaction
@@ -42,6 +42,7 @@ from . import agent  # moved from a sys.path-inserted top-level script to planni
 
 from . import data_cache, dc_selection, discount_service, product_cohort, routing
 from .admin_config import load_business_constants
+from .locking import LockContendedError, scope_lock
 from .models import DailyTask, DCVisitStreak, ExceptionRecord, FocusProductTargetRun, PlanRun, RoutingScopeOverride
 from .pitch_context import ExtraDcContext
 from .notify import send_alert
@@ -2157,6 +2158,7 @@ def run_pitching_and_dc_card_agents(
     dc_financials: Optional[Dict[str, Any]] = None, dc_club_by_id: Optional[Dict[str, Any]] = None,
     active_schemes_by_node: Optional[Dict[str, Any]] = None, ytd_pl_last_year_by_dc: Optional[Dict[str, Any]] = None,
     yoy_pl_growth_fn: Optional[Callable[[str], Tuple[float, Optional[float]]]] = None,
+    task_ids: Optional[Iterable[int]] = None,
 ) -> List[dict]:
     """Runs Pitching Agent + DC Card generation for every DC currently on plan_run's
     DailyTask set. Extracted 2026-09-15 from generate_plan_for_scope's own inline block
@@ -2181,7 +2183,17 @@ def run_pitching_and_dc_card_agents(
     populated, but a DC newly added via route-switch/add-stop gets a DC Card with its
     Business Area Strength/Club/Active Schemes/YoY PL sections blank until the next
     full activate_tuff/generate_se_plan re-run repopulates them -- same honest-degrade
-    convention as every other missing-source case in this file, not fabricated."""
+    convention as every other missing-source case in this file, not fabricated.
+
+    task_ids (added 2026-09-24, real-time per-SE visibility): restricts BOTH total_tasks/
+    task_dc_ids below AND the two sub-calls to just these DailyTask ids -- generate_plan_
+    for_scope's per-SE loop passes one SE's own just-created task ids here so that SE's
+    pitches/cards appear immediately, without re-processing every earlier SE's tasks too
+    on each call (see generate_pitches_for_plan_run's own docstring for the full
+    rationale). None (every caller before this date) means every task on plan_run,
+    unchanged behavior -- including planning.routing's resync call site, which correctly
+    keeps seeing the whole plan_run since a route switch/add-stop can touch any of its
+    SEs' tasks, not just one."""
     dc_financials = dc_financials or {}
     dc_club_by_id = dc_club_by_id or {}
     active_schemes_by_node = active_schemes_by_node or {}
@@ -2191,11 +2203,14 @@ def run_pitching_and_dc_card_agents(
             return 1.0, None
     dc_master = load_dc_master()
     run_exceptions: List[dict] = []
-    total_tasks = plan_run.tasks.filter(dc_id__isnull=False).count()
+    task_qs = plan_run.tasks.filter(dc_id__isnull=False)
+    if task_ids is not None:
+        task_qs = task_qs.filter(id__in=task_ids)
+    total_tasks = task_qs.count()
 
     if client.configured and total_tasks > 0:
         try:
-            task_dc_ids = list(plan_run.tasks.exclude(dc_id__isnull=True).values_list("dc_id", flat=True).distinct())
+            task_dc_ids = list(task_qs.values_list("dc_id", flat=True).distinct())
             # Purpose_Of_Visit per dc_id (added 2026-09-20, explicit user request --
             # "for all se sale pitcg only for focused private label") -- one DailyTask
             # row per dc_id per plan_run (same assumption task_dc_ids' own .distinct()
@@ -2504,7 +2519,7 @@ def run_pitching_and_dc_card_agents(
                     })
 
                 from .pitching import generate_pitches_for_plan_run
-                _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc)
+                _, pitch_failures = generate_pitches_for_plan_run(plan_run, extra_data_by_dc, task_ids=task_ids)
                 run_exceptions.extend({
                     "record_id": f["dc_id"], "source": "PitchingAgent", "reason_code": "Pitch_Generation_Failed",
                     "detail": f"DC {f['dc_id']}: {f['detail']}",
@@ -2516,7 +2531,7 @@ def run_pitching_and_dc_card_agents(
                 # the exact same extra_data_by_dc Pitching just used, no re-fetch.
                 try:
                     from .dc_card import generate_dc_cards_for_plan_run
-                    _, card_failures = generate_dc_cards_for_plan_run(plan_run, extra_data_by_dc)
+                    _, card_failures = generate_dc_cards_for_plan_run(plan_run, extra_data_by_dc, task_ids=task_ids)
                     run_exceptions.extend({
                         "record_id": f["dc_id"], "source": "DCCardAgent", "reason_code": "DC_Card_Generation_Failed",
                         "detail": f"DC {f['dc_id']}: {f['detail']}",
@@ -2582,6 +2597,42 @@ def _discard_plan_run_on_failure(fn: Callable[..., PlanRun]) -> Callable[..., Pl
     return wrapper
 
 
+def _scope_locked(fn: Callable[..., PlanRun]) -> Callable[..., PlanRun]:
+    """Acquires planning.locking.scope_lock(scope_type, scope_value) for the duration of
+    one generate_plan_for_scope() call -- added 2026-09-24 after a real incident: a manual
+    run_scheduled_tuff invocation and celery_worker's own scheduled copy of the same
+    command ran concurrently against the same ScheduledScope rows, with nothing anywhere
+    preventing it. Placed as the OUTERMOST decorator (applied first, listed above
+    @_discard_plan_run_on_failure below) so a contended lock is detected and raised before
+    that decorator's own ContextVar/cleanup setup ever runs -- there is nothing to clean
+    up yet at that point regardless, but failing fastest costs nothing.
+
+    scope_type/scope_value are always generate_plan_for_scope's first two positional (or
+    keyword) arguments for every real caller in this codebase (confirmed: run_scheduled_
+    tuff.py, run_all_states_tuff.py, generate_se_plan.py, activate_tuff.py via
+    activate_tuff_scope, and every HTTP scope endpoint in planning/views.py all call it
+    this way) -- read positionally-or-by-keyword here rather than requiring a caller
+    change.
+
+    Converts locking.LockContendedError into PlanningError so every existing caller's
+    already-correct `except PlanningError` handling (run_scheduled_tuff.py, run_all_
+    states_tuff.py, planning/views.py) treats "another process is already generating this
+    exact scope" as the same kind of expected, routine failure as e.g. the weekly-off-day
+    gate just below in this same function -- not an "unexpected crash" that would
+    otherwise hit the generic except-Exception branch and page as a crash."""
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> PlanRun:
+        scope_type = kwargs.get("scope_type", args[0] if len(args) > 0 else None)
+        scope_value = kwargs.get("scope_value", args[1] if len(args) > 1 else None)
+        try:
+            with scope_lock(scope_type, scope_value):
+                return fn(*args, **kwargs)
+        except LockContendedError as e:
+            raise PlanningError(str(e)) from e
+    return wrapper
+
+
+@_scope_locked
 @_discard_plan_run_on_failure
 def generate_plan_for_scope(
     scope_type: str, scope_value: str, plan_date: Optional[str] = None,
@@ -3804,12 +3855,19 @@ def generate_plan_for_scope(
 
     total_tasks = 0
     skipped_ses: List[Dict[str, Any]] = []
-    # Collected across every SE and bulk_create()'d once after the loop, instead of one
-    # DailyTask.objects.create() per task (up to 5/SE, capped by the Daily Task
-    # Assignment Formula) -- a STATE-scoped run over 100+ SEs previously issued a
-    # separate INSERT round-trip per task (370 for a real Bihar run) inside the same
-    # atomic transaction anyway, all avoidable ORM/query-building overhead.
-    pending_tasks: List[DailyTask] = []
+    # CHANGED 2026-09-24 (real-time per-SE frontend visibility, explicit user request):
+    # each SE's own DailyTask rows are now bulk_create()'d and pitched/carded right after
+    # that SE's own generate_se_daily_plan() call, instead of every SE's tasks being
+    # accumulated into one list and bulk_create()'d once after the whole loop finishes.
+    # Confirmed via a full read of this loop before making this change: no iteration
+    # reads another iteration's pending_tasks/skipped_ses -- every input (constants,
+    # dc_financials, top_dc_allowlist, etc.) is computed once, above this loop, from
+    # scope-wide (not cross-SE) data, so this is safe, not just possible. A reader
+    # polling this PlanRun now sees an already-processed SE's real tasks + pitches + DC
+    # Cards while later SEs in the same scope are still being computed, instead of
+    # waiting for the whole scope (previously: one bulk_create for every SE's tasks,
+    # after this entire loop, see the removed comment this replaces for that rationale --
+    # still true for the per-SE batch size, just no longer batched across SEs too).
     for email in se_emails:
         uid = se_user_ids.get(email, email)
         se_dcs = [dc for dc in scoped_dcs if dc.get("Assigned_SE_Email") == email]
@@ -3902,8 +3960,8 @@ def generate_plan_for_scope(
                     "in_scope_no_objective_match": plan.get("Skipped_Qualification_Detail") or [],
                 },
             })
-        for t in tasks:
-            pending_tasks.append(DailyTask(
+        se_pending_tasks: List[DailyTask] = [
+            DailyTask(
                 plan_run=plan_run, se_id=str(uid), se_name=email, plan_date=plan_date,
                 sr_no=t["Sr_No"], dc_name=t["DC_Name"], dc_id=t["DC_ID"], distance_km=t["Distance_Km"],
                 recommended_task_type=t["Recommended_Task_Type"], purpose_of_visit=t["Purpose_Of_Visit"],
@@ -3931,35 +3989,56 @@ def generate_plan_for_scope(
                 health_focus_purposes=t.get("Health_Focus_Purposes", ""),
                 credit_limit=t.get("Credit_Limit"), available_credit_limit=t.get("Available_Credit_Limit"),
                 credit_active=t.get("Credit_Active"),
+            )
+            for t in tasks
+        ]
+
+        if se_pending_tasks:
+            # Small, per-SE write cluster (was: one cluster for the WHOLE scope, after
+            # this entire loop) -- confirmed on this SQLite/Django 6.0 setup that
+            # bulk_create() populates real .id values on the input objects, so se_task_ids
+            # below is immediately usable, no second query needed. Holding the write lock
+            # for one SE's ~5 tasks instead of an entire scope's SEs is strictly friendlier
+            # to the existing WAL + IMMEDIATE + 300s-timeout concurrency tuning (shorter
+            # lock hold per transaction), not less safe -- run_all_states_tuff already
+            # proves 3 concurrent generate_plan_for_scope calls are safe under this same
+            # config, and per-SE batches only shrinks each individual transaction further.
+            with transaction.atomic():
+                DailyTask.objects.bulk_create(se_pending_tasks)
+            total_tasks += len(se_pending_tasks)
+            plan_run.task_count = total_tasks
+            plan_run.save(update_fields=["task_count"])
+
+            # Pitching Agent + DC Card, wired 2026-08-08/2026-08-14, made real-time-per-SE
+            # 2026-09-24 -- previously ran once for the whole scope's tasks, after this
+            # entire loop; now runs right after each SE's own tasks are written, scoped to
+            # just this SE's new task ids (task_ids=, added to run_pitching_and_dc_card_
+            # agents/generate_pitches_for_plan_run/generate_dc_cards_for_plan_run
+            # specifically for this) so a reader sees this SE's real pitches/cards
+            # immediately, and so this call does NOT silently re-process every earlier SE's
+            # tasks too on every iteration (see run_pitching_and_dc_card_agents' own
+            # docstring for why that would otherwise be an O(N^2) cost blow-up). Passes
+            # every enrichment dict this function has already computed above (dc_financials/
+            # dc_club_by_id/active_schemes_by_node/ytd_pl_last_year_by_dc/
+            # _yoy_pl_growth_multiplier), unchanged from the old single end-of-scope call.
+            se_task_ids = [t.id for t in se_pending_tasks]
+            run_exceptions.extend(run_pitching_and_dc_card_agents(
+                plan_run, plan_date, client, geo_mapping_cache,
+                dc_financials=dc_financials, dc_club_by_id=dc_club_by_id,
+                active_schemes_by_node=active_schemes_by_node, ytd_pl_last_year_by_dc=ytd_pl_last_year_by_dc,
+                yoy_pl_growth_fn=_yoy_pl_growth_multiplier, task_ids=se_task_ids,
             ))
 
-    # The one multi-statement write cluster: tasks + the count/finished_at that
-    # describe them land together, so a reader never sees a finished run with its
-    # tasks still arriving. Held for milliseconds -- nothing slow happens inside.
-    with transaction.atomic():
-        DailyTask.objects.bulk_create(pending_tasks)
-        total_tasks = len(pending_tasks)
-
-        plan_run.task_count = total_tasks
-        plan_run.finished_at = timezone.now()
-        plan_run.skipped_ses = skipped_ses
-        plan_run.save(update_fields=["task_count", "finished_at", "skipped_ses"])
-
-    # Pitching Agent + DC Card, wired 2026-08-08/2026-08-14 -- activates automatically
-    # right after task assignment, per direct instruction. Extracted 2026-09-15 into
-    # run_pitching_and_dc_card_agents() (defined above) so planning.routing can call the
-    # same logic again whenever DailyTask rows change after initial generation (route
-    # plan switch, SE add/remove-stop) -- see that function's own docstring for the full
-    # rationale. This call site is unchanged behavior: passes every enrichment dict this
-    # function has already computed above (dc_financials/dc_club_by_id/
-    # active_schemes_by_node/ytd_pl_last_year_by_dc/_yoy_pl_growth_multiplier), so DC
-    # Card's extra sections stay fully populated here exactly as before.
-    run_exceptions.extend(run_pitching_and_dc_card_agents(
-        plan_run, plan_date, client, geo_mapping_cache,
-        dc_financials=dc_financials, dc_club_by_id=dc_club_by_id,
-        active_schemes_by_node=active_schemes_by_node, ytd_pl_last_year_by_dc=ytd_pl_last_year_by_dc,
-        yoy_pl_growth_fn=_yoy_pl_growth_multiplier,
-    ))
+    # finished_at/skipped_ses are set exactly once, here, after every SE is done --
+    # finished_at is a deliberate "whole scope done" semantic marker (unlike task_count,
+    # which now updates live per-SE above), and skipped_ses is only meaningful once
+    # complete (a reader polling mid-run sees the real, growing task_count/DailyTask rows
+    # instead, per the change above -- skipped_ses finalizing at the end is a minor
+    # readability gap for a live-polling reader, not a correctness issue, since nothing
+    # else in this codebase reads it mid-run).
+    plan_run.finished_at = timezone.now()
+    plan_run.skipped_ses = skipped_ses
+    plan_run.save(update_fields=["finished_at", "skipped_ses"])
 
     if focus_product_material_id:
         node_id = focus_product_node_id or (scope_value if scope_type == PlanRun.ScopeType.NODE else None)
