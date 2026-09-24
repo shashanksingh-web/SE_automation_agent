@@ -1,17 +1,27 @@
-"""Every routed view below (see planning.urls) requires a real logged-in session --
-@require_admin (an authenticated ADMIN-role profile) on every /admin/* endpoint, plus
-`normalize`/`tuff` (each can trigger a live, Redshift-hitting Data Normalization/SE
-Daily Task Agent run, same blast radius as admin_generate_all_states) -- and
-@login_required_json (any authenticated user, no role check) on everything else:
-SE/ABM/.../State-scoped plan views, routes, pitch, dc-card, directory listings, runs,
-etc. Both return a JSON 401 rather than Django's default redirect-to-LOGIN_URL, since
-this is an API-only app with no HTML login page to redirect to (see planning.
-auth_views for both decorators' definitions).
+"""Every /admin/* endpoint below (see planning.urls), plus `normalize`/`tuff` (each can
+trigger a live, Redshift-hitting Data Normalization/SE Daily Task Agent run, same blast
+radius as admin_generate_all_states), requires @require_admin -- an authenticated
+ADMIN-role profile, returning a JSON 401/403 rather than Django's default redirect-to-
+LOGIN_URL, since this is an API-only app with no HTML login page to redirect to (see
+planning.auth_views for its definition).
 
-Added 2026-09-22, closing a gap real login (planning.models.UserProfile, 2026-09-14)
-deliberately left open at the time (see planning.auth_views' own module docstring) --
-every view here was previously reachable by anyone who could reach the host, with no
-session or permission check at all."""
+@login_required_json (any authenticated user, no role check -- same 401 convention) is
+DEFINED but, as of 2026-09-24, DELIBERATELY NOT APPLIED to any view below. It WAS
+applied to all 31 non-admin views for ~2 days (2026-09-22 to 2026-09-24, closing a gap
+real login -- planning.models.UserProfile, 2026-09-14 -- deliberately left open at the
+time; see planning.auth_views' own module docstring) but had to be reverted: the
+frontend's own login (src/features/auth/AuthContext.tsx, a separate repo from this one)
+was, as of that same date, still a client-side-only mock that never calls this app's
+real /auth/login/ at all -- so once every view required a real session, the frontend
+could no longer reach ANY of its own data (every request got a 401), a full outage of
+the whole non-admin app, not a narrow gap. Reverted as a stopgap, explicit user
+decision ("option 2, add the bypass"), to restore the frontend while its real login
+flow gets wired up separately (out of scope for this backend-only repo). Every /admin/*
+view keeps @require_admin -- unaffected, since the frontend's admin surfaces already
+require a real admin session to reach at all. This bypass should be removed (re-apply
+@login_required_json to the 31 views that had it -- git blame/log around this comment
+for the exact list) the moment the frontend's login flow is confirmed to establish a
+real backend session, not before."""
 import json
 from datetime import datetime
 from pathlib import Path
@@ -403,7 +413,6 @@ def _scope_view(request, scope_type: str, scope_value: str):
 # (services.generate_plan_for_scope via _generate_and_respond).
 
 @csrf_exempt
-@login_required_json
 def se_plan(request, scope_value: str):
     """POST /api/planning/se/v1/<se_email>/ -- body: {"date": "YYYY-MM-DD"} (moved from GET
     2026-09-16, see _generate_and_respond's own docstring). csrf_exempt is repeated here
@@ -416,42 +425,36 @@ def se_plan(request, scope_value: str):
 
 
 @csrf_exempt
-@login_required_json
 def abm_plan(request, scope_value: str):
     """POST /api/planning/abm/v1/<abm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.ABM, scope_value)
 
 
 @csrf_exempt
-@login_required_json
 def rbm_plan(request, scope_value: str):
     """POST /api/planning/rbm/v1/<rbm_code>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.RBM, scope_value)
 
 
 @csrf_exempt
-@login_required_json
 def node_plan(request, scope_value: str):
     """POST /api/planning/node/v1/<node_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.NODE, scope_value)
 
 
 @csrf_exempt
-@login_required_json
 def block_plan(request, scope_value: str):
     """POST /api/planning/block/v1/<block_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.BLOCK, scope_value)
 
 
 @csrf_exempt
-@login_required_json
 def district_plan(request, scope_value: str):
     """POST /api/planning/district/v1/<district_name>/ -- body: {"date": "YYYY-MM-DD"} -- requires live Metabase (Source 1c). Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.DISTRICT, scope_value)
 
 
 @csrf_exempt
-@login_required_json
 def state_plan(request, scope_value: str):
     """POST /api/planning/state/v1/<state_name>/ -- body: {"date": "YYYY-MM-DD"}. Moved from GET 2026-09-16 -- see se_plan's own docstring for why csrf_exempt is repeated here."""
     return _scope_view(request, PlanRun.ScopeType.STATE, scope_value)
@@ -528,7 +531,6 @@ def tuff(request, scope_type: str, scope_value: str):
 
 
 @require_GET
-@login_required_json
 def route_plans(request, se: str, plan_date: str):
     """GET /api/planning/routes/<se>/<plan_date>/?plan_run=<id> -- the Routing Agent's
     >=3 synced RoutePlans for one SE/day (R5.2's presentation fields)."""
@@ -556,7 +558,6 @@ def _json_body(request) -> Dict[str, Any]:
 
 @csrf_exempt
 @require_http_methods(["POST"])
-@login_required_json
 def select_route_plan_view(request, se: str, plan_date: str, plan_type: str):
     """POST /api/planning/routes/<se>/<plan_date>/select/<plan_type>/ -- body: {"plan_run":
     <id> (optional)} -- the trust-equivalent of the Routing Agent's R5.3 ("the SE selects
@@ -580,7 +581,6 @@ def select_route_plan_view(request, se: str, plan_date: str, plan_type: str):
 
 @csrf_exempt
 @require_http_methods(["POST"])
-@login_required_json
 def accept_route_plan_view(request, se: str, plan_date: str, plan_type: str):
     """POST /api/planning/routes/<se>/<plan_date>/accept/<plan_type>/ -- body: {"plan_run":
     <id>, "actor": <name>} (both optional) -- an SE's own "Accept" action (added
@@ -604,7 +604,6 @@ def accept_route_plan_view(request, se: str, plan_date: str, plan_type: str):
 
 @csrf_exempt
 @require_http_methods(["POST"])
-@login_required_json
 def reject_route_plan_view(request, se: str, plan_date: str):
     """POST /api/planning/routes/<se>/<plan_date>/reject/ -- body: {"plan_run": <id>,
     "actor": <name>} (both optional) -- an SE's own "Reject" action (added 2026-09-15,
@@ -627,7 +626,6 @@ def reject_route_plan_view(request, se: str, plan_date: str):
 
 @csrf_exempt
 @require_http_methods(["POST"])
-@login_required_json
 def add_route_stop_view(request, se: str, plan_date: str, plan_type: str):
     """POST /api/planning/routes/<se>/<plan_date>/<plan_type>/stops/add/ -- body: {"dc_id":
     <id> (required), "plan_run": <id> (optional)} -- an SE adding a DC to their own route
@@ -653,7 +651,6 @@ def add_route_stop_view(request, se: str, plan_date: str, plan_type: str):
 
 @csrf_exempt
 @require_http_methods(["POST"])
-@login_required_json
 def remove_route_stop_view(request, se: str, plan_date: str, plan_type: str):
     """POST /api/planning/routes/<se>/<plan_date>/<plan_type>/stops/remove/ -- body:
     {"dc_id": <id> (required), "plan_run": <id> (optional)} -- an SE removing a DC from
@@ -750,7 +747,6 @@ def _serialize_ai_sales_forecast(forecast: dict):
 
 
 @require_GET
-@login_required_json
 def pitch_script(request, daily_task_id: int):
     """GET /api/planning/pitch/<daily_task_id>/ -- the Pitching Agent's output for one
     DailyTask (Hindi script + which data sources it did/didn't have). 404 if the task
@@ -858,7 +854,6 @@ def _serialize_health_score_detail(detail: dict):
 
 
 @require_GET
-@login_required_json
 def dc_card(request, daily_task_id: int):
     """GET /api/planning/dc-card/<daily_task_id>/ -- the DC Card (Preface, "Dehaat
     Center Ko Jaano") for one DailyTask -- shown to the SE BEFORE the pitch (see
@@ -905,7 +900,6 @@ def dc_card(request, daily_task_id: int):
 
 
 @require_GET
-@login_required_json
 def headcount_bifurcation(request):
     """GET /api/planning/headcount/?list=true -- active headcount bifurcated by SE/ABM/
     RBM role and by Node/Block/District/State, plus an overall total (see
@@ -932,7 +926,6 @@ def headcount_bifurcation(request):
 
 
 @require_GET
-@login_required_json
 def directory_states(request):
     """GET /api/planning/directory/states/ -- every State with a real DC, plus node/SE/DC
     counts. Populates a top-level dropdown; every other directory endpoint can be scoped
@@ -944,7 +937,6 @@ def directory_states(request):
 
 
 @require_GET
-@login_required_json
 def directory_nodes(request):
     """GET /api/planning/directory/nodes/?state= -- every Node, optionally scoped to a State."""
     try:
@@ -954,7 +946,6 @@ def directory_nodes(request):
 
 
 @require_GET
-@login_required_json
 def directory_districts(request):
     """GET /api/planning/directory/districts/?state= -- live-only (Geo_Mapping/Source 1c)."""
     try:
@@ -964,7 +955,6 @@ def directory_districts(request):
 
 
 @require_GET
-@login_required_json
 def directory_blocks(request):
     """GET /api/planning/directory/blocks/?state=&district= -- live-only (Geo_Mapping/Source 1c)."""
     try:
@@ -974,7 +964,6 @@ def directory_blocks(request):
 
 
 @require_GET
-@login_required_json
 def directory_zbms(request):
     """GET /api/planning/directory/zbms/ -- "State Head" = ZBM, the closest real role to
     that term in this data model (no dedicated State-Head field exists anywhere)."""
@@ -985,7 +974,6 @@ def directory_zbms(request):
 
 
 @require_GET
-@login_required_json
 def directory_rbms(request):
     """GET /api/planning/directory/rbms/"""
     try:
@@ -995,7 +983,6 @@ def directory_rbms(request):
 
 
 @require_GET
-@login_required_json
 def directory_abms(request):
     """GET /api/planning/directory/abms/"""
     try:
@@ -1005,7 +992,6 @@ def directory_abms(request):
 
 
 @require_GET
-@login_required_json
 def directory_ses(request):
     """GET /api/planning/directory/ses/?state=&node= -- SEs with at least one assigned
     DC (resolve_scope_dcs' own definition of an SE), not planning.headcount's broader
@@ -1017,7 +1003,6 @@ def directory_ses(request):
 
 
 @require_GET
-@login_required_json
 def directory_dcs(request):
     """GET /api/planning/directory/dcs/?state=&node=&se=&limit=200&offset=0 -- paginated,
     limit capped at 1000 (DC_Master has 19k+ rows network-wide)."""
@@ -1058,7 +1043,6 @@ def _paginated_json_response(qs, total: int, limit: int, offset: int, row_fn):
 
 
 @require_GET
-@login_required_json
 def visit_streaks(request):
     """GET /api/planning/streaks/?se=&dc=&min_misses=&limit=&offset= -- DCVisitStreak:
     consecutive-miss tracking per (SE, DC), independent of any single PlanRun. Feeds a
@@ -1089,7 +1073,6 @@ def visit_streaks(request):
 
 
 @require_GET
-@login_required_json
 def completion_stats(request):
     """GET /api/planning/completion-stats/?se=&objective=&limit=&offset= --
     ObjectiveCompletionStats: trailing-30d completion rate per (SE, objective), rolled up
@@ -1116,7 +1099,6 @@ def completion_stats(request):
 
 
 @require_GET
-@login_required_json
 def scheduled_scopes(request):
     """GET /api/planning/scheduled-scopes/?active=true&scope_type= -- ScheduledScope:
     the (scope_type, scope_value) pairs `run_scheduled_tuff` runs TUFF for once daily via
@@ -1137,7 +1119,6 @@ def scheduled_scopes(request):
 
 
 @require_GET
-@login_required_json
 def plan_run_detail(request, plan_run_id: int):
     """GET /api/planning/runs/<id>/ -- re-fetch a previously generated & persisted plan."""
     try:
@@ -1253,7 +1234,6 @@ def admin_discount_schemes(request):
 
 
 @require_GET
-@login_required_json
 def plan_run_list(request):
     """GET /api/planning/runs/?scope_type=NODE&scope_value=Jaipur&status=PENDING_REVIEW&plan_date=YYYY-MM-DD&limit=&offset=
     -- list past runs, newest first. limit defaults to 50, capped at 500; see
