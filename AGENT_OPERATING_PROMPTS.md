@@ -934,3 +934,28 @@ source, not a follow-up code change.
   of punch-in — that's a distinct, still-open gap: those DCs are missing
   `lat_2`/`long_2` in `input_partner_details`, so no haversine leg can be
   computed at all, not even DC-to-DC.
+
+## 2026-09-25 — Manual data cleanup: 2 corrupt `DCVisitStreak` rows deleted
+
+Found during a UI smoke test of every view's CTAs (Ops / Feedback → Chronic
+misses): two rows had `dc_id` holding an SE email
+(`mayur.suryavanshi@agrevolution.in`, `pradip.tupe@agrevolution.in`) and
+`consecutive_misses` (an `IntegerField`) holding the string `"2026-09-18"` —
+SQLite's dynamic typing let this through silently instead of erroring.
+`updated_at` was `NULL` on both, which the current `_apply_streaks()`
+(`planning/reconciliation.py`) can never produce (it always sets it
+explicitly on every write) — so these predate that code, from an older
+write path or a manual/script insert, not a live bug in today's pipeline.
+
+Deleted by exact primary key only (`DCVisitStreak.objects.filter(id__in=
+[46311, 46312]).delete()`), not by `se_id` — SE_IDs 1689 and 85409 both have
+several other, legitimate streak rows (real DC IDs, integer counts) that
+were left untouched. Verified live: Ops / Feedback -> Chronic misses row
+count went from 993 to 991 (min-misses=3 filter), no traceback, and the
+top-of-list rows re-checked in the browser all show a real DC ID and an
+integer miss count.
+
+If this shape reappears (an email in `dc_id`, a date in
+`consecutive_misses`), the write path is not `_apply_streaks` — check for a
+raw SQL insert, a fixture load, or a script bypassing the model's field
+types instead of re-auditing this function.
