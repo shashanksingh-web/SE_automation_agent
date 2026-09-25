@@ -1,4 +1,4 @@
-# TTS service (prototype, not yet integrated)
+# TTS service (wired in, host-run)
 
 Standalone Hindi text-to-speech experiment for turning a generated `PitchScript.script_hindi`
 into audio the SE can play back. Runs directly on the host, outside Docker, on purpose --
@@ -34,12 +34,23 @@ python:3.12-slim image already).
 
 ## Status
 
-Prototype only. `test_synth.py` proves the model loads and produces real audio
-(`test_output.wav`, gitignored, regenerate by re-running the script) -- nothing here is wired
-into the Django app or the frontend yet. Next steps, not yet built: a small persistent
-FastAPI service wrapping this model (avoiding a multi-second cold model load on every
-request), a Django endpoint that calls it over `host.docker.internal` and caches the result,
-and a "Play pitch audio" control in PitchPanel.tsx.
+Wired into the Django app. `server.py` is a persistent FastAPI service (model loads once at
+startup, not per-request) exposing `POST /synthesize` and `GET /health`; `planning/views.py`'s
+`pitch_audio` view (`GET /api/planning/pitch/<daily_task_id>/audio/`) calls it over
+`host.docker.internal:8765` from inside the web container, strips this app's own pitch-script
+markup first, and caches the resulting WAV to `output/pitch_audio/` content-addressed by a hash
+of the cleaned text.
+
+Verified live end-to-end 2026-09-25: a fresh (uncached) request through the real Django endpoint
+took ~27.5s and returned a valid WAV; a repeat request for the same pitch hit the disk cache and
+returned the identical bytes in ~0.3s.
+
+Still genuinely missing: a "Play pitch audio" control in PitchPanel.tsx (the frontend doesn't
+call this endpoint yet), and this service has no supervision -- it's a bare `uvicorn` process on
+whoever's Mac started it, with nothing to restart it if it dies or the machine reboots. Until
+that's addressed, `pitch_audio` reliably works only on a machine where someone has manually
+started `server.py` (see Running below); everywhere else it correctly degrades to a 503, never a
+500 or a broken response.
 
 ## Setup (already done once on this machine)
 
@@ -49,3 +60,16 @@ brew install python@3.12
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## Running it
+
+```bash
+source venv/bin/activate
+uvicorn server:app --host 0.0.0.0 --port 8765
+```
+
+Leave this running in its own terminal (or `nohup`/a process manager) -- there's no
+supervision today, so it stays up only as long as this process does. `host.docker.internal`
+is Docker Desktop's built-in DNS name for the host machine, reachable from inside the web
+container without extra network config; `TTS_SERVICE_URL` (env var, default
+`http://host.docker.internal:8765`) overrides it if the service ever runs somewhere else.
