@@ -50,7 +50,10 @@ from .routing import (
     RoutingError, accept_route_plan, edit_route_stops, list_route_plans,
     reject_route_plan, select_default_route_plan,
 )
-from .services import PlanningError, activate_tuff_scope, generate_plan_for_scope, load_dc_master, run_normalization_step
+from .services import (
+    PlanningError, activate_tuff_scope, generate_plan_for_scope, load_dc_master,
+    persist_exceptions, run_normalization_step, run_pitching_and_dc_card_agents,
+)
 from .services import _output_dir as _planning_output_dir
 from .services import agent  # se_daily_plan_agent, imported once there as a library
 from .tasks import run_all_states_tuff_task
@@ -820,6 +823,45 @@ def _no_pitch_or_card_response(daily_task_id: int, model_name: str) -> JsonRespo
                  "generation may have failed for this task specifically (check ExceptionRecord for this PlanRun) or hasn't run yet.",
         "Reason": "generation_failed",
     }, status=404)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def generate_pitch_and_dc_card(request, daily_task_id: int):
+    """POST /api/planning/pitch-dc-card/<daily_task_id>/generate/ -- on-demand
+    single-task (re)generation for the Pitch/DC Card panels' "Generate" CTA, when no
+    PitchScript/DCCard exists yet or generation previously failed for just this task.
+    Reuses run_pitching_and_dc_card_agents exactly as routing.edit_route_stops already
+    does after a route edit (routing.py's own resync call), scoped to this one task via
+    task_ids= and empty enrichment ({}) -- the pitch is always fully populated (built
+    only from this DailyTask row's own fields), only the DC Card's Business Area
+    Strength/Club/Active Schemes/YoY sections stay blank until the next full scope
+    regeneration, same accepted tradeoff as that call site. No auth decorator -- matches
+    this module's other bypassed views, not a new decision (see module docstring)."""
+    try:
+        task = DailyTask.objects.select_related("plan_run").get(id=daily_task_id)
+    except DailyTask.DoesNotExist:
+        return JsonResponse({"error": f"No DailyTask {daily_task_id}.", "Reason": "no_such_task"}, status=404)
+    if task.dc_id is None:
+        return JsonResponse({
+            "error": f"DailyTask {daily_task_id} is a Farmer Meeting task (no dc_id) -- never gets a pitch or DC card.",
+            "Reason": "not_applicable",
+        }, status=422)
+
+    client = agent.get_client()
+    try:
+        run_exceptions = run_pitching_and_dc_card_agents(
+            task.plan_run, str(task.plan_date), client, {}, task_ids=[daily_task_id],
+        )
+    finally:
+        client.close()
+    persist_exceptions(task.plan_run, run_exceptions)
+
+    return JsonResponse({
+        "DailyTask_ID": daily_task_id,
+        "pitch_card_status": "failed" if run_exceptions else "regenerated",
+        "pitch_failures": run_exceptions,
+    }, safe=False, json_dumps_params={"default": str})
 
 
 def _serialize_recommended_products(products: list) -> list:
