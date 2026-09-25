@@ -186,10 +186,23 @@ def best_scheme(schemes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     callers should fall back to listing every scheme as equally eligible in that case,
     not silently pick one. Does not require the input to already be rank_schemes_by_
     value's own output -- ranks internally, so a caller with only active_schemes_by_
-    node[node] (unranked) can call this directly."""
+    node[node] (unranked) can call this directly.
+
+    Never recommends a scheme cross_check_active_status has flagged live_status_flag
+    (explicit user request, 2026-09-25, "in scheme recommendation only capture the
+    active schemes") -- the DB-side is_active/date filters that built this list can
+    still be stale against the live Discount Service, and picking one of those as THE
+    recommendation would put a scheme the DC can no longer actually book front and
+    center in the pitch. Flagged entries are only excluded from the PICK, never
+    dropped from the input list itself -- callers that render every matched scheme
+    (e.g. the DC Card's full eligibility listing) keep showing them, flag and all,
+    same "never hide" posture as the rest of this pipeline."""
     if not schemes:
         return None
-    ranked = rank_schemes_by_value(schemes) if not all("rank" in s for s in schemes) else schemes
+    candidates = [s for s in schemes if not s.get("live_status_flag")]
+    if not candidates:
+        return None
+    ranked = rank_schemes_by_value(candidates) if not all("rank" in s for s in candidates) else candidates
     top = min(ranked, key=lambda s: s.get("rank", len(ranked) + 1))
     max_discount = (top.get("benefit") or {}).get("max_discount_per_dc")
     try:
