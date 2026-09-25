@@ -22,11 +22,15 @@ require a real admin session to reach at all. This bypass should be removed (re-
 @login_required_json to the 31 views that had it -- git blame/log around this comment
 for the exact list) the moment the frontend's login flow is confirmed to establish a
 real backend session, not before."""
+import hashlib
 import json
+import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import requests
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
@@ -891,6 +895,91 @@ def pitch_script(request, daily_task_id: int):
         "AI_Sales_Forecast": _serialize_ai_sales_forecast(pitch.ai_sales_forecast),
         "Generated_At": pitch.generated_at,
     }, safe=False, json_dumps_params={"default": str})
+
+
+# Standalone Hindi TTS service (facebook/mms-tts-hin), see tts_service/README.md for
+# the full VibeVoice-Hindi-7B -> Indic Parler-TTS -> MMS-TTS-Hindi decision trail and
+# why it runs on the HOST, not in this container -- Docker Desktop's own VM here is
+# capped at ~5.8GB RAM, already shared by web/celery_worker/celery_beat/redis, too
+# tight to add an ML model into safely. host.docker.internal is Docker Desktop's own
+# DNS name for "the machine this container's VM is running on" -- reachable from
+# inside any container without extra network config, confirmed live.
+_TTS_SERVICE_URL = os.environ.get("TTS_SERVICE_URL", "http://host.docker.internal:8765")
+
+_TTS_SECTION_HEADER_RE = re.compile(r"^—\s*.+?\s*—$")
+_TTS_LABELED_LINE_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+
+
+def _clean_script_for_tts(script_hindi: str) -> str:
+    """Strips this script's own structural markup before handing the remaining
+    natural-language Hindi sentences to TTS -- a voice literally reading "bracket
+    poochna bracket" or a lone em-dash header aloud would be actively wrong, not just
+    unpolished. Mirrors the exact same three patterns PitchPanel.tsx's parseScript
+    already parses on the frontend side (— Section — headers, [पूछना]/[बताना]/
+    [विश/क्लोज़] labels, "- "-prefixed bullet markers) rather than inventing a
+    different notion of this script's own structure."""
+    lines_out: List[str] = []
+    for raw_line in script_hindi.split("\n"):
+        line = raw_line.strip()
+        if not line or _TTS_SECTION_HEADER_RE.match(line):
+            continue
+        m = _TTS_LABELED_LINE_RE.match(line)
+        if m:
+            line = m.group(2).strip()
+            if not line:
+                continue
+        if line.startswith("- "):
+            line = line[2:].strip()
+        lines_out.append(line)
+    return " ".join(lines_out)
+
+
+def pitch_audio(request, daily_task_id: int):
+    """GET /api/planning/pitch/<daily_task_id>/audio/ -- synthesized Hindi audio for
+    this task's pitch script, via the standalone MMS-TTS-Hindi service in tts_service/
+    (explicit user request, "VibeVoice-Hindi-7B how to integrate this" -> "start the
+    tts integration"). Cached to disk under output/pitch_audio/, content-addressed by
+    a hash of the CLEANED text (_clean_script_for_tts) so a regenerated pitch with
+    different wording gets fresh audio automatically -- no explicit cache-invalidation
+    step needed, same reasoning as every other content-hashed cache in this codebase.
+
+    503 (not 500) when the TTS service itself is unreachable/erroring -- this is an
+    optional, experimental feature (see tts_service/README.md's own Status section),
+    never something the rest of the pitch view should be blocked on; the text pitch
+    itself (pitch_script above) is completely unaffected either way, service up or
+    down."""
+    try:
+        pitch = PitchScript.objects.select_related("daily_task").get(daily_task_id=daily_task_id)
+    except PitchScript.DoesNotExist:
+        return _no_pitch_or_card_response(daily_task_id, "PitchScript")
+
+    text = _clean_script_for_tts(pitch.script_hindi)
+    if not text:
+        return JsonResponse(
+            {"error": "This pitch has no speakable text after stripping structural markup.", "Reason": "empty_script"},
+            status=422,
+        )
+
+    cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    cache_dir = _planning_output_dir() / "pitch_audio"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"{daily_task_id}_{cache_key}.wav"
+
+    if not cache_path.exists():
+        try:
+            resp = requests.post(f"{_TTS_SERVICE_URL}/synthesize", json={"text": text}, timeout=60)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            return JsonResponse(
+                {
+                    "error": f"TTS service unreachable or failed: {type(e).__name__}: {e}",
+                    "Reason": "tts_service_unavailable",
+                },
+                status=503,
+            )
+        cache_path.write_bytes(resp.content)
+
+    return HttpResponse(cache_path.read_bytes(), content_type="audio/wav")
 
 
 def _serialize_business_area_subcats(subcats: list) -> list:

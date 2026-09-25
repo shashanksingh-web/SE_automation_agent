@@ -35,6 +35,7 @@ urlpatterns = [
     path("routes/<str:se>/<str:plan_date>/<str:plan_type>/stops/add/", views.add_route_stop_view, name="add_route_stop"),
     path("routes/<str:se>/<str:plan_date>/<str:plan_type>/stops/remove/", views.remove_route_stop_view, name="remove_route_stop"),
     path("pitch/<int:daily_task_id>/", views.pitch_script, name="pitch_script"),
+    path("pitch/<int:daily_task_id>/audio/", views.pitch_audio, name="pitch_audio"),
     path("dc-card/<int:daily_task_id>/", views.dc_card, name="dc_card"),
     path("headcount/", views.headcount_bifurcation, name="headcount_bifurcation"),
     path("directory/states/", views.directory_states, name="directory_states"),
