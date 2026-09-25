@@ -427,7 +427,13 @@ def _serialize_aggregated_state_run(scope_value: str, plan_date: str, node_runs:
     tasks_by_se: Dict[str, Dict[str, Any]] = {}
     task_list = list(DailyTask.objects.filter(plan_run_id__in=run_ids))
     for t in task_list:
-        tasks_by_se.setdefault(t.se_id, {"SE_ID": t.se_id, "SE_Name": t.se_name, "Tasks": []})
+        # PlanRun_ID here is this SE's own real (numeric) Node-scope run -- unlike the
+        # synthetic top-level one below, this is what Route Plans/Accept/Reject/etc.
+        # need: they all resolve routes by real PlanRun id, and every task for a given
+        # SE comes from exactly one Node run, so this is unambiguous per SE. Omitting
+        # it (as this dict used to) left the frontend falling back to the synthetic
+        # top-level id, which crashed route_plans's int(plan_run_id) -- confirmed live.
+        tasks_by_se.setdefault(t.se_id, {"SE_ID": t.se_id, "SE_Name": t.se_name, "PlanRun_ID": t.plan_run_id, "Tasks": []})
         tasks_by_se[t.se_id]["Tasks"].append(_serialize_task(t))
 
     exceptions = ExceptionRecord.objects.filter(plan_run_id__in=run_ids)
